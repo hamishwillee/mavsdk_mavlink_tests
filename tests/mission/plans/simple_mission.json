@@ -1,0 +1,68 @@
+{
+  "_comment": "Simple 4-item flight plan: takeoff, 2 waypoints, RTL. Coordinates near Zurich, Switzerland.",
+  "_coordinate_note": "x = latitude * 1e7 (int32), y = longitude * 1e7 (int32), z = altitude in metres (float)",
+  "_frame_note": "frame=3 is MAV_FRAME_GLOBAL_RELATIVE_ALT (altitude relative to takeoff point)",
+  "mission_type": 0,
+  "items": [
+    {
+      "_description": "Takeoff from home position to 10m AGL",
+      "seq": 0,
+      "frame": 3,
+      "command": 22,
+      "current": 1,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 0.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 473977000,
+      "y": 85456000,
+      "z": 10.0
+    },
+    {
+      "_description": "Waypoint 1: fly north 130m from home, maintain 50m AGL",
+      "seq": 1,
+      "frame": 3,
+      "command": 16,
+      "current": 0,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 3.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 473990000,
+      "y": 85456000,
+      "z": 50.0
+    },
+    {
+      "_description": "Waypoint 2: fly east ~140m from WP1, maintain 50m AGL",
+      "seq": 2,
+      "frame": 3,
+      "command": 16,
+      "current": 0,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 3.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 473990000,
+      "y": 85470000,
+      "z": 50.0
+    },
+    {
+      "_description": "Return to launch",
+      "seq": 3,
+      "frame": 2,
+      "command": 20,
+      "current": 0,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 0.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 0,
+      "y": 0,
+      "z": 0.0
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "_comment": "Two rally points (safe emergency landing locations) near Zurich mission area.",
+  "_coordinate_note": "x = latitude * 1e7 (int32), y = longitude * 1e7 (int32), z = altitude in metres AGL",
+  "_frame_note": "frame=0 is MAV_FRAME_GLOBAL (absolute altitude)",
+  "_command_note": "5100=MAV_CMD_NAV_RALLY_POINT",
+  "mission_type": 2,
+  "items": [
+    {
+      "_description": "Rally point 1: open field north-west of home, 50m AGL",
+      "seq": 0,
+      "frame": 0,
+      "command": 5100,
+      "current": 0,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 0.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 473980000,
+      "y": 85430000,
+      "z": 50.0
+    },
+    {
+      "_description": "Rally point 2: open field south-east of home, 50m AGL",
+      "seq": 1,
+      "frame": 0,
+      "command": 5100,
+      "current": 0,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 0.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 473960000,
+      "y": 85480000,
+      "z": 50.0
+    }
+  ]
+}
