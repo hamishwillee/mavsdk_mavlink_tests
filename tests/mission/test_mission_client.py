@@ -117,23 +117,24 @@ TRANSFER_TIMEOUT_S: float = 30.0
 
 async def _get_autopilot_capabilities(system) -> int:
     """
-    Return the autopilot's capability bitmask from AUTOPILOT_VERSION.
+    Return the OR of all AUTOPILOT_VERSION capability bitmasks received.
 
-    Subscribes to AUTOPILOT_VERSION *before* sending the request so the
-    response is not missed.  A small sleep (0.2 s) allows the gRPC stream
-    to be established before the command is dispatched.
+    Subscribes before sending the request.  After the first response arrives,
+    waits 0.3 s more to collect any concurrent replies (in paired mode both
+    the mavsdk_server binary and the Python mock flight stack respond; OR-ing
+    them yields the full effective capability set).
 
     Uses MAV_CMD_REQUEST_MESSAGE (512) with param1=148 (AUTOPILOT_VERSION msg
     ID).  MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES (520) is not supported by PX4.
     """
-    result_ready: asyncio.Future = asyncio.get_running_loop().create_future()
+    combined: int = 0
+    first_seen = asyncio.Event()
 
     async def _listen():
+        nonlocal combined
         async for msg in system.mavlink_direct.message("AUTOPILOT_VERSION"):
-            fields = json.loads(msg.fields_json)
-            if not result_ready.done():
-                result_ready.set_result(int(fields["capabilities"]))
-            break
+            combined |= int(json.loads(msg.fields_json)["capabilities"])
+            first_seen.set()
 
     listen_task = asyncio.create_task(_listen())
 
@@ -163,15 +164,16 @@ async def _get_autopilot_capabilities(system) -> int:
     await system.mavlink_direct.send_message(request_msg)
 
     try:
-        return await asyncio.wait_for(
-            asyncio.shield(result_ready), timeout=AUTOPILOT_VERSION_TIMEOUT_S
-        )
+        await asyncio.wait_for(first_seen.wait(), timeout=AUTOPILOT_VERSION_TIMEOUT_S)
+        await asyncio.sleep(0.3)  # collect any concurrent responses
     finally:
         listen_task.cancel()
         try:
             await listen_task
         except asyncio.CancelledError:
             pass
+
+    return combined
 
 
 # ===========================================================================

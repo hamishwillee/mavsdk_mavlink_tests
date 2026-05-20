@@ -17,23 +17,26 @@ is maintained by mavsdk_server for the whole session.
 Connection strategy
 -------------------
 * ``--drone-address`` supplied → standalone mode: GCS mavsdk_server connects
-  to that address (e.g. a PX4 SITL).  Standalone client tests run; server
-  tests use their own paired loopback independently.
-* ``--drone-address`` omitted  → server/paired tests still run (loopback);
-  standalone client tests are skipped.
+  to that address (e.g. a PX4 SITL).  All client tests run against the real
+  flight stack.
+* ``--drone-address`` omitted  → paired mode: client tests run against
+  MockFlightStack over loopback.  Server tests also run (they always use the
+  paired loopback independently of this flag).
 
-Two independent fixture sets
-----------------------------
-``gcs_mavsdk_server`` / ``gcs_system``
-    Standalone GCS — connects to ``--drone-address``.  Used by client tests.
-    Skips if ``--drone-address`` is not provided.
+Fixture sets
+------------
+``gcs_mavsdk_server`` / ``gcs_system`` / ``mock_stack``
+    Mode-aware GCS for client tests.
+    Standalone: ``gcs_mavsdk_server`` starts a dedicated server pointing to
+    ``--drone-address``; ``mock_stack`` is a no-op.
+    Paired: ``gcs_mavsdk_server`` reuses ``paired_gcs_server``; ``mock_stack``
+    starts MockFlightStack against the paired drone mavsdk_server.
 
 ``paired_gcs_server`` / ``paired_drone_server``
 ``paired_gcs_system`` / ``paired_drone_system``
     Loopback-only pair — always started, regardless of ``--drone-address``.
-    Used by server tests and ``TestDeprecatedMessageHandling``.  Running a
-    flight stack simultaneously is safe because the paired session uses port
-    14560 (not the PX4 SITL default of 14540).
+    Used by server tests and ``TestDeprecatedMessageHandling``.  Port 14560
+    is used deliberately (not 14540) to avoid interference from PX4 SITL.
 
 Ports
 -----
@@ -62,12 +65,44 @@ from pathlib import Path
 import pytest
 from mavsdk import System
 
+from tests.mock_flight_stack import MockFlightStack
+
 log = logging.getLogger(__name__)
 
 GCS_GRPC_PORT = 50051
 PAIRED_GCS_GRPC_PORT = 50053
 DRONE_GRPC_PORT = 50052
 GCS_MAVLINK_PORT = 14560  # not 14540 — avoids PX4 SITL interference
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clear_px4_if_paired(request):
+    """
+    Kill any running PX4 SITL before starting paired-mode tests.
+
+    PX4 uses sysid=1/compid=1 — the same identity as the mock drone mavsdk_server.
+    If PX4 is running it will send heartbeats that reach the GCS loopback listener
+    on port 14560, causing _wait_for_connection to see two sysid=1 peers and hang.
+
+    In standalone mode (``--drone-address`` supplied) this fixture is a no-op;
+    PX4 must be running to serve as the drone under test.
+    """
+    if request.config.getoption("--drone-address") is not None:
+        return
+
+    result = subprocess.run(["pgrep", "-x", "px4"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return  # no PX4 running
+
+    pids = result.stdout.split()
+    log.warning(
+        "PX4 SITL detected (PID %s) while starting paired-mode tests. "
+        "PX4 uses sysid=1 which conflicts with the mock drone — killing it now.",
+        ", ".join(pids),
+    )
+    for pid in pids:
+        subprocess.run(["kill", pid], check=False)
+    time.sleep(1.5)
 
 
 def _find_mavsdk_server() -> Path:
@@ -117,20 +152,25 @@ async def _wait_for_connection(system: System, timeout_s: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Standalone GCS (requires --drone-address)
+# Mode-aware GCS (standalone against real drone, or paired against mock)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def gcs_mavsdk_server(request):
+def gcs_mavsdk_server(request, paired_gcs_server):
     """
-    Start (and stop) the GCS mavsdk_server for standalone client tests.
+    GCS mavsdk_server for client tests.
 
-    Requires ``--drone-address``; skips if not provided (run server tests
-    in paired mode independently via ``paired_gcs_server``).
+    Standalone mode (``--drone-address`` given): starts a dedicated
+    mavsdk_server on port 50051 connected to the real drone.
+
+    Paired mode (no ``--drone-address``): reuses the already-started
+    ``paired_gcs_server`` (port 50053).  No skip — MockFlightStack provides
+    the drone-side protocol handlers.
     """
     drone_address = request.config.getoption("--drone-address")
     if drone_address is None:
-        pytest.skip("--drone-address not provided; standalone client tests require a real autopilot")
+        yield PAIRED_GCS_GRPC_PORT
+        return
 
     proc = _start_mavsdk_server(
         grpc_port=GCS_GRPC_PORT,
@@ -141,13 +181,52 @@ def gcs_mavsdk_server(request):
     yield GCS_GRPC_PORT
     proc.kill()
     proc.wait()
-    log.info("GCS mavsdk_server stopped")
+    log.info("Standalone GCS mavsdk_server stopped")
 
 
 @pytest.fixture
-async def gcs_system(gcs_mavsdk_server, request):
+async def mock_stack(request, paired_drone_server):
     """
-    A fresh MAVSDK System (GCS side) for each standalone client test.
+    Start MockFlightStack on the paired drone in paired mode.
+
+    In standalone mode (``--drone-address`` given) this is a no-op; the real
+    flight stack provides protocol handling.  In paired mode a fresh
+    MockFlightStack is started for each test and cancelled on teardown.
+
+    Tests that need to inspect or reconfigure the mock can request this
+    fixture directly; ``gcs_system`` depends on it automatically.
+    """
+    drone_address = request.config.getoption("--drone-address")
+    if drone_address is not None:
+        yield None
+        return
+
+    system = System(mavsdk_server_address="localhost", port=paired_drone_server)
+    await system.connect()
+
+    stack = MockFlightStack()
+    task = asyncio.create_task(stack.run(system))
+    # Give the gRPC subscriptions a moment to establish before the test starts.
+    # _wait_for_connection is intentionally skipped on the drone System: the
+    # MAVLink session-level servers may already be connected (connection_state()
+    # only fires on *changes*), so waiting for it would hang.
+    await asyncio.sleep(0.5)
+    yield stack
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.fixture
+async def gcs_system(gcs_mavsdk_server, mock_stack, request):
+    """
+    A fresh MAVSDK System (GCS side) for each client test.
+
+    Works in both standalone mode (connects to real drone via
+    ``--drone-address``) and paired mode (connects to MockFlightStack over
+    loopback).
     """
     timeout_s = int(request.config.getoption("--connection-timeout"))
     system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)

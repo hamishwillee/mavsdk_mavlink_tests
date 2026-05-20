@@ -13,6 +13,7 @@ transport.  The initial focus is the mission protocol (common.xml).
 ```
 conftest.py              CLI options: --drone-address, --connection-timeout
 tests/conftest.py        GCS (gcs_system) and drone (drone_system) fixtures
+tests/mock_flight_stack.py  MockFlightStack — configurable MAVLink drone simulator
 tests/mission/
   conftest.py            load_plan(), items_match(), clear_all_mission_types() helpers
   test_mission_client.py GCS-side tests using mission_raw plugin
@@ -20,6 +21,36 @@ tests/mission/
   test_frame_types.py    MAV_FRAME support matrix (65 tests, stack-agnostic)
   plans/                 JSON plan files (MISSION_ITEM_INT fields)
 ```
+
+### MockFlightStack
+
+`tests/mock_flight_stack.py` implements the full MAVLink mission protocol on the
+drone side via `mavlink_direct`, so all client tests can run against a local
+loopback mock without a real autopilot.
+
+**Protocol handlers** (all via `drone_system.mavlink_direct`):
+
+| Handler | Receives | Sends |
+|---------|---------|-------|
+| Upload | `MISSION_COUNT` → `MISSION_ITEM_INT` × n | `MISSION_REQUEST_INT` × n → `MISSION_ACK(SUCCESS)` |
+| Download | `MISSION_REQUEST_LIST` | `MISSION_COUNT` → `MISSION_ITEM_INT` × n |
+| Clear | `MISSION_CLEAR_ALL` | `MISSION_ACK(SUCCESS)` |
+| Capability | `COMMAND_LONG(cmd=512, p1=148)` | `AUTOPILOT_VERSION(capabilities=…)` |
+
+**Default behaviour**: accept all frames, store items exactly as received, serve
+unchanged on download, report `MAV_PROTOCOL_CAPABILITY_MISSION_INT` (bit 2 = 4).
+
+**Configurable parameters** (constructor kwargs):
+- `capability_bits` — capabilities bitmask in AUTOPILOT_VERSION response
+- `item_request_delay_s` — per-item delay before MISSION_REQUEST_INT (upload)
+- `item_response_delay_s` — per-item delay before MISSION_ITEM_INT (download)
+- `drop_responses` — `{msg_name: N}` to silently drop first N of that outgoing message
+- `rejected_frames` — frame values to NACK with UNSUPPORTED_FRAME on upload
+
+**Capability response interaction**: the drone mavsdk_server binary also responds
+to AUTOPILOT_VERSION requests with its own bits (0x2000 = MAV_PROTOCOL_CAPABILITY_MAVLINK2).
+`_get_autopilot_capabilities()` in the test file OR-combines all responses within a
+0.3 s window so both the server's and the mock's bits are reflected in the result.
 
 All tests are async (pytest-asyncio, asyncio_mode=auto).
 
@@ -146,24 +177,20 @@ update this note.
 
 | Mode | Command | What runs |
 |------|---------|-----------|
-| Client standalone | `pytest tests/mission/test_mission_client.py --drone-address=...` | All 13 client tests against real autopilot |
-| Server + paired | `pytest tests/mission/test_mission_server.py tests/mission/test_mission_client.py::TestDeprecatedMessageHandling` | 5 server tests + 1 paired client test |
-| Full paired | `pytest tests/mission/` | Above + client tests (10 client-only tests FAIL — see below) |
+| Paired (mock) | `pytest tests/` | 82 tests pass, 1 skipped — no autopilot needed |
+| Standalone (PX4) | `pytest tests/ --drone-address=udp://:14540` | Same 83 tests against real PX4 |
+
+**IMPORTANT**: Do not run paired-mode tests while PX4 SITL is running on the same machine.
+PX4 uses sysid=1 (same as the mock drone) and can send traffic to port 14560 after it has
+been a peer in a previous session.  This causes `_wait_for_connection` on the GCS System to
+hang indefinitely.  Always `kill <px4_pid>` before running paired tests.
 
 Paired mode uses UDP loopback:
-- GCS binds `udpin://0.0.0.0:14560`
 - Drone sends `udpout://127.0.0.1:14560`
-- Port 14560 is used deliberately (not 14540) so that a concurrently running PX4 SITL
-  (which sends heartbeats to port 14540) does not inject traffic into the paired session.
+- GCS binds `udpin://0.0.0.0:14560`
+- Port 14560 is used deliberately (not 14540) to avoid PX4's default SDK port.
 - In paired mode, `gcs_mavsdk_server` starts `drone_mavsdk_server` first so the peer is
   already connected when the GCS begins listening.
-
-**Client tests in paired mode**: The 10 client-only tests (capability, upload/download/roundtrip
-for each mission type) FAIL in paired mode because the mock drone (`mavsdk_server` acting
-as drone) has no mission protocol handler active unless a `mission_raw_server` subscription
-is in place.  Only the server tests and `TestDeprecatedMessageHandling::test_gcs_sends_mission_item_int`
-(which sets up both sides explicitly) work without a real autopilot.  Client tests must be
-run in standalone mode with `--drone-address`.
 
 ## Design decisions
 
@@ -340,6 +367,15 @@ These items were identified during development but deferred:
 5. **Heartbeat protocol tests** — Add `tests/heartbeat/` covering the
    MAVLink heartbeat service (component type, autopilot type, base mode, etc.).
 
+6. **PX4 geofence relative-altitude frame z conversion** — `TestGeofenceFrames` currently
+   fails for frame=3 (MAV_FRAME_GLOBAL_RELATIVE_ALT) and frame=6
+   (MAV_FRAME_GLOBAL_RELATIVE_ALT_INT): PX4 accepts both but stores them as frame=5
+   (MAV_FRAME_GLOBAL_INT, absolute) without converting the z value.  The test flags
+   this as a protocol violation (relative→absolute change must adjust z).  Needs
+   investigation: (a) is z conversion required by the MAVLink spec for geofence items,
+   or is z always treated as MSL for geofence regardless of frame?  (b) if required,
+   this is a PX4 bug to report upstream.  Left as hard FAILED until resolved.
+
 ## Change log
 
 | Date | Change |
@@ -351,6 +387,7 @@ These items were identified during development but deferred:
 | 2026-05-18 | Move paired-mode GCS port from 14540→14560 so server tests can run alongside a live PX4 SITL without interference (PX4 sends heartbeats to 14540; using 14560 keeps the loopback session isolated). |
 | 2026-05-18 | Add per-test autouse teardown to TestFlightMission/TestGeofence/TestRallyPoints: each test now clears all mission types after it runs via clear_all_mission_types() in mission conftest. Fix download tests (and test_clear_flight_mission) to upload explicitly before acting — no longer order-dependent. Fix CLAUDE.md: clear_mission() sends type=0 only (not 255); geofence/rally cleared via raw mavlink_direct MISSION_CLEAR_ALL. |
 | 2026-05-18 | Add test_frame_types.py: 65-test MAV_FRAME support matrix (21 frames × 3 mission types + 2 MAV_FRAME_MISSION tests). Stack-agnostic — accepts any clean accept/reject outcome. Uses pytest_asyncio.fixture(loop_scope="class") + mark.asyncio(loop_scope="class") to share one System per class (avoids gRPC exhaustion from 65 connections). Documents PX4 frame support matrix in CLAUDE.md. |
+| 2026-05-20 | Add MockFlightStack (tests/mock_flight_stack.py): full mavlink_direct implementation of upload/download/clear/capability protocols. Rewrote conftest.py gcs_system/mock_stack fixtures to be mode-aware (paired vs standalone). Add mock_stack_cls class-scoped fixture in test_frame_types.py. All 83 tests now run in paired mode: 82 pass, 1 skip. Fix _get_autopilot_capabilities to OR-combine responses within 0.3 s window (mavsdk_server and mock both respond). Add PX4 interference warning: do not run paired tests while PX4 SITL is running. |
 
 When protocol behaviour changes (spec update, MAVSDK API change, or
 autopilot-specific workaround is added), add a row to this table and update

@@ -39,7 +39,17 @@ Local/body frames (all others):       x = 100, y = 200 (metres from home)
 
 Running
 -------
+Against a real flight stack::
+
     pytest tests/mission/test_frame_types.py --drone-address=udp://:14540 -v
+
+Against the mock (no autopilot required)::
+
+    pytest tests/mission/test_frame_types.py -v
+
+The mock accepts all frames and stores/returns them unchanged, so all tests
+pass with "ACCEPTED, round-trip frame preserved".  Against a real flight stack
+(e.g. PX4) some frames are REJECTED and some are transformed on storage.
 
 The INFO-level log lines report each frame's ACCEPTED / REJECTED outcome and
 (if accepted) whether the downloaded frame value differs from what was uploaded.
@@ -56,7 +66,8 @@ from mavsdk import System
 from mavsdk.mission_raw import MissionItem, MissionRawError
 
 from .conftest import clear_all_mission_types
-from tests.conftest import _wait_for_connection
+from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
+from tests.mock_flight_stack import MockFlightStack
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +149,20 @@ def _make_item(frame: int, mission_type: int, seq: int = 0, current: int = 1) ->
 # Shared probe helper
 # ---------------------------------------------------------------------------
 
+def _exc_reason(exc: MissionRawError) -> str:
+    """Return just the result-enum name from a MissionRawError, e.g. 'UNSUPPORTED'."""
+    return str(exc).split(':')[0].strip()
+
+
+def _label(name: str, status: str) -> str:
+    """Frame name with status annotation appended only when non-active."""
+    if status == "deprecated":
+        return f"{name} (DEPRECATED)"
+    if status == "reserved":
+        return f"{name} (RESERVED)"
+    return name
+
+
 async def _probe_frame(
     gcs_system,
     items: list,
@@ -145,39 +170,27 @@ async def _probe_frame(
     download_fn,
     frame: int,
     name: str,
-    status: str,
-) -> None:
+) -> str:
+    """
+    Probe one frame value and return a one-line human-readable result summary.
+
+    Returns a string describing the outcome.  Raises pytest.fail() if the
+    outcome is internally inconsistent (upload accepted but download broken,
+    or altitude reference changed without z conversion).
+    """
     try:
         async with asyncio.timeout(TRANSFER_TIMEOUT_S):
             await upload_fn(items)
-        accepted = True
     except MissionRawError as exc:
-        accepted = False
-        rejection_msg = str(exc)
-
-    if not accepted:
-        log.info("frame=%d (%s) [%s] REJECTED: %s", frame, name, status.upper(), rejection_msg)
-        return  # PASS — clean rejection is always valid
-
-    if status == "deprecated":
-        log.warning(
-            "frame=%d (%s) [DEPRECATED] accepted by flight stack. "
-            "Deprecated frames should preferably be rejected or gracefully upgraded.",
-            frame, name,
-        )
-    elif status == "reserved":
-        log.warning(
-            "frame=%d (%s) [RESERVED] accepted by flight stack. "
-            "This frame value is reserved in the MAVLink spec.",
-            frame, name,
-        )
+        return f"REJECTED: {_exc_reason(exc)}"
 
     try:
         async with asyncio.timeout(TRANSFER_TIMEOUT_S):
             downloaded = await download_fn()
     except MissionRawError as exc:
         pytest.fail(
-            f"frame={frame} ({name}): upload succeeded but download failed — {exc}. "
+            f"frame={frame} ({name}): upload succeeded but download failed — "
+            f"{_exc_reason(exc)}. "
             "Flight stacks MUST return accepted missions on download."
         )
 
@@ -195,28 +208,23 @@ async def _probe_frame(
     dl = downloaded[0]
     dl_frame = dl.frame
     if dl_frame == frame:
-        log.info("frame=%d (%s) [%s] ACCEPTED, round-trip frame preserved (z=%.3f)",
-                 frame, name, status.upper(), dl.z)
-    else:
-        dl_name = _FRAME_NAME.get(dl_frame, str(dl_frame))
-        log.info(
-            "frame=%d (%s) [%s] ACCEPTED, stored/returned as %s "
-            "(flight-stack transform or INT upgrade); uploaded z=%.3f, downloaded z=%.3f",
-            frame, name, status.upper(), dl_name, items[0].z, dl.z,
-        )
-        upload_rel = frame in _RELATIVE_ALT_FRAMES
-        dl_rel = dl_frame in _RELATIVE_ALT_FRAMES
-        if upload_rel != dl_rel and (frame in _ABSOLUTE_ALT_FRAMES or frame in _RELATIVE_ALT_FRAMES):
-            upload_z = items[0].z
-            if math.isclose(upload_z, dl.z, rel_tol=1e-3, abs_tol=1e-3):
-                pytest.fail(
-                    f"frame={frame} ({name}): altitude reference changed "
-                    f"({'relative' if upload_rel else 'absolute'} → "
-                    f"{'relative' if dl_rel else 'absolute'}, {name} → {dl_name}) "
-                    f"but z was not converted (uploaded z={upload_z:.3f}, "
-                    f"downloaded z={dl.z:.3f}). "
-                    "Flight stack must convert z when changing altitude reference."
-                )
+        return f"ACCEPTED, frame preserved (z={dl.z:.3f})"
+
+    dl_name = _FRAME_NAME.get(dl_frame, str(dl_frame))
+    upload_rel = frame in _RELATIVE_ALT_FRAMES
+    dl_rel = dl_frame in _RELATIVE_ALT_FRAMES
+    if upload_rel != dl_rel and (frame in _ABSOLUTE_ALT_FRAMES or frame in _RELATIVE_ALT_FRAMES):
+        upload_z = items[0].z
+        if math.isclose(upload_z, dl.z, rel_tol=1e-3, abs_tol=1e-3):
+            pytest.fail(
+                f"frame={frame} ({name}): altitude reference changed "
+                f"({'relative' if upload_rel else 'absolute'} → "
+                f"{'relative' if dl_rel else 'absolute'}, {name} → {dl_name}) "
+                f"but z was not converted (uploaded z={upload_z:.3f}, "
+                f"downloaded z={dl.z:.3f}). "
+                "Flight stack must convert z when changing altitude reference."
+            )
+    return f"ACCEPTED, stored as {dl_name} (z={dl.z:.3f})"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +240,35 @@ async def _probe_frame(
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture(scope="class", loop_scope="class")
-async def gcs_system_cls(gcs_mavsdk_server, request):
+async def mock_stack_cls(request):
+    """
+    Class-scoped MockFlightStack for frame-type tests.
+
+    Paired mode: one MockFlightStack instance covers all 21 parametrised tests
+    in the class (avoids gRPC resource exhaustion from per-test System churn).
+    Standalone mode (``--drone-address`` given): no-op.
+    """
+    drone_address = request.config.getoption("--drone-address")
+    if drone_address is not None:
+        yield None
+        return
+
+    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
+    await system.connect()
+
+    stack = MockFlightStack()
+    task = asyncio.create_task(stack.run(system))
+    await asyncio.sleep(0.5)  # let gRPC subscriptions establish
+    yield stack
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest_asyncio.fixture(scope="class", loop_scope="class")
+async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
     timeout_s = int(request.config.getoption("--connection-timeout"))
     system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
     await system.connect()
@@ -244,6 +280,9 @@ async def gcs_system_cls(gcs_mavsdk_server, request):
 # Matrix test classes
 # ---------------------------------------------------------------------------
 
+_FMT = "PASS | %-8s | frame=%2d %-40s | %s"
+
+
 @pytest.mark.asyncio(loop_scope="class")
 @pytest.mark.frames
 class TestFlightMissionFrames:
@@ -252,12 +291,13 @@ class TestFlightMissionFrames:
     @pytest.mark.parametrize("frame,name,status", FRAME_CASES)
     async def test_frame(self, gcs_system_cls, frame, name, status):
         try:
-            await _probe_frame(
+            summary = await _probe_frame(
                 gcs_system_cls, [_make_item(frame, mission_type=0)],
                 gcs_system_cls.mission_raw.upload_mission,
                 gcs_system_cls.mission_raw.download_mission,
-                frame, name, status,
+                frame, name,
             )
+            log.info(_FMT, "MISSION", frame, _label(name, status), summary)
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
@@ -270,12 +310,13 @@ class TestGeofenceFrames:
     @pytest.mark.parametrize("frame,name,status", FRAME_CASES)
     async def test_frame(self, gcs_system_cls, frame, name, status):
         try:
-            await _probe_frame(
+            summary = await _probe_frame(
                 gcs_system_cls, [_make_item(frame, mission_type=1)],
                 gcs_system_cls.mission_raw.upload_geofence,
                 gcs_system_cls.mission_raw.download_geofence,
-                frame, name, status,
+                frame, name,
             )
+            log.info(_FMT, "GEOFENCE", frame, _label(name, status), summary)
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
@@ -288,12 +329,13 @@ class TestRallyPointFrames:
     @pytest.mark.parametrize("frame,name,status", FRAME_CASES)
     async def test_frame(self, gcs_system_cls, frame, name, status):
         try:
-            await _probe_frame(
+            summary = await _probe_frame(
                 gcs_system_cls, [_make_item(frame, mission_type=2)],
                 gcs_system_cls.mission_raw.upload_rally_points,
                 gcs_system_cls.mission_raw.download_rallypoints,
-                frame, name, status,
+                frame, name,
             )
+            log.info(_FMT, "RALLY", frame, _label(name, status), summary)
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
@@ -337,7 +379,8 @@ class TestMissionFrame:
                 async with asyncio.timeout(TRANSFER_TIMEOUT_S):
                     await gcs_system_cls.mission_raw.upload_mission([item])
             except MissionRawError as exc:
-                log.info("MAV_FRAME_MISSION + DO_CHANGE_SPEED: rejected — %s", exc)
+                log.info(_FMT, "MISSION", 2, "MAV_FRAME_MISSION",
+                         f"REJECTED: {_exc_reason(exc)} (DO_CHANGE_SPEED)")
                 return  # PASS
 
             downloaded = await gcs_system_cls.mission_raw.download_mission()
@@ -346,10 +389,8 @@ class TestMissionFrame:
                 f"param1 corrupted: expected 5.0, got {downloaded[0].param1}. "
                 "MAV_FRAME_MISSION values must be passed unscaled."
             )
-            log.info(
-                "MAV_FRAME_MISSION + DO_CHANGE_SPEED: accepted, param1=%.4f preserved",
-                downloaded[0].param1,
-            )
+            log.info(_FMT, "MISSION", 2, "MAV_FRAME_MISSION",
+                     f"ACCEPTED, DO_CHANGE_SPEED param1={downloaded[0].param1:.4f} preserved")
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
@@ -376,22 +417,19 @@ class TestMissionFrame:
                 async with asyncio.timeout(TRANSFER_TIMEOUT_S):
                     await gcs_system_cls.mission_raw.upload_mission([item])
             except MissionRawError as exc:
-                log.info("MAV_FRAME_MISSION + NAV_WAYPOINT (misuse): rejected — %s", exc)
-                return  # PASS — safest behavior
+                log.info(_FMT, "MISSION", 2, "MAV_FRAME_MISSION",
+                         f"REJECTED: {_exc_reason(exc)} (NAV_WAYPOINT misuse, safest outcome)")
+                return  # PASS
 
             downloaded = await gcs_system_cls.mission_raw.download_mission()
             if downloaded:
                 dl = downloaded[0]
-                log.warning(
-                    "MAV_FRAME_MISSION + NAV_WAYPOINT (misuse): ACCEPTED — "
-                    "downloaded frame=%s x=%d y=%d z=%.1f. "
-                    "If treated as a navigation target these coordinates are incorrect.",
-                    _FRAME_NAME.get(dl.frame, str(dl.frame)), dl.x, dl.y, dl.z,
-                )
+                dl_frame_name = _FRAME_NAME.get(dl.frame, str(dl.frame))
+                log.info(_FMT, "MISSION", 2, "MAV_FRAME_MISSION",
+                         f"ACCEPTED, NAV_WAYPOINT misuse ← stored as {dl_frame_name} "
+                         f"x={dl.x} y={dl.y} z={dl.z:.1f} (coordinates not lat/lon)")
             else:
-                log.warning(
-                    "MAV_FRAME_MISSION + NAV_WAYPOINT (misuse): upload accepted "
-                    "but download returned empty."
-                )
+                log.info(_FMT, "MISSION", 2, "MAV_FRAME_MISSION",
+                         "ACCEPTED then download empty (NAV_WAYPOINT misuse)")
         finally:
             await clear_all_mission_types(gcs_system_cls)
