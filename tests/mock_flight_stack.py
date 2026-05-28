@@ -33,12 +33,30 @@ log = logging.getLogger(__name__)
 _ACCEPTED = 0
 _UNSUPPORTED_FRAME = 2
 
+# MAV_RESULT values (MAVLink master common.xml)
+MAV_RESULT_ACCEPTED             = 0
+MAV_RESULT_TEMPORARILY_REJECTED = 1
+MAV_RESULT_DENIED               = 2
+MAV_RESULT_UNSUPPORTED          = 3
+MAV_RESULT_FAILED               = 4
+MAV_RESULT_IN_PROGRESS          = 5
+MAV_RESULT_CANCELLED            = 6  # defined in MAVLink master; absent from pymavlink 2.4.49
+MAV_RESULT_COMMAND_LONG_ONLY    = 7
+MAV_RESULT_COMMAND_INT_ONLY     = 8
+
 # Default: MAV_PROTOCOL_CAPABILITY_MISSION_INT (bit 2)
 DEFAULT_CAPABILITY_BITS: int = 4
 
 # MAVLink identity of the GCS peer (sysid=255, compid=1 in paired loopback)
 _GCS_SYSID = 255
 _GCS_COMPID = 1
+
+def _f(val, default: float = 0.0) -> float:
+    """Convert a JSON field value to float, treating None (JSON null) as NaN."""
+    if val is None:
+        return float("nan")
+    return float(val)
+
 
 # Message types the mock needs to subscribe to
 _MSG_TYPES = (
@@ -47,7 +65,8 @@ _MSG_TYPES = (
     "MISSION_REQUEST_INT",  # GCS → drone: requests one item during download
     "MISSION_ITEM_INT",     # GCS → drone: delivers one item during upload
     "MISSION_CLEAR_ALL",    # GCS → drone: clear stored missions
-    "COMMAND_LONG",         # GCS → drone: capability request (cmd 512, p1=148)
+    "COMMAND_LONG",         # GCS → drone: capability request + direct commands
+    "COMMAND_INT",          # GCS → drone: direct command with location params
 )
 
 
@@ -62,16 +81,22 @@ class MockFlightStack:
         Default 4 (MAV_PROTOCOL_CAPABILITY_MISSION_INT).
     item_request_delay_s : float
         Seconds to wait before sending each MISSION_REQUEST_INT during upload.
-        Simulates a slow autopilot requesting items from the GCS.
     item_response_delay_s : float
         Seconds to wait before sending each MISSION_ITEM_INT during download.
-        Simulates a slow autopilot serving items to the GCS.
     drop_responses : dict[str, int] | None
-        ``{message_name: N}`` — silently skip the first N outgoing messages of
-        that type to force GCS retries.  Example: ``{"MISSION_REQUEST_INT": 2}``.
+        ``{message_name: N}`` — silently skip the first N outgoing mission
+        protocol messages of that type.  Example: ``{"MISSION_REQUEST_INT": 2}``.
     rejected_frames : set[int] | None
-        Frame values to reject with MISSION_ACK(UNSUPPORTED_FRAME) when seen
-        in an upload.  The rejection happens after the offending item arrives.
+        Frame values to reject with MISSION_ACK(UNSUPPORTED_FRAME) on upload.
+    command_results : dict[int, int] | None
+        ``{command_id: MAV_RESULT}`` — result to return in COMMAND_ACK for each
+        MAV_CMD.  Commands not listed return MAV_RESULT_ACCEPTED (0) by default.
+    drop_command_acks : dict[int, int] | None
+        ``{command_id: N}`` — silently drop the first N COMMAND_ACKs for that
+        command, forcing the GCS to retransmit.
+    command_in_progress : dict[int, list[int]] | None
+        ``{command_id: [p0, p1, ...]}`` — emit one IN_PROGRESS ACK per entry
+        (with the given progress value) before sending the final result ACK.
     """
 
     def __init__(
@@ -81,12 +106,20 @@ class MockFlightStack:
         item_response_delay_s: float = 0.0,
         drop_responses: dict | None = None,
         rejected_frames: set | None = None,
+        command_results: dict | None = None,
+        drop_command_acks: dict | None = None,
+        command_in_progress: dict | None = None,
     ) -> None:
         self.capability_bits = capability_bits
         self.item_request_delay_s = item_request_delay_s
         self.item_response_delay_s = item_response_delay_s
         self._drop_remaining: dict[str, int] = dict(drop_responses or {})
         self.rejected_frames: set[int] = set(rejected_frames or set())
+        self._command_results: dict[int, int] = dict(command_results or {})
+        self._drop_ack_remaining: dict[int, int] = dict(drop_command_acks or {})
+        self._command_in_progress: dict[int, list[int]] = dict(command_in_progress or {})
+        # Records every received COMMAND_INT and non-capability COMMAND_LONG
+        self.received_commands: list[dict] = []
         # mission_type (int) → list of item field dicts
         self._store: dict[int, list[dict]] = {}
         self._queues: dict[str, asyncio.Queue] = {}
@@ -114,7 +147,8 @@ class MockFlightStack:
             asyncio.create_task(self._upload_loop(system)),
             asyncio.create_task(self._download_loop(system)),
             asyncio.create_task(self._clear_loop(system)),
-            asyncio.create_task(self._capability_loop(system)),
+            asyncio.create_task(self._command_long_dispatch_loop(system)),
+            asyncio.create_task(self._command_int_loop(system)),
         ]
         try:
             await asyncio.gather(*all_tasks)
@@ -332,9 +366,9 @@ class MockFlightStack:
             except Exception as exc:
                 log.warning("Clear handler error: %s", exc, exc_info=True)
 
-    # ----------------------------------------------------- capability loop --
+    # --------------------------------------------- command_long dispatch ----
 
-    async def _capability_loop(self, system: System) -> None:
+    async def _command_long_dispatch_loop(self, system: System) -> None:
         while True:
             try:
                 msg = await self._recv("COMMAND_LONG")
@@ -357,7 +391,83 @@ class MockFlightStack:
                         "os_custom_version": [0, 0, 0, 0, 0, 0, 0, 0],
                     })
                     log.debug("Capability response: bits=0x%x", self.capability_bits)
+                else:
+                    confirmation = int(fields.get("confirmation", 0))
+                    record = {
+                        "type": "COMMAND_LONG",
+                        "command": cmd,
+                        "confirmation": confirmation,
+                        "param1": _f(fields.get("param1")),
+                        "param2": _f(fields.get("param2")),
+                        "param3": _f(fields.get("param3")),
+                        "param4": _f(fields.get("param4")),
+                        "param5": _f(fields.get("param5")),
+                        "param6": _f(fields.get("param6")),
+                        "param7": _f(fields.get("param7")),
+                    }
+                    self.received_commands.append(record)
+                    await self._send_command_ack(system, cmd)
+                    log.debug("COMMAND_LONG cmd=%d confirmation=%d", cmd, confirmation)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.warning("Capability handler error: %s", exc, exc_info=True)
+                log.warning("Command long dispatch error: %s", exc, exc_info=True)
+
+    # ------------------------------------------------------- command_int loop --
+
+    async def _command_int_loop(self, system: System) -> None:
+        while True:
+            try:
+                msg = await self._recv("COMMAND_INT")
+                fields = json.loads(msg.fields_json)
+                cmd = int(fields.get("command", 0))
+                record = {
+                    "type": "COMMAND_INT",
+                    "command": cmd,
+                    "frame": int(fields.get("frame", 0)),
+                    "param1": _f(fields.get("param1")),
+                    "param2": _f(fields.get("param2")),
+                    "param3": _f(fields.get("param3")),
+                    "param4": _f(fields.get("param4")),
+                    "x": int(fields.get("x", 0)),
+                    "y": int(fields.get("y", 0)),
+                    "z": _f(fields.get("z")),
+                }
+                self.received_commands.append(record)
+                await self._send_command_ack(system, cmd)
+                log.debug("COMMAND_INT cmd=%d frame=%d", cmd, record["frame"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Command int handler error: %s", exc, exc_info=True)
+
+    async def _send_command_ack(self, system: System, cmd: int) -> None:
+        """Send COMMAND_ACK for cmd, honouring drop and in-progress configuration."""
+        n_drop = self._drop_ack_remaining.get(cmd, 0)
+        if n_drop > 0:
+            self._drop_ack_remaining[cmd] = n_drop - 1
+            log.debug("Dropping COMMAND_ACK for cmd=%d (%d remaining)", cmd, n_drop - 1)
+            return
+
+        progress_values = self._command_in_progress.get(cmd, [])
+        for progress in progress_values:
+            await self._send(system, "COMMAND_ACK", {
+                "command": cmd,
+                "result": MAV_RESULT_IN_PROGRESS,
+                "progress": int(progress),
+                "result_param2": 0,
+                "target_system": _GCS_SYSID,
+                "target_component": _GCS_COMPID,
+            })
+            await asyncio.sleep(0.05)
+
+        result = self._command_results.get(cmd, MAV_RESULT_ACCEPTED)
+        await self._send(system, "COMMAND_ACK", {
+            "command": cmd,
+            "result": result,
+            "progress": 255,
+            "result_param2": 0,
+            "target_system": _GCS_SYSID,
+            "target_component": _GCS_COMPID,
+        })
+        log.debug("COMMAND_ACK cmd=%d result=%d", cmd, result)

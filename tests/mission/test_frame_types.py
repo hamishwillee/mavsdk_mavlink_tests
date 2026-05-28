@@ -9,15 +9,23 @@ A test PASSES for any internally-consistent outcome.
 Pass conditions
 ---------------
 - Upload rejected with MissionRawError  → PASS (rejection is valid for any frame)
-- Upload accepted AND download returns correct item count with finite z  → PASS
+- Upload accepted, frame preserved on download  → PASS
+- Upload accepted, frame changed only by INT-encoding within the same altitude
+  category  → PASS (acceptable, e.g. GLOBAL→GLOBAL_INT or
+  GLOBAL_RELATIVE_ALT→GLOBAL_RELATIVE_ALT_INT when using MISSION_ITEM_INT)
 
 Fail conditions
 ---------------
 - Upload accepted but download raises MissionRawError  → FAIL (inconsistent)
 - Upload accepted but download returns wrong item count  → FAIL (data loss)
 - Upload raises a non-MissionRawError exception  → propagates as an error
-- Upload accepted, frame changed between relative-alt and absolute-alt, but z
-  unchanged  → FAIL (altitude value must be converted when reference changes)
+- Upload accepted but altitude reference category changed on download  → FAIL
+  (e.g. GLOBAL_RELATIVE_ALT stored as GLOBAL_INT changes what altitude the
+  autopilot flies — the mission will not behave as specified).
+  The only acceptable frame changes are within the same altitude category:
+    GLOBAL (0) ↔ GLOBAL_INT (5)
+    GLOBAL_RELATIVE_ALT (3) ↔ GLOBAL_RELATIVE_ALT_INT (6)
+    GLOBAL_TERRAIN_ALT (10) ↔ GLOBAL_TERRAIN_ALT_INT (11)
 
 Deprecated frames (LOCAL_ENU=4, BODY_NED=8, BODY_OFFSET_NED=9)
 ----------------------------------------------------------------
@@ -123,9 +131,14 @@ _LOCAL_Y = 200
 # Frames where x/y encode lat/lon × 1e7
 _GLOBAL_FRAMES = {0, 3, 5, 6, 10, 11}
 
-# Altitude-semantic categories (global frames only)
-_RELATIVE_ALT_FRAMES = {3, 6, 10, 11}   # z relative to home or terrain
-_ABSOLUTE_ALT_FRAMES = {0, 5}            # z absolute (AMSL)
+# Acceptable same-meaning frame changes when using MISSION_ITEM_INT:
+# only INT-encoding variants within the same altitude category are allowed.
+# Any change that crosses a category boundary alters mission behaviour and is a FAIL.
+_ALT_INT_EQUIV: tuple[frozenset, ...] = (
+    frozenset({0, 5}),    # GLOBAL ↔ GLOBAL_INT            (absolute AMSL)
+    frozenset({3, 6}),    # GLOBAL_RELATIVE_ALT ↔ …_INT    (relative to home)
+    frozenset({10, 11}),  # GLOBAL_TERRAIN_ALT ↔ …_INT     (relative to terrain)
+)
 
 
 def _make_item(frame: int, mission_type: int, seq: int = 0, current: int = 1) -> MissionItem:
@@ -170,6 +183,7 @@ async def _probe_frame(
     download_fn,
     frame: int,
     name: str,
+    probe_seq: int = 0,
 ) -> str:
     """
     Probe one frame value and return a one-line human-readable result summary.
@@ -197,34 +211,35 @@ async def _probe_frame(
     assert downloaded, (
         f"frame={frame} ({name}): upload succeeded but download returned empty list."
     )
-    assert len(downloaded) == len(items), (
+    assert len(downloaded) >= probe_seq + 1, (
         f"frame={frame} ({name}): uploaded {len(items)} item(s) "
-        f"but downloaded {len(downloaded)}."
+        f"but downloaded {len(downloaded)} (expected at least {probe_seq + 1})."
     )
     assert all(math.isfinite(d.z) for d in downloaded), (
         f"frame={frame} ({name}): downloaded z values contain non-finite values."
     )
 
-    dl = downloaded[0]
+    dl = next((d for d in downloaded if d.seq == probe_seq), None)
+    assert dl is not None, (
+        f"frame={frame} ({name}): probe item with seq={probe_seq} not found "
+        f"in download (seqs present: {[d.seq for d in downloaded]})."
+    )
     dl_frame = dl.frame
     if dl_frame == frame:
         return f"ACCEPTED, frame preserved (z={dl.z:.3f})"
 
     dl_name = _FRAME_NAME.get(dl_frame, str(dl_frame))
-    upload_rel = frame in _RELATIVE_ALT_FRAMES
-    dl_rel = dl_frame in _RELATIVE_ALT_FRAMES
-    if upload_rel != dl_rel and (frame in _ABSOLUTE_ALT_FRAMES or frame in _RELATIVE_ALT_FRAMES):
-        upload_z = items[0].z
-        if math.isclose(upload_z, dl.z, rel_tol=1e-3, abs_tol=1e-3):
-            pytest.fail(
-                f"frame={frame} ({name}): altitude reference changed "
-                f"({'relative' if upload_rel else 'absolute'} → "
-                f"{'relative' if dl_rel else 'absolute'}, {name} → {dl_name}) "
-                f"but z was not converted (uploaded z={upload_z:.3f}, "
-                f"downloaded z={dl.z:.3f}). "
-                "Flight stack must convert z when changing altitude reference."
-            )
-    return f"ACCEPTED, stored as {dl_name} (z={dl.z:.3f})"
+    same_category = any(frame in pair and dl_frame in pair for pair in _ALT_INT_EQUIV)
+    if not same_category:
+        pytest.fail(
+            f"frame={frame} ({name}): altitude reference category changed on storage "
+            f"({name} → {dl_name}). "
+            "Only INT-encoding changes within the same altitude category are acceptable "
+            "(GLOBAL↔GLOBAL_INT, GLOBAL_RELATIVE_ALT↔GLOBAL_RELATIVE_ALT_INT, "
+            "GLOBAL_TERRAIN_ALT↔GLOBAL_TERRAIN_ALT_INT). "
+            "Changing altitude reference changes mission behaviour."
+        )
+    return f"ACCEPTED, INT-encoded as {dl_name} (z={dl.z:.3f})"
 
 
 # ---------------------------------------------------------------------------
@@ -289,13 +304,20 @@ class TestFlightMissionFrames:
     """Probe all MAV_FRAME values for flight missions (mission_type=0)."""
 
     @pytest.mark.parametrize("frame,name,status", FRAME_CASES)
-    async def test_frame(self, gcs_system_cls, frame, name, status):
+    async def test_frame(self, gcs_system_cls, home_item_for_mission, frame, name, status):
+        if home_item_for_mission is not None:
+            items = [home_item_for_mission, _make_item(frame, mission_type=0, seq=1, current=0)]
+            probe_seq = 1
+        else:
+            items = [_make_item(frame, mission_type=0)]
+            probe_seq = 0
         try:
             summary = await _probe_frame(
-                gcs_system_cls, [_make_item(frame, mission_type=0)],
+                gcs_system_cls, items,
                 gcs_system_cls.mission_raw.upload_mission,
                 gcs_system_cls.mission_raw.download_mission,
                 frame, name,
+                probe_seq=probe_seq,
             )
             log.info(_FMT, "MISSION", frame, _label(name, status), summary)
         finally:

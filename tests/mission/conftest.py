@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -66,6 +69,81 @@ def geofence_items():
 @pytest.fixture(scope="session")
 def rally_items():
     return load_plan("simple_rally.json")
+
+
+# ---------------------------------------------------------------------------
+# Home-slot detection
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def requires_home_slot(gcs_mavsdk_server, request) -> bool:
+    """
+    True if the connected flight stack requires a home item at seq=0.
+
+    Probes by uploading a single NAV_WAYPOINT at seq=0.  ArduCopter rejects
+    this with TOO_MANY_MISSION_ITEMS because seq=0 is reserved for the home
+    position.  In that case, flight-mission tests prepend a home item.
+
+    In paired mode (mock) the probe is skipped — the mock accepts everything.
+    """
+    if request.config.getoption("--drone-address") is None:
+        return False
+
+    connection_timeout = int(request.config.getoption("--connection-timeout"))
+
+    script = textwrap.dedent(f"""\
+        import asyncio, sys
+        from mavsdk import System
+        from mavsdk.mission_raw import MissionItem, MissionRawError
+        async def probe():
+            system = System(mavsdk_server_address="localhost", port={gcs_mavsdk_server})
+            await system.connect()
+            async def _wait():
+                async for state in system.core.connection_state():
+                    if state.is_connected:
+                        return
+            await asyncio.wait_for(_wait(), timeout={connection_timeout})
+            item = MissionItem(seq=0, frame=5, command=16, current=1, autocontinue=1,
+                               param1=0.0, param2=0.0, param3=0.0, param4=0.0,
+                               x=473977000, y=85456000, z=10.0, mission_type=0)
+            try:
+                await asyncio.wait_for(
+                    system.mission_raw.upload_mission([item]), timeout=30
+                )
+                await asyncio.wait_for(system.mission_raw.clear_mission(), timeout=10)
+                sys.exit(0)
+            except MissionRawError:
+                sys.exit(1)
+        asyncio.run(probe())
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        timeout=connection_timeout + 60,
+    )
+    return result.returncode != 0
+
+
+@pytest.fixture(scope="session")
+def home_item_for_mission(requires_home_slot, request):
+    """
+    Return a home MissionItem (seq=0) to prepend to flight missions, or None.
+
+    None when the stack does not require a home slot (PX4, mock).
+    MissionItem when required (ArduCopter).  Coordinates come from
+    ``--home-lat`` / ``--home-lon`` / ``--home-alt`` CLI options.
+    """
+    if not requires_home_slot:
+        return None
+    home_lat = request.config.getoption("--home-lat")
+    home_lon = request.config.getoption("--home-lon")
+    home_alt = request.config.getoption("--home-alt")
+    return MissionItem(
+        seq=0, frame=5, command=16,
+        current=0, autocontinue=1,
+        param1=0.0, param2=0.0, param3=0.0, param4=0.0,
+        x=int(home_lat * 1e7), y=int(home_lon * 1e7), z=float(home_alt),
+        mission_type=0,
+    )
 
 
 # ---------------------------------------------------------------------------

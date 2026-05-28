@@ -1,0 +1,38 @@
+{
+  "_comment": "Hypothesis-test plan: does ArduCopter accept MAV_FRAME_GLOBAL (frame=0) when a home item is explicitly provided at seq=0?",
+  "_coordinate_note": "x = latitude * 1e7 (int32), y = longitude * 1e7 (int32), z = altitude in metres (float)",
+  "_home_note": "Coordinates match the ArduCopter SITL default home: 37.6234N, 122.0811W (--home=37.6234,-122.0811,0,270)",
+  "mission_type": 0,
+  "items": [
+    {
+      "_description": "Explicit home position — seq=0, frame=0 (GLOBAL), altitude 0m AMSL",
+      "seq": 0,
+      "frame": 0,
+      "command": 16,
+      "current": 0,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 0.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 376234000,
+      "y": -1220811000,
+      "z": 0.0
+    },
+    {
+      "_description": "Test waypoint ~111m north of home, frame=0 (GLOBAL), 50m AMSL",
+      "seq": 1,
+      "frame": 0,
+      "command": 16,
+      "current": 1,
+      "autocontinue": 1,
+      "param1": 0.0,
+      "param2": 0.0,
+      "param3": 0.0,
+      "param4": 0.0,
+      "x": 376244000,
+      "y": -1220811000,
+      "z": 50.0
+    }
+  ]
+}

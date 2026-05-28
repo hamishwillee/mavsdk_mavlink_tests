@@ -3,6 +3,27 @@
 This file records protocol behaviour, design decisions, and change-tracking
 notes for use in future Claude sessions.
 
+Detailed notes for each test subtree live in their own CLAUDE.md files:
+- `tests/mission/CLAUDE.md` — mission protocol, frame type tables, MAV_CMD methodology
+- `tests/mission/nav_takeoff/CLAUDE.md` — NAV_TAKEOFF storage test results (all stacks)
+- `tests/command/CLAUDE.md` — command protocol, MAV_RESULT values, per-stack command notes
+
+## Conventions
+
+- **Test logs**: always write to the `logs/` directory at the repo root (e.g. `logs/test_arducopter_20260524.log`).
+- **README synchronisation**: the root `README.md` and `tests/mission/README.md` must both be kept up to date whenever autopilot behaviour changes, new tests are added, or test result counts change.  The subfolder README carries the detailed per-frame comparison tables; the root README carries the high-level summary.  Update both together.
+- **Test timeouts**: every test must be protected against hanging indefinitely. Use `asyncio.wait_for()` (or `asyncio.timeout()`) inside async helpers to guard individual MAVLink round-trips. The global `pytest-timeout` default (120 s in `pytest.ini`) covers the whole test function as a safety net.  Override with `@pytest.mark.timeout(N)` (or a module-level `pytestmark`) only for tests that legitimately need more:
+  - Protocol tests (mission upload/download, COMMAND_ACK): no override needed — completes well within 120 s.
+  - Command protocol class-based tests (`TestCommandProtocol`, `TestNavTakeoffCommand`): `@pytest.mark.timeout(300)` — class-scoped fixture setup (up to 60 s connection) + 8–9 tests with 5 s ACK timeout each.
+  - Flight tests (`test_flight.py`): `pytestmark = pytest.mark.timeout(360)` — arming (60 s) + takeoff (90 s) + RTL/land (120 s) + margin.
+  - Command survey (`test_survey.py`): `@pytest.mark.timeout(900)` — 168 commands × up to 5 s each.
+  When adding a new test that could legitimately exceed 120 s, add the override and document the reason.  A test that hangs without timing out is a bug — investigate whether an `asyncio.wait_for()` guard is missing inside the test or a helper it calls.
+- **MAVLink spec discrepancies**: When observed flight-stack behaviour contradicts the official MAVLink documentation (mavlink.io), note the discrepancy explicitly in:
+  1. The test log output (`log.warning` with "DOC DISCREPANCY:" prefix).
+  2. The relevant README results table with a footnote.
+  3. CLAUDE.md under the affected autopilot's behaviour section.
+  Open an issue at https://github.com/mavlink/mavlink/issues if the spec is demonstrably wrong or ambiguous.  Do not assume the stack is wrong — it may be that the spec lags the implementation.
+
 ## Project purpose
 
 MAVLink protocol conformance tests, using MAVSDK-Python as the MAVLink
@@ -11,15 +32,23 @@ transport.  The initial focus is the mission protocol (common.xml).
 ## Architecture
 
 ```
-conftest.py              CLI options: --drone-address, --connection-timeout
-tests/conftest.py        GCS (gcs_system) and drone (drone_system) fixtures
+conftest.py              CLI options: --drone-address, --connection-timeout, --mavlink-definitions-dir, --vehicle-type, --autopilot,
+                           --ardupilot-sitl, --ardupilot-model, --px4-sitl, --px4-model, --home-lat/lon/alt
+tests/conftest.py        GCS (gcs_system) and drone (drone_system) fixtures; autopilot probe (_autopilot_header session fixture)
 tests/mock_flight_stack.py  MockFlightStack — configurable MAVLink drone simulator
-tests/mission/
+mavlink/                 Git submodule: https://github.com/mavlink/mavlink (authoritative XML)
+tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   conftest.py            load_plan(), items_match(), clear_all_mission_types() helpers
   test_mission_client.py GCS-side tests using mission_raw plugin
   test_mission_server.py Drone-side tests using mission_raw_server plugin
   test_frame_types.py    MAV_FRAME support matrix (65 tests, stack-agnostic)
+  nav_takeoff/           NAV_TAKEOFF mission-protocol tests — see nav_takeoff/CLAUDE.md
   plans/                 JSON plan files (MISSION_ITEM_INT fields)
+tests/command/           Command protocol tests — see tests/command/CLAUDE.md
+  conftest.py            send/receive helpers (probe_command_int/long), class-scoped fixtures
+  test_survey.py         Probe all 168 MAV_CMD from common.xml; write support matrix to logs/
+  test_protocol.py       Command protocol mechanics (ACK, retry, confirmation, in-progress)
+  takeoff/               NAV_TAKEOFF via COMMAND_INT (test_command.py, README.md)
 ```
 
 ### MockFlightStack
@@ -36,16 +65,26 @@ loopback mock without a real autopilot.
 | Download | `MISSION_REQUEST_LIST` | `MISSION_COUNT` → `MISSION_ITEM_INT` × n |
 | Clear | `MISSION_CLEAR_ALL` | `MISSION_ACK(SUCCESS)` |
 | Capability | `COMMAND_LONG(cmd=512, p1=148)` | `AUTOPILOT_VERSION(capabilities=…)` |
+| Command INT | `COMMAND_INT` | `COMMAND_ACK(result, progress)` |
+| Command LONG | `COMMAND_LONG` (non-capability) | `COMMAND_ACK(result, progress)` |
 
 **Default behaviour**: accept all frames, store items exactly as received, serve
 unchanged on download, report `MAV_PROTOCOL_CAPABILITY_MISSION_INT` (bit 2 = 4).
+Returns `MAV_RESULT_ACCEPTED (0)` for all COMMAND_INT and COMMAND_LONG by default.
 
 **Configurable parameters** (constructor kwargs):
 - `capability_bits` — capabilities bitmask in AUTOPILOT_VERSION response
 - `item_request_delay_s` — per-item delay before MISSION_REQUEST_INT (upload)
 - `item_response_delay_s` — per-item delay before MISSION_ITEM_INT (download)
-- `drop_responses` — `{msg_name: N}` to silently drop first N of that outgoing message
+- `drop_responses` — `{msg_name: N}` to silently drop first N of that outgoing mission message
 - `rejected_frames` — frame values to NACK with UNSUPPORTED_FRAME on upload
+- `command_results` — `{cmd_id: MAV_RESULT}` to configure per-command ACK results
+- `drop_command_acks` — `{cmd_id: N}` to drop first N COMMAND_ACKs for that command
+- `command_in_progress` — `{cmd_id: [p0, p1, ...]}` to emit IN_PROGRESS ACKs before final ACK
+
+**`received_commands`**: list of all received COMMAND_INT and non-capability COMMAND_LONG
+messages, each as a dict with fields `type`, `command`, `frame` (COMMAND_INT only),
+`confirmation` (COMMAND_LONG only), `param1`–`param4`, `x`, `y`, `z`.
 
 **Capability response interaction**: the drone mavsdk_server binary also responds
 to AUTOPILOT_VERSION requests with its own bits (0x2000 = MAV_PROTOCOL_CAPABILITY_MAVLINK2).
@@ -53,6 +92,33 @@ to AUTOPILOT_VERSION requests with its own bits (0x2000 = MAV_PROTOCOL_CAPABILIT
 0.3 s window so both the server's and the mock's bits are reflected in the result.
 
 All tests are async (pytest-asyncio, asyncio_mode=auto).
+
+### Autopilot probe (`tests/conftest.py`)
+
+The session-scoped `_autopilot_header` autouse fixture runs once per session and logs a
+flight stack identification block to the test output and log file.  Functions:
+
+- `_probe_autopilot_async(grpc_port, timeout_s)` — creates a `System`, waits for connection,
+  calls `system.info.get_version()` (reliable: firmware version, git hash) and
+  `system.info.get_product()` (best-effort: vendor name).  ArduPilot stores git hash as ASCII
+  bytes in `flight_custom_version`; the probe ASCII-decodes these bytes before display.
+- `_format_autopilot_header(info, drone_address)` — formats the identification block.
+- `suggest_log_filename(info, config)` — derives a log filename: prefix from test path
+  (e.g. `tests/mission/test_frame_types.py` → `mission_frame_types`), autopilot and vehicle
+  type from probe result or CLI overrides, firmware version, and timestamp.
+- `_derive_log_prefix(config)` — strips `::NodeId` from `config.args`, extracts `.py` path,
+  removes `tests/` prefix and `test_` prefix, joins with `_`.
+
+**HEARTBEAT limitation**: MAVSDK's internal server handles HEARTBEAT messages before they
+reach `mavlink_direct.message("HEARTBEAT")`, so the vehicle type cannot be auto-detected
+from HEARTBEAT.  Use `--vehicle-type` CLI option to set it explicitly for correct log naming.
+
+**MAVLink enum loading**: `_MAV_AUTOPILOT`, `_MAV_TYPE`, and `_MAV_FIRMWARE_TYPE` dicts are
+populated at import time by `_load_mavlink_enum()`, which parses the bundled XML submodule
+(`mavlink/message_definitions/v1.0/common.xml` and its includes).  If the submodule is absent,
+a hardcoded fallback is used with a `log.warning`.  The XML is authoritative — loaded tables
+have all current enum entries (e.g. 21 `MAV_AUTOPILOT`, 50 `MAV_TYPE` entries) rather than
+the subset previously hardcoded.
 
 ## MAVSDK plugin choices
 
@@ -69,121 +135,37 @@ All tests are async (pytest-asyncio, asyncio_mode=auto).
 The high-level `mission` plugin is NOT used.  It abstracts away mission_type,
 geofence, and rally points, making protocol-level testing impossible.
 
-## Protocol behaviour (mission protocol)
-
-### Timeouts
-
-Per the MAVLink specification (https://mavlink.io/en/services/mission.html):
-
-| Parameter | Value |
-|-----------|-------|
-| TIMEOUT_INITIAL_RESPONSE | 1500 ms |
-| TIMEOUT_ITEM_RESPONSE    | 250 ms  |
-| MAX_RETRIES              | 5       |
-
-If these change in the spec, update:
-1. The docstring in `test_mission_client.py` (module-level).
-2. The README timeout table.
-3. The `TRANSFER_TIMEOUT_S` constant in both test files.
-
-### Capability check
-
-`MAV_PROTOCOL_CAPABILITY_MISSION_INT = 4` (bit 2 of the
-AUTOPILOT_VERSION.capabilities field).
-
-The check in `TestCapability.test_mission_int_capability` uses
-`mavlink_direct` to send `MAV_CMD_REQUEST_MESSAGE` (512) with
-`param1=148.0` (AUTOPILOT_VERSION message ID), then reads the `capabilities`
-field from the `AUTOPILOT_VERSION` response.
-
-Note: `MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES` (520) is NOT used — PX4 does
-not support command 520 and logs "command 520 unsupported".  PX4 also does not
-passively broadcast AUTOPILOT_VERSION, so the request is always required.
-
-If the autopilot does not set this bit, `mission_raw` returns
-`MissionRawResult.Result.INT_MESSAGES_NOT_SUPPORTED`.
-
-### Deprecated message handling
-
-The original (pre-MAVLink 2) upload path used:
-- MISSION_REQUEST (deprecated) instead of MISSION_REQUEST_INT
-- MISSION_ITEM (deprecated) instead of MISSION_ITEM_INT
-
-The spec requires modern GCS implementations to still handle MISSION_REQUEST
-by completing the upload (responding with MISSION_ITEM_INT).  MAVSDK does this
-transparently.
-
-Tests:
-- `TestDeprecatedMessageHandling.test_deprecated_request_yields_int_response`
-  (client) — verifies that MISSION_ITEM_INT (not MISSION_ITEM) is used in
-  the GCS response during a paired test.
-- `TestDeprecatedRequestHandling.test_respond_with_deprecated_request`
-  (server) — confirms that the upload completes even if the server triggers
-  the deprecated path.
-
-If MAVSDK removes this fallback, both tests will fail with
-`INT_MESSAGES_NOT_SUPPORTED`; update the tests and this file accordingly.
-
-### Mission types (MAV_MISSION_TYPE)
-
-| Value | Name | MAVSDK method pair |
-|-------|------|--------------------|
-| 0 | MAV_MISSION_TYPE_MISSION | upload: `upload_mission()` / download: `download_mission()` |
-| 1 | MAV_MISSION_TYPE_FENCE   | upload: `upload_geofence()` / download: `download_geofence()` |
-| 2 | MAV_MISSION_TYPE_RALLY   | upload: `upload_rally_points()` / download: `download_rallypoints()` |
-
-The rally pair has a deliberate spelling asymmetry in the MAVSDK API: upload is
-`upload_rally_points` (underscore) but download is `download_rallypoints` (no
-underscore). This is the MAVSDK API spelling, not a typo here.
-
-### Clear mission
-
-`mission_raw.clear_mission()` sends MISSION_CLEAR_ALL with **mission_type=0**
-(flight missions only — empirically verified against PX4).  It does **not**
-clear geofence (type=1) or rally points (type=2).  To clear all types, send
-raw MISSION_CLEAR_ALL messages for types 1 and 2 via `mavlink_direct`; see
-`clear_all_mission_types()` in `tests/mission/conftest.py`.
-
-`upload_mission([])` / `upload_geofence([])` / `upload_rally_points([])` all
-raise `NO_MISSION_AVAILABLE` — they are not equivalent to clearing and must
-not be used to clear stored missions.
-
-### Coordinate encoding (MISSION_ITEM_INT)
-
-- `x` = latitude  × 1e7  (int32_t)
-- `y` = longitude × 1e7  (int32_t)
-- `z` = altitude in metres (float)
-- `frame=5` (MAV_FRAME_GLOBAL_INT) — altitude absolute (AMSL); correct frame for MISSION_ITEM_INT with int32 lat/lon
-- `frame=6` (MAV_FRAME_GLOBAL_RELATIVE_ALT_INT) — altitude relative to takeoff; INT variant for MISSION_ITEM_INT
-- `frame=0` (MAV_FRAME_GLOBAL) — nominally float lat/lon, but PX4 handles this in MISSION_ITEM_INT correctly (see below)
-- `frame=3` (MAV_FRAME_GLOBAL_RELATIVE_ALT) — nominally float lat/lon; PX4 also handles this in MISSION_ITEM_INT
-
-**Frame and int_mode in PX4:** PX4 tracks whether the exchange uses MISSION_ITEM_INT via an
-internal `_int_mode` flag, set to `true` when `MISSION_ITEM_INT` is received (regardless of
-frame).  On receive, if `_int_mode=true`, x/y are decoded as `int32×1e-7` even if the frame
-field is 0 (GLOBAL) or 3 (GLOBAL_RELATIVE_ALT).  On send, frame is upgraded to the INT
-variant (0→5, 3→6) in the response.  So frame=0 in uploaded items is accepted and stored
-correctly, but PX4 always returns frame=5 on download.  Using frame=5/6 in upload items is
-more spec-correct and also causes the roundtrip frame check to succeed.
-
-### Float comparison
-
-Autopilots (especially ArduPilot) round float parameters on storage.  The
-`items_match()` helper in `tests/mission/conftest.py` uses `tol=1e-4`.  If
-new tests encounter false failures due to rounding, increase tolerance and
-update this note.
-
 ## Running modes
 
-| Mode | Command | What runs |
+SITL processes can be managed automatically using `--ardupilot-sitl` (ArduPilot) or
+`--px4-sitl` (PX4).  When supplied, the test suite starts and stops the SITL automatically.
+The `--ardupilot-model` option overrides the auto-detected model (default: `+` for copter,
+`plane` for plane, `rover` for rover).  `--px4-model` sets PX4_SIM_MODEL (default: `sihsim_quadx`).
+
+| Mode | Command | Result (2026-05-27) |
 |------|---------|-----------|
-| Paired (mock) | `pytest tests/` | 82 tests pass, 1 skipped — no autopilot needed |
-| Standalone (PX4) | `pytest tests/ --drone-address=udp://:14540` | Same 83 tests against real PX4 |
+| Paired (mock) | `pytest tests/` | 120 passed, 25 skipped |
+| Standalone (PX4 multicopter) | `pytest tests/ --drone-address=udp://:14540 --vehicle-type=quadcopter --autopilot=px4 --px4-sitl=~/github/PX4/PX4-Autopilot` (sihsim_quadx) | 84 passed, 4 failed, 1 skipped, 3 xfailed |
+| Standalone (PX4 MC — flight tests) | `pytest tests/command/takeoff/test_flight.py --drone-address=udp://:14540 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx --vehicle-type=quadcopter --autopilot=px4` | 15 passed, 2 xpassed |
+| Standalone (PX4 fixed-wing) | `pytest tests/mission/nav_takeoff/test_protocol.py --drone-address=udp://:14540 --vehicle-type=fixed_wing --autopilot=px4 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_airplane` | 16 passed, 2 failed |
+| Standalone (PX4 VTOL) | `pytest tests/mission/nav_takeoff/test_protocol.py --drone-address=udp://:14540 --vehicle-type=vtol --autopilot=px4 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_standard_vtol` | 16 passed, 2 failed |
+| Standalone (ArduCopter) | `pytest tests/ --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 --ardupilot-sitl=~/ardu_sitl/arducopter --home-lat=37.6234 --home-lon=-122.0811 --home-alt=0 --vehicle-type=copter --autopilot=ardupilot` | 76 passed, 14 failed, 1 skipped, 1 xfailed |
+| Standalone (ArduPlane fixed-wing) | `pytest tests/ --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 --ardupilot-sitl=~/ardu_sitl/arduplane --vehicle-type=fixed_wing --autopilot=ardupilot` (auto-detects model=plane) | 59 passed (frame_types), 13 passed (nav_takeoff), 15 passed + 3 skipped (command) |
+| Standalone (ArduPlane QuadPlane) | `pytest tests/ --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 --ardupilot-sitl=~/ardu_sitl/arduplane --ardupilot-model=quadplane --vehicle-type=quadplane --autopilot=ardupilot` | 56 passed (frame_types), 13 passed (nav_takeoff), 15 passed + 3 skipped (command) |
+| Standalone (ArduRover) | `pytest tests/command/ tests/mission/test_frame_types.py --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 --ardupilot-sitl=~/ardu_sitl/ardurover --ardupilot-model=rover --vehicle-type=rover --autopilot=ardupilot` | 67 passed, 13 failed, 3 skipped (4 command FAILs: NAV_TAKEOFF UNSUPPORTED; 9 frame FAILs: same altitude-category violations as ArduCopter) |
+| Standalone (PX4 multicopter — command only) | `pytest tests/command/ tests/mission/test_frame_types.py --drone-address=udp://:14540 --connection-timeout=60 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx --vehicle-type=quadcopter --autopilot=px4` | 15 passed + 3 skipped (command), 63 passed + 2 failed (frame_types: known geofence rel-alt bug) |
+
+**`--vehicle-type` and `--autopilot` options**: these labels are used in log file naming only (e.g. `mission_frame_types_ardupilot_fixed_wing_4.8.0-dev_20260526.log`).  When omitted, the autopilot probe attempts auto-detection (firmware version and git hash are reliable; vehicle type often shows UNKNOWN because MAVSDK intercepts HEARTBEAT messages before they reach `mavlink_direct`).  Always pass these explicitly for clean log filenames.
 
 **IMPORTANT**: Do not run paired-mode tests while PX4 SITL is running on the same machine.
 PX4 uses sysid=1 (same as the mock drone) and can send traffic to port 14560 after it has
 been a peer in a previous session.  This causes `_wait_for_connection` on the GCS System to
 hang indefinitely.  Always `kill <px4_pid>` before running paired tests.
+
+**Standalone PX4 peer-caching issue**: Running the full suite against PX4 while PX4 has
+previously cached the paired loopback port 14560 as a peer causes `test_gcs_sends_mission_item_int`
+to hang indefinitely.  **Fix**: always start a **fresh PX4 instance** (kill and restart) before
+running standalone tests.  A freshly started PX4 has no peer cache.
 
 Paired mode uses UDP loopback:
 - Drone sends `udpout://127.0.0.1:14560`
@@ -191,6 +173,37 @@ Paired mode uses UDP loopback:
 - Port 14560 is used deliberately (not 14540) to avoid PX4's default SDK port.
 - In paired mode, `gcs_mavsdk_server` starts `drone_mavsdk_server` first so the peer is
   already connected when the GCS begins listening.
+
+### ArduCopter SITL setup
+
+```bash
+# Download pre-built binary (one-time)
+mkdir -p ~/ardu_sitl/sitl_working
+curl -o ~/ardu_sitl/arducopter \
+  https://firmware.ardupilot.org/Copter/latest/SITL_x86_64_linux_gnu/arducopter
+chmod +x ~/ardu_sitl/arducopter
+
+# Start SITL — must run from sitl_working; parm file path is exact (no shortcut)
+cd ~/ardu_sitl/sitl_working
+~/ardu_sitl/arducopter -S -I0 --model + \
+  --home=37.6234,-122.0811,0,270 \
+  --defaults ~/github/ArduPilot/ardupilot/Tools/autotest/default_params/copter.parm
+```
+
+### ArduCopter connection reliability pitfalls
+
+Two issues that cause tests to hang indefinitely against ArduCopter SITL:
+
+**1. CLOSE-WAIT accumulation** — ArduCopter does not close its TCP socket when a
+client (mavsdk_server) disconnects abruptly.  After killing mavsdk_server, port
+5760 appears open (`ss -tlnp`) but ArduCopter is stuck in CLOSE-WAIT and will not
+send MAVLink heartbeats on a new connection.  **Fix**: restart ArduCopter SITL after
+any abrupt kill of mavsdk_server or pytest.  Check readiness with `ss -tlnp | grep 5760`.
+Do **not** use `nc -z 127.0.0.1 5760` — that creates yet another CLOSE-WAIT.
+
+**2. Missing / wrong parm file** — ArduCopter silently accepts the TCP connection,
+then panics while loading defaults and never sends a heartbeat.  The correct path
+is `~/github/ArduPilot/ardupilot/Tools/autotest/default_params/copter.parm`.
 
 ## Design decisions
 
@@ -224,6 +237,34 @@ Paired mode uses UDP loopback:
 4. **TRANSFER_TIMEOUT_S = 30 s** — Conservative upper bound for a 4-item plan
    over loopback including MAVSDK gRPC overhead.  Reduce if tests become slow.
 
+4a. **`_wait_for_connection` gRPC stream cancellation** — `system.core.connection_state()`
+    is a gRPC streaming call.  Python's asyncio cancellation works by raising
+    `CancelledError` at the next yield point.  For gRPC streams, that yield point
+    may not arrive until the next connection-state change event from the server,
+    which can be tens of seconds away.  Wrapping the `async for` loop in
+    `asyncio.wait_for` does NOT reliably bound execution time, because after the
+    timeout fires `wait_for` calls `await task` to wait for cancellation —
+    which blocks indefinitely if the gRPC stream doesn't yield.
+
+    **Fix**: run the gRPC subscription as a fire-and-forget `asyncio.create_task`.
+    Only `await` a plain `asyncio.Event` (set by the background task when connected).
+    `asyncio.wait_for(connected.wait(), timeout=N)` works correctly because `Event.wait()`
+    is pure asyncio and cancels instantly.  After the timeout (or success), cancel the
+    background task without awaiting it — the task will be cleaned up on its next I/O
+    event.  This pattern is implemented in `_wait_for_connection` in `tests/conftest.py`.
+
+4b. **PX4 SIH SITL readiness detection pitfalls** — Two bugs to avoid when detecting that PX4
+    has started the mavlink module:
+    (1) PX4 writes `"INFO  [mavlink]"` (two spaces between INFO and the bracket), not
+    `"INFO [mavlink]"` (one space).  Searching for the one-space form silently misses
+    all 45 readiness loop iterations, causing a `pytest.fail()` after 45 seconds.
+    (2) PX4 enters a `pxh>` shell-prompt refresh loop immediately after startup that
+    grows the log file at several GB per minute via repeated `[2K` (erase-line) escape
+    sequences.  Calling `log_path.read_text()` on a multi-GB file is slow and wastes
+    memory; reading only the first 64 KB is sufficient since the startup info appears
+    in the first few KB.
+    Fix: check `"INFO  [mavlink]"` (two spaces) and read at most 64 KB from the log file.
+
 5. **asyncio.timeout() over asyncio.wait_for()** — Python 3.11+ timeout
    context manager is used where available.  If Python 3.10 compatibility is
    needed, replace `asyncio.timeout(t)` with `asyncio.wait_for(..., timeout=t)`.
@@ -247,99 +288,6 @@ Paired mode uses UDP loopback:
    extracting the plan from any non-error response.  If MAVSDK-Python is updated
    to fix this (server sends NEXT, not SUCCESS, when delivering the plan), this
    helper can be replaced with a direct `incoming_mission()` call.
-
-## Autopilot-specific behaviour (PX4)
-
-Tested against PX4 mainline branch `mission_request_returns_int` with SIH
-simulator (`PX4_SIM_MODEL=sihsim_quadx`), default SIH home
-(47.397742°N, 8.545594°E).
-
-### Coordinate frame conversion (flight missions)
-
-PX4 accepts `MAV_FRAME_GLOBAL_RELATIVE_ALT` (frame=3) uploads but stores
-waypoints in local NED (frame=6) internally.  On download, items are returned
-with frame=6 and x≈0, y≈0 because the test coordinates are centred on the SIH
-home position.  The roundtrip test detects this frame change and calls
-`pytest.xfail()` rather than failing hard.
-
-**Impact:** Field-by-field roundtrip comparison is not possible with PX4
-without frame-aware coordinate conversion.
-
-### Geofence command values (PX4 vs current MAVLink spec)
-
-PX4 and pymavlink use **5000-based** fence command values, while the current
-mavlink.io online spec lists **5001-based** values.  The PX4 bundled MAVLink
-XML (`src/modules/mavlink/mavlink/message_definitions/v1.0/common.xml`) defines:
-
-| Command | PX4/pymavlink value | mavlink.io (current) |
-|---------|--------------------|-----------------------|
-| FENCE_RETURN_POINT | **5000** | 5001 |
-| FENCE_POLYGON_VERTEX_INCLUSION | **5001** | 5002 |
-| FENCE_POLYGON_VERTEX_EXCLUSION | **5002** | 5003 |
-
-The `simple_geofence.json` plan and all geofence tests use the PX4/pymavlink
-values (5000, 5001, …).  If you send the mavlink.io values (5001 for return
-point), PX4 parses cmd=5001 as `MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION`,
-computes `vertex_count = param1 + 0.5 = 0`, and immediately rejects with
-`MAV_MISSION_ERROR` ("Fence: too few vertices") — this was the root cause of
-the earlier geofence upload failures.
-
-### Geofence coordinate frame (PX4)
-
-PX4 accepts geofence items with `frame=0` (MAV_FRAME_GLOBAL) but stores them
-as `frame=5` (MAV_FRAME_GLOBAL_INT) internally.  On download, all items are
-returned with frame=5; coordinates (x, y, z) are preserved unchanged.
-The roundtrip test detects the frame change and calls `pytest.xfail()`.
-
-**Impact:** Field-by-field roundtrip comparison is not possible with PX4
-without frame-aware comparison, but upload/download of fence items works
-correctly (coordinates are preserved).
-
-### Rally points
-
-PX4 accepts `upload_rally_points()` and stores rally items as WGS84 lat/lon
-doubles (same as geofence items).  `download_rallypoints()` returns the stored
-items with frame upgraded from 0 (MAV_FRAME_GLOBAL) to 5 (MAV_FRAME_GLOBAL_INT)
-but coordinates (x, y, z) are preserved unchanged.  The roundtrip test detects
-the frame change and calls `pytest.xfail()`.
-
-Note: if PX4 is started with a stale `dataman` file from a previous session, the
-dataman slot alternation can cause the download to read from the wrong slot, returning
-x=0, y=0.  Starting with a clean `dataman` file (delete or reset between sessions)
-ensures correct behaviour.  In the test suite the PX4 process is session-scoped so
-the dataman state persists within a session; the `test_upload_rally_points` test runs
-before `test_roundtrip_rally_points` and leaves the slot in the correct state.
-
-### AUTOPILOT_VERSION request
-
-PX4 does not respond to `MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES` (520) and
-does not passively broadcast AUTOPILOT_VERSION.  Use
-`MAV_CMD_REQUEST_MESSAGE` (512) with `param1=148.0` to request it.
-
-### Frame type support (PX4)
-
-Determined by `test_frame_types.py` against PX4 SIH.
-
-**Flight missions (mission_type=0), Geofence (type=1), Rally (type=2):**
-
-| Frame | Name                          | PX4 result                                  |
-|-------|-------------------------------|---------------------------------------------|
-| 0     | MAV_FRAME_GLOBAL              | ACCEPTED; downloaded as frame=5 (INT upgrade) |
-| 1     | MAV_FRAME_LOCAL_NED           | REJECTED (UNSUPPORTED)                      |
-| 3     | MAV_FRAME_GLOBAL_RELATIVE_ALT | ACCEPTED (flight: frame=6; fence/rally: frame=5) |
-| 4     | MAV_FRAME_LOCAL_ENU [dep]     | REJECTED (UNSUPPORTED)                      |
-| 5     | MAV_FRAME_GLOBAL_INT          | ACCEPTED; frame preserved on download        |
-| 6     | MAV_FRAME_GLOBAL_RELATIVE_ALT_INT | ACCEPTED (flight: frame=6; fence/rally: frame=5) |
-| 7–12  | LOCAL/BODY frames             | REJECTED (UNSUPPORTED)                      |
-| 13–19 | RESERVED                      | REJECTED (UNSUPPORTED)                      |
-| 20–21 | LOCAL_FRD / LOCAL_FLU         | REJECTED (UNSUPPORTED)                      |
-
-**MAV_FRAME_MISSION (frame=2):**
-- `DO_CHANGE_SPEED` (non-location cmd): **ACCEPTED**, param1 preserved unscaled.
-- `NAV_WAYPOINT` (location cmd, misuse): **REJECTED** (PX4 correctly refuses MISSION frame for location commands).
-
-Note: fence/rally download frame=5 instead of 6 for frames 3 and 6 — PX4's fence/rally
-storage always uses GLOBAL_INT (frame=5) regardless of the relative-alt input frame.
 
 ## Future work / known gaps
 
@@ -388,6 +336,23 @@ These items were identified during development but deferred:
 | 2026-05-18 | Add per-test autouse teardown to TestFlightMission/TestGeofence/TestRallyPoints: each test now clears all mission types after it runs via clear_all_mission_types() in mission conftest. Fix download tests (and test_clear_flight_mission) to upload explicitly before acting — no longer order-dependent. Fix CLAUDE.md: clear_mission() sends type=0 only (not 255); geofence/rally cleared via raw mavlink_direct MISSION_CLEAR_ALL. |
 | 2026-05-18 | Add test_frame_types.py: 65-test MAV_FRAME support matrix (21 frames × 3 mission types + 2 MAV_FRAME_MISSION tests). Stack-agnostic — accepts any clean accept/reject outcome. Uses pytest_asyncio.fixture(loop_scope="class") + mark.asyncio(loop_scope="class") to share one System per class (avoids gRPC exhaustion from 65 connections). Documents PX4 frame support matrix in CLAUDE.md. |
 | 2026-05-20 | Add MockFlightStack (tests/mock_flight_stack.py): full mavlink_direct implementation of upload/download/clear/capability protocols. Rewrote conftest.py gcs_system/mock_stack fixtures to be mode-aware (paired vs standalone). Add mock_stack_cls class-scoped fixture in test_frame_types.py. All 83 tests now run in paired mode: 82 pass, 1 skip. Fix _get_autopilot_capabilities to OR-combine responses within 0.3 s window (mavsdk_server and mock both respond). Add PX4 interference warning: do not run paired tests while PX4 SITL is running. |
+| 2026-05-23 | Run full test suite against ArduCopter V4.8.0-dev SITL (pre-built binary): 79 passed, 2 failed, 1 skipped, 1 xfailed. Add ArduCopter-specific behaviour section to CLAUDE.md. New failures: test_clear_flight_mission (home waypoint retained after clear) and test_mission_frame_with_do_command (MAV_FRAME_MISSION param1 zeroed). Log saved: logs/test_arducopter_20260524_095950.log. |
+| 2026-05-24 | Prove hypothesis: ArduCopter rejects single-item flight missions (frame=0) because it requires seq=0 to carry the home position. Confirmed by test_ardu_home_hypothesis.py: uploading [home@seq=0, waypoint@seq=1] is accepted with frame preserved. Add ardu_home_mission.json plan and test. Update CLAUDE.md: add SITL reliability pitfalls (CLOSE-WAIT, wrong parm file), correct startup command, update running modes table. Add --ardupilot-sitl fixture for automated SITL management. Add test_protocol_conformance.py: home-slot-not-required conformance test (FAIL for ArduCopter). Update test_frame_types.py: session probe + home-item prepend so flight frame tests work on all platforms. |
+| 2026-05-24 | Run full test suite against all three stacks. Mock: 84 passed, 1 skipped. PX4: 79 passed, 2 failed, 1 skipped, 3 xfailed. ArduCopter (with home-slot prepend): 73 passed, 10 failed, 1 skipped, 1 xfailed — 8 new frame failures: frames 3, 6, 10, 11 for flight missions and geofence now correctly identified as altitude-category violations (previously hidden as REJECTED due to home-slot conflict). Document PX4 peer-caching hang (PX4 caches loopback port in RAM; must restart before standalone tests). Rewrite README.md with accurate test counts and autopilot behaviour tables. Update ArduCopter frame tables in CLAUDE.md. |
+| 2026-05-24 | Add test_protocol.py (7 tests, Tier 1 protocol acceptance). NAV_TAKEOFF results across 6 stacks: PX4 (multicopter/FW/VTOL all identical) 5 pass/2 fail (param1/param3 zeroed, param4 preserved); ArduCopter/ArduPlane/QuadPlane all identical 3 pass/4 fail (param3/param4 zeroed, param2 NaN rejected = spec violation, param1 preserved). Download arduplane binary. Update unused-param testing convention to NaN-first three-probe pattern. Logs: test_px4_*_nav_takeoff_20260524.log, test_arduplane_nav_takeoff_20260524.log, test_quadplane_nav_takeoff_20260524.log. |
+| 2026-05-24 | Add test_flight.py (2 tests, Tier 2 execution). test_takeoff_implicit_from_waypoint: uploads NAV_WAYPOINT with no explicit takeoff, asserts vehicle climbs to ≥85% of target altitude. test_takeoff_with_yaw: uploads NAV_TAKEOFF with param4=137°, asserts heading ≈137° after takeoff (expected PASS on PX4, FAIL on ArduPilot — param4 not stored). Both skip in mock/paired mode. Mock suite: 91 passed, 3 skipped. |
+| 2026-05-25 | Reorganise NAV_TAKEOFF tests into tests/mission/nav_takeoff/ subpackage (test_protocol.py, test_flight.py). Add 5 Tier 1 edge-case tests: param4 yaw −90° (observational), 450° (observational), 0° (assert preserved); param1 pitch 89° (observational), −10° (observational). Add 4 conditional Tier 2 tests using inline-probe pattern: test_takeoff_with_negative_yaw, test_takeoff_with_overflow_yaw, test_takeoff_with_large_pitch, test_takeoff_with_negative_pitch — each probes storage first and skips if the value was normalised on storage (execution unambiguous), proceeding only when the raw edge-case value was stored. Document conditional Tier 2 pattern in CLAUDE.md. Mock suite: 96 passed, 7 skipped. |
+| 2026-05-25 | Run all 12 Tier 1 tests (test_protocol.py) against all 6 vehicle/stack combinations. PX4 (all 3 types identical): 10 pass / 2 fail — yaw normalises −90°→270° and 450°→90° on storage; param1 zeroed for all values including 89° (PX4 does not store param1 at all). ArduPilot (all 3 types identical): 8 pass / 4 fail — negative pitch (−10°) stored as 65526° (uint16 underflow — storage bug); positive out-of-range pitch (89°) preserved raw; yaw edge cases (−90°, 450°) both become 0.0° (param4 not stored). Create tests/mission/nav_takeoff/README.md with per-test result tables. |
+| 2026-05-25 | Gap-analysis against generic MAV_CMD methodology. Add 6 Tier 1 tests: test_protocol_location_current_position (INT32_MAX sentinel), test_protocol_location_nan_altitude (observational), test_protocol_param3_flags_zero, test_protocol_param3_flags_undefined_bits (observational), test_protocol_param1_nan (observational), test_protocol_param1_pitch_very_large (observational). Add 1 conditional Tier 2 test: test_takeoff_from_current_position. Refine CLAUDE.md methodology section: add implicit/explicit range testing, bitmask/enum protocols, location sentinel tests (INT32_MAX, NaN alt), observational test conventions, vacuous-PASS annotation. Mock suite: 102 passed, 8 skipped. Run all 18 Tier 1 tests against all 6 stacks: PX4 (all 3 types) 16 pass / 2 fail; ArduCopter 13 pass / 5 fail (new: INT32_MAX NACKed — spec violation); ArduPlane FW / QuadPlane 13 pass / 5 fail (same). Update nav_takeoff/README.md with full 18-test results table. Update root README.md spec-violations table and MAV_CMD summary table. |
+| 2026-05-25 | Add `tests/command/` tree: command protocol (COMMAND_INT/COMMAND_LONG) test infrastructure parallel to existing mission protocol tests. Added `mavlink/` git submodule and `--mavlink-definitions-dir` CLI option. Extended MockFlightStack with COMMAND_INT/COMMAND_LONG handlers, MAV_RESULT constants (0–8), `received_commands` list, ACK-drop injection, and IN_PROGRESS sequence emission. Created `tests/command/conftest.py` (probe helpers using subscribe-before-send pattern to avoid race condition, retry helpers, XML command loader), `test_survey.py` (probes all 168 MAV_CMD from common.xml; writes support matrix to logs/), `test_protocol.py` (8 protocol conformance tests: ACK received, ACK echoes ID, ACCEPTED result, COMMAND_LONG ACK, confirmation increments, retry-after-dropped-ACK, IN_PROGRESS→ACCEPTED sequence, UNSUPPORTED result), `takeoff/test_command.py` (9 NAV_TAKEOFF COMMAND_INT tests), `takeoff/README.md`. Key findings: MAVSDK's `mavlink_direct.send_message` rejects NaN in COMMAND_INT float fields with INVALID_FIELD; subscribe-before-send pattern with 0.05 s settle is required. Mock suite: 119 passed, 8 skipped. |
+| 2026-05-26 | Add autopilot probe infrastructure: session-scoped `_autopilot_header` autouse fixture in `tests/conftest.py` probes the connected stack using `system.info.get_version()` (firmware version, git hash — reliable) and `system.info.get_product()` (vendor name, best-effort). MAVSDK intercepts HEARTBEAT internally so `mavlink_direct.message("HEARTBEAT")` is unreliable for vehicle type — added `--vehicle-type` and `--autopilot` CLI overrides instead. ArduPilot stores git hash as ASCII bytes in `flight_custom_version`; ASCII-decoded before display. `suggest_log_filename()` auto-derives log prefix from test path (e.g. `tests/mission/test_frame_types.py` → `mission_frame_types`). Run `test_frame_types.py` against all available stacks: Mock (65/65), ArduCopter (56/65), ArduPlane fixed-wing (59/65), ArduPlane QuadPlane (56/65). Key finding: ArduPlane fixed-wing differs from ArduCopter/QuadPlane — frame 11 REJECTED (PASS) vs ACCEPTED/FAIL; frame 13 ACCEPTED/FAIL vs REJECTED/PASS; geofence rejects almost all frames. Add ArduPlane fixed-wing and QuadPlane sections to CLAUDE.md. |
+| 2026-05-26 | Replace hardcoded `_MAV_AUTOPILOT`/`_MAV_TYPE`/`_MAV_FIRMWARE_TYPE` dicts in `tests/conftest.py` with `_load_mavlink_enum()` which parses the bundled XML submodule at import time (21/50 entries vs 5/16 hardcoded). Fallback to hardcoded values with `log.warning` when submodule absent. Add `pytest-timeout` to requirements and set global `timeout=120` in `pytest.ini`. Add `@pytest.mark.timeout(900)` to `TestCommandSurvey`, `pytestmark=timeout(360)` to flight tests. Document timeout policy in CLAUDE.md Conventions. |
+| 2026-05-26 | Automate SITL lifecycle management: add `_manage_ardupilot_sitl` (handles arducopter/arduplane/ardurover with auto-model detection and defaults .parm lookup) and `_manage_px4_sitl` session fixtures. Add `--ardupilot-sitl`, `--ardupilot-model`, `--px4-sitl`, `--px4-model` CLI options. `gcs_mavsdk_server` explicitly depends on SITL fixtures to guarantee flight stack starts before GCS connects. Fix `_clear_stale_mavsdk_servers` to kill ALL mavsdk_server processes (not just port-scanning). Fix `command_survey` log filename to include autopilot/vehicle/version info. Fix `_wait_for_connection` gRPC cancellation bug: use fire-and-forget background task + asyncio.Event instead of wrapping gRPC stream in asyncio.wait_for (gRPC streams don't respond to asyncio cancellation). Add `@pytest.mark.timeout(300)` to `TestCommandProtocol` and `TestNavTakeoffCommand`. Create `tests/command/README.md` with survey results table and per-stack test results. |
+| 2026-05-26 | Run command tests + frame tests for ArduPlane QP, ArduRover, and PX4 MC. Fix two bugs in `_manage_px4_sitl`: (1) wrong rootfs path — was `/tmp/px4_sitl_work` (no `etc/init.d-posix/` present), now `build/px4_sitl_default` (correct rootfs); (2) wrong search string for readiness detection — was `"INFO [mavlink]"` (one space) but PX4 writes `"INFO  [mavlink]"` (two spaces). Also fix `read_text()` on the rapidly-growing pxh> shell prompt log (grows at GB/min after startup) by reading only first 64 KB. Increase PX4 readiness loop from 45→60 iterations. All stacks now work with auto-managed SITL. Key results: ArduPlane QP 15p+3s (command), 56p+9f (frames); ArduRover 11p+4f+3s (command — 4 FAILs because NAV_TAKEOFF UNSUPPORTED on rover), 56p+9f (frames); PX4 MC 15p+3s (command), 63p+2f (frames — geofence rel-alt bug). Add ArduRover and PX4 command-protocol behaviour sections to CLAUDE.md. Update `tests/command/README.md` and `tests/command/takeoff/README.md` with complete comparative results. |
+| 2026-05-26 | Replace pymavlink NaN bypass with `None` (JSON null). Discovered that `mavlink_direct.send_message` accepts `None` in float fields: Python `None` → `json.dumps(None)` → `"null"` → nlohmann/json decodes float null as IEEE-754 NaN → transmitted on wire → decoded back to `null` → Python `None`. Removed `nan_mavlink_conn` fixture, `--nan-mavlink-address` CLI option, `probe_command_int_nan()`, `pymavlink>=2.4.0` from requirements.txt, and `--out udp:127.0.0.1:14550` from ArduPilot SITL startup. The three NaN tests in `takeoff/test_command.py` now use `param=None` via the normal `probe_command_int()` path and pass in all modes. Paired mode: 119 passed / 8 skipped (the 3 NaN tests no longer skip). |
+| 2026-05-27 | Split CLAUDE.md into per-subfolder files: tests/mission/CLAUDE.md (mission protocol, frame tables, MAV_CMD methodology), tests/mission/nav_takeoff/CLAUDE.md (NAV_TAKEOFF storage test results), tests/command/CLAUDE.md (command protocol, per-stack command notes). Root CLAUDE.md reduced from 1165 → ~420 lines. Also fixed stale ArduRover command survey counts (111→118 UNSUPPORTED, 8→1 UNKNOWN) and log reference (_140430 → _212652). |
+| 2026-05-27 | Run command + frame tests for PX4 FW (sihsim_airplane), VTOL (sihsim_standard_vtol), and Rover (sihsim_rover_ackermann). All three: 78 passed, 2 failed, 3 skipped — same failures as PX4 MC (geofence relative-alt frames 3 and 6). Survey differences vs MC: FW adds DO_FIGURE_EIGHT (35) SUPPORTED; VTOL adds DO_FIGURE_EIGHT + DO_VTOL_TRANSITION (3000) SUPPORTED; Rover loses DO_AUTOTUNE_ENABLE (212) SUPPORTED. Key finding: PX4 Rover accepts NAV_TAKEOFF (result=0) unlike ArduRover which returns UNSUPPORTED — PX4 does not gate commands by vehicle type. Each run takes ~1m 43s. Logs: logs/command_frame_types_px4_{fixed_wing,vtol,rover}_1.18.0-alpha_20260527.log. |
+| 2026-05-27 | Add `tests/command/takeoff/test_flight.py` (17 Tier 2 COMMAND_INT execution tests). Two-stage gate: ACK probe (MAVSDK subscription method), then execution probe (arm + send COMMAND_INT + wait ≤20 s for 0.5 m climb). Key finding: PX4 ignores the `frame` field in COMMAND_INT NAV_TAKEOFF and always treats `z` as absolute AMSL — `_arm_and_send_takeoff()` converts the caller's relative z to absolute (home.absolute_altitude_m + relative_z) and uses frame=5 (GLOBAL_INT). Fix: gRPC pitch_task cancellation uses fire-and-forget (no await) per CLAUDE.md §4a; test_mode_after_takeoff handles TimeoutError gracefully (purely informational). Results: PX4 MC 15 pass + 2 xpass (z=0 and x/y=0 spec gaps); PX4 FW 17 skip (requires runway, not vertical climb); ArduCopter MC 17 skip (requires GUIDED mode); ArduPlane FW 17 skip (same). Observational findings on PX4 MC: param4 (yaw) ignored in COMMAND_INT path (heading always ~351°); z=NaN → default alt (~0.5 m relative); x/y=0 → PX4 navigates toward equator (not "use current"); INT32_MAX → vehicle stays at home (0.7 m dist). Log: logs/command_takeoff_flight_px4_quadcopter_1.18.0-alpha_20260527_134513.log. |
 
 When protocol behaviour changes (spec update, MAVSDK API change, or
 autopilot-specific workaround is added), add a row to this table and update
