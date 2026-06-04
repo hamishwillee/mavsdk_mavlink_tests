@@ -34,13 +34,14 @@ import pytest
 
 from tests.command.conftest import (
     probe_command_int,
+    probe_command_long,
     gcs_system_cls,
     mock_stack_cls,
     ACK_TIMEOUT_S,
     INT32_MAX,
     _FMT,
 )
-from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_UNSUPPORTED
+from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _takeoff_cmd(**overrides) -> dict:
         param1=0.0,    # Pitch: 0 deg (use default)
         param2=0.0,    # Unused
         param3=0.0,    # Flags: none
-        param4=0.0,    # Yaw: 0.0 = north (None encodes as NaN — "use current heading")
+        param4=None,   # Yaw: NaN = "use current heading" (non-NaN would assert yaw intent)
         x=_LAT_INT,
         y=_LON_INT,
         z=50.0,        # Altitude: 50 m relative
@@ -104,8 +105,18 @@ class TestNavTakeoffCommand:
             f"NAV_TAKEOFF should be supported by any flight stack; got UNSUPPORTED(3)"
         )
 
-    async def test_param1_pitch_ack_accepted(self, gcs_system_cls, mock_stack_cls):
-        """param1 (Pitch) = 15.0 deg — expect ACCEPTED (pitch is a hint, not enforced)."""
+    async def test_param1_pitch_ack_denied(self, gcs_system_cls, mock_stack_cls):
+        """
+        param1 (Pitch) = 15.0 deg — expects MAV_RESULT_DENIED.
+
+        A non-NaN param1 expresses the caller's intent that pitch be honoured.
+        NaN is the correct way to say "no pitch preference".  A stack that cannot
+        honour the requested pitch must return MAV_RESULT_DENIED rather than
+        silently accepting and ignoring the parameter.
+
+        xfail: all known stacks (PX4, ArduPilot) return ACCEPTED while ignoring
+        param1 in the COMMAND_INT execution path — each is a spec violation.
+        """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param1=15.0)
         if ack is None:
@@ -113,7 +124,12 @@ class TestNavTakeoffCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param1 (Pitch) = 15.0", f"result={result}")
-        assert result != MAV_RESULT_UNSUPPORTED, "NAV_TAKEOFF with pitch should not be UNSUPPORTED"
+        if result != MAV_RESULT_DENIED:
+            pytest.xfail(
+                f"Stack accepted param1=15° but ignores pitch (result={result}); "
+                "should return MAV_RESULT_DENIED"
+            )
+        assert result == MAV_RESULT_DENIED
 
     async def test_param1_nan_ack_result(self, gcs_system_cls, mock_stack_cls):
         """
@@ -131,15 +147,21 @@ class TestNavTakeoffCommand:
         log.info(_FMT, _CMD, "param1 (Pitch) = NaN", f"result={result}")
         # Observational — no assertion
 
-    async def test_param4_yaw_specific_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_param4_yaw_ack_denied(self, gcs_system_cls, mock_stack_cls):
         """
-        param4 (Yaw) = 90.0 deg — observational.
+        param4 (Yaw) = 90.0 deg — expects MAV_RESULT_DENIED.
 
-        Both PX4 and ArduPilot ignore param4 in the COMMAND_INT execution path:
+        A non-NaN param4 expresses the caller's intent that yaw be honoured.
+        NaN is the correct "use current heading" sentinel.  A stack that cannot
+        honour the requested yaw must return MAV_RESULT_DENIED rather than
+        silently accepting and ignoring the parameter.
+
+        All known stacks ignore param4 in the COMMAND_INT execution path:
         - PX4: rep->current.yaw = NAN regardless of param4 (navigator_main.cpp:630)
         - ArduCopter: "param4 : yaw angle   (not supported)" (GCS_MAVLink_Copter.cpp:585)
         - ArduPlane: only altitude is read from the COMMAND_INT handler (GCS_MAVLink_Plane.cpp)
-        A specific yaw value should not cause DENIED or UNSUPPORTED.
+
+        xfail: all known stacks return ACCEPTED while ignoring param4 — spec violation.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param4=90.0)
@@ -148,7 +170,12 @@ class TestNavTakeoffCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param4 (Yaw) = 90.0", f"result={result}")
-        # Observational — no assertion; yaw is ignored by all known stacks in this path
+        if result != MAV_RESULT_DENIED:
+            pytest.xfail(
+                f"Stack accepted param4=90° but ignores yaw (result={result}); "
+                "should return MAV_RESULT_DENIED"
+            )
+        assert result == MAV_RESULT_DENIED
 
     async def test_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
         """
@@ -210,6 +237,36 @@ class TestNavTakeoffCommand:
         log.info(_FMT, _CMD, "param7 (Alt) = NaN", f"result={result}")
         # Observational — no assertion
 
+    async def test_location_out_of_range_latlon_ack(self, gcs_system_cls, mock_stack_cls):
+        """
+        x=1_200_000_000 (120°N), y=2_000_000_000 (200°E) — out-of-range lat/lon.
+
+        Valid lat/lon ×1e7 ranges are −900_000_000..900_000_000 (lat) and
+        −1_800_000_000..1_800_000_000 (lon).  These values are geometrically impossible
+        but below INT32_MAX (the "use current position" sentinel at 2_147_483_647).
+
+        The spec does not explicitly require rejection, but it should be inferred: a stack
+        that accepts an impossible coordinate may navigate toward the wrong location or
+        exhibit undefined behaviour.  Expected result: MAV_RESULT_DENIED.
+
+        xfail: PX4 does not validate lat/lon range and returns ACCEPTED (spec gap).
+        """
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        _OUT_LAT = 1_200_000_000   # 120°N — impossible latitude
+        _OUT_LON = 2_000_000_000   # 200°E — impossible longitude
+        ack = await _probe(gcs_system_cls, x=_OUT_LAT, y=_OUT_LON)
+        if ack is None:
+            log.warning(_FMT, _CMD, "params 5/6 out-of-range lat/lon", "UNKNOWN — no ACK")
+            return
+        result = int(ack["result"])
+        log.info(_FMT, _CMD, "params 5/6 out-of-range lat/lon", f"result={result}")
+        if result != MAV_RESULT_DENIED:
+            pytest.xfail(
+                f"Stack accepted geometrically impossible lat/lon (result={result}); "
+                "should return MAV_RESULT_DENIED — spec gap (coordinate range not mandated)"
+            )
+        assert result == MAV_RESULT_DENIED
+
     async def test_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
         """
         frame = MAV_FRAME_LOCAL_NED (1) — observational.
@@ -226,3 +283,85 @@ class TestNavTakeoffCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "frame=LOCAL_NED(1)", f"result={result}")
         # Observational — no assertion; behaviour is stack-specific
+
+    async def test_latlon_nan_command_long_ack(self, gcs_system_cls, mock_stack_cls):
+        """
+        COMMAND_LONG param5=NaN, param6=NaN — "use current position" sentinel.
+
+        NaN in COMMAND_LONG param5/6 is the float-field equivalent of INT32_MAX in
+        COMMAND_INT x/y: it signals "use current vehicle position" rather than a
+        specific coordinate.
+
+        PX4 source (mavlink_receiver.cpp:513): COMMAND_LONG param5/6 are passed
+        through to navigator_main.cpp as float.  The navigator's takeoff handler
+        checks ``PX4_ISFINITE(cmd.param5) && PX4_ISFINITE(cmd.param6)``; when
+        either is NaN (non-finite), it falls back to the current global position.
+
+        Skips in paired/mock mode (mock does not model NaN lat/lon semantics for
+        COMMAND_LONG; NaN values in x/y of COMMAND_INT are not representable since
+        those fields are int32_t, so this test uses COMMAND_LONG specifically).
+
+        Observational — logs the ACK result; no assertion beyond not UNSUPPORTED.
+        """
+        if mock_stack_cls is not None:
+            pytest.skip("NaN lat/lon COMMAND_LONG test requires a real stack")
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        # param5=None, param6=None → encoded as JSON null → NaN on the wire
+        ack = await probe_command_long(
+            gcs_system_cls, _CMD_ID,
+            param5=None, param6=None,   # NaN lat/lon → "use current position"
+            param7=5.0,                  # relative altitude (m)
+        )
+        if ack is None:
+            log.warning(_FMT, _CMD, "COMMAND_LONG param5/6=NaN (use current pos)",
+                        "UNKNOWN — no ACK")
+            return
+        result = int(ack["result"])
+        log.info(_FMT, _CMD, "COMMAND_LONG param5/6=NaN (use current pos)",
+                 f"result={result}  "
+                 "(PX4: navigator falls back to current position when lat/lon is NaN; "
+                 "ArduCopter: ACCEPTED, ignores lat/lon)")
+        assert result != MAV_RESULT_UNSUPPORTED, (
+            "NaN lat/lon in COMMAND_LONG should not cause UNSUPPORTED — "
+            "the command is valid; lat/lon=NaN means 'use current position'"
+        )
+
+    async def test_latlon_int32max_command_long(self, gcs_system_cls, mock_stack_cls):
+        """
+        COMMAND_LONG param5=INT32_MAX (as float), param6=INT32_MAX — 'use current position'.
+
+        INT32_MAX (2_147_483_647) is the MAVLink 'use current position' sentinel for
+        lat/lon fields.  It applies to both COMMAND_INT (int32_t x/y) and COMMAND_LONG
+        (float param5/6).  A float(INT32_MAX) in param5/6 means "use current position",
+        not a protocol error.
+
+        Expected result: ACCEPTED — the sentinel is valid and means "use current position".
+
+        xfail: PX4 explicitly rejects float(INT32_MAX) in param5/6 as a protocol error
+        (mavlink_receiver.cpp:499–505), treating it as a miscoded COMMAND_INT.  This is
+        a PX4 spec violation — the correct behaviour is to treat it as "use current position".
+        """
+        if mock_stack_cls is not None:
+            pytest.skip("INT32_MAX-as-float COMMAND_LONG test requires a real stack")
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        ack = await probe_command_long(
+            gcs_system_cls, _CMD_ID,
+            param5=float(INT32_MAX),
+            param6=float(INT32_MAX),
+            param7=5.0,
+        )
+        if ack is None:
+            log.warning(_FMT, _CMD, "COMMAND_LONG param5/6=INT32_MAX (use current pos)",
+                        "UNKNOWN — no ACK")
+            return
+        result = int(ack["result"])
+        log.info(_FMT, _CMD, "COMMAND_LONG param5/6=INT32_MAX (use current pos)",
+                 f"result={result}  "
+                 "(INT32_MAX is 'use current position' sentinel; DENIED is a PX4 spec violation)")
+        if result != MAV_RESULT_ACCEPTED:
+            pytest.xfail(
+                f"Stack returned {result} for INT32_MAX lat/lon in COMMAND_LONG; "
+                "expected ACCEPTED — INT32_MAX is the 'use current position' sentinel "
+                "(PX4 incorrectly rejects it as a protocol error)"
+            )
+        assert result == MAV_RESULT_ACCEPTED

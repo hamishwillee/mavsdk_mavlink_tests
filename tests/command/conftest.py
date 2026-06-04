@@ -246,11 +246,12 @@ async def _probe_with_send(system, command_id, timeout_s, send_fn) -> dict | Non
         )
         return None
     finally:
+        # Fire-and-forget cancel: do NOT await the task.  The _collect() coroutine
+        # iterates a gRPC mavlink_direct stream which does not respond to asyncio
+        # cancellation at its next yield — awaiting it would block indefinitely,
+        # leaving the gRPC channel in a corrupted state for subsequent tests
+        # (CLAUDE.md §4a, same pattern as _wait_for_connection).
         task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
 
 

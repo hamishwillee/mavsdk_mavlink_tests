@@ -232,37 +232,21 @@ item to seq=1.  Always find the probe item by `seq` on download, not by list ind
 
 ### Conditional Tier 2 pattern
 
-Some params have edge-case values (e.g. negative yaw, overflow yaw, negative pitch) where
-Tier 1 alone is **ambiguous**: if the stored value equals what was sent (raw), we know the
-autopilot deferred interpretation to execution time and a Tier 2 test is required to confirm
-it behaves correctly.  If the stored value is already normalised, execution is unambiguous and
-no further test is needed.
+For edge-case params (negative yaw, overflow yaw, negative pitch, etc.) Tier 1 alone is
+**ambiguous**: if the value is stored raw, the autopilot deferred interpretation to execution
+time and a Tier 2 test is required.  If already normalised, execution is unambiguous.
 
-A Tier 2 test that uses this pattern begins with an **inline Tier 1 probe** — it uploads the
-edge-case item, downloads, reads the stored value, and makes a skip/proceed decision before
-doing anything with the vehicle:
-
-```python
-stored, nacked = await _probe_takeoff_item(system, home_item, param4=-90.0)
-if nacked:
-    pytest.skip("NACKed — protocol-level result captured by Tier 1")
-if abs((stored.param4 - 270.0 + 180) % 360 - 180) < 1e-3:
-    pytest.skip("Normalised to 270° on storage — execution unambiguous")
-if abs((stored.param4 - (-90.0) + 180) % 360 - 180) >= 1e-3:
-    pytest.skip("Stored as unexpected value — already captured by Tier 1")
-# raw value stored — proceed to arm + fly + check heading ≈ 270°
-```
-
-**Decision tree for a param with value V and normalised form N:**
+A Tier 2 test begins with an **inline Tier 1 probe** (upload, download, read stored value) and
+skips based on the outcome:
 
 | Stored value | Meaning | Tier 2 action |
 |---|---|---|
-| `N` (normalised) | Stack committed to canonical form | **Skip** — execution is unambiguous |
-| `V` (raw) | Stack deferred normalisation | **Proceed** — verify execution normalises correctly |
-| Other value | Altered (e.g. zeroed by ArduCopter) | **Skip** — already documented by Tier 1 tests |
-| NACKed | Upload rejected | **Skip** — protocol-level result already recorded |
+| `N` (normalised) | Stack committed to canonical form | **Skip** — execution unambiguous |
+| `V` (raw) | Stack deferred normalisation | **Proceed** — verify execution |
+| Other value | Altered (zeroed etc.) | **Skip** — documented by Tier 1 |
+| NACKed | Upload rejected | **Skip** — captured by Tier 1 |
 
-The helper `_probe_takeoff_item(system, home_item, **overrides)` in `test_flight.py` performs the
+`_probe_takeoff_item(system, home_item, **overrides)` in `test_flight.py` performs the
 upload–download–clear cycle without flying.
 
 ### File and class naming

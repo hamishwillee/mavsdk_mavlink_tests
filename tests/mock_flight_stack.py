@@ -47,6 +47,11 @@ MAV_RESULT_COMMAND_INT_ONLY     = 8
 # Default: MAV_PROTOCOL_CAPABILITY_MISSION_INT (bit 2)
 DEFAULT_CAPABILITY_BITS: int = 4
 
+# MAVLink COMMAND_INT lat/lon sentinel and valid ranges
+_INT32_MAX = 0x7FFF_FFFF       # "use current position" sentinel
+_MAX_LAT_INT = 900_000_000     # ±90° × 1e7
+_MAX_LON_INT = 1_800_000_000   # ±180° × 1e7
+
 # MAVLink identity of the GCS peer (sysid=255, compid=1 in paired loopback)
 _GCS_SYSID = 255
 _GCS_COMPID = 1
@@ -421,6 +426,8 @@ class MockFlightStack:
                 msg = await self._recv("COMMAND_INT")
                 fields = json.loads(msg.fields_json)
                 cmd = int(fields.get("command", 0))
+                x = int(fields.get("x", 0))
+                y = int(fields.get("y", 0))
                 record = {
                     "type": "COMMAND_INT",
                     "command": cmd,
@@ -429,12 +436,30 @@ class MockFlightStack:
                     "param2": _f(fields.get("param2")),
                     "param3": _f(fields.get("param3")),
                     "param4": _f(fields.get("param4")),
-                    "x": int(fields.get("x", 0)),
-                    "y": int(fields.get("y", 0)),
+                    "x": x,
+                    "y": y,
                     "z": _f(fields.get("z")),
                 }
                 self.received_commands.append(record)
-                await self._send_command_ack(system, cmd)
+                # INT32_MAX is the "use current position" sentinel — always valid.
+                # Any other value outside the physical lat/lon range is DENIED.
+                lat_invalid = x != _INT32_MAX and abs(x) > _MAX_LAT_INT
+                lon_invalid = y != _INT32_MAX and abs(y) > _MAX_LON_INT
+                if lat_invalid or lon_invalid:
+                    log.debug(
+                        "COMMAND_INT cmd=%d: out-of-range lat/lon (x=%d, y=%d) → DENIED",
+                        cmd, x, y,
+                    )
+                    await self._send(system, "COMMAND_ACK", {
+                        "command": cmd,
+                        "result": MAV_RESULT_DENIED,
+                        "progress": 255,
+                        "result_param2": 0,
+                        "target_system": _GCS_SYSID,
+                        "target_component": _GCS_COMPID,
+                    })
+                else:
+                    await self._send_command_ack(system, cmd)
                 log.debug("COMMAND_INT cmd=%d frame=%d", cmd, record["frame"])
             except asyncio.CancelledError:
                 raise

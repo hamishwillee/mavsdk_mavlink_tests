@@ -150,6 +150,35 @@ Results: **49 SUPPORTED, 118 UNSUPPORTED, 1 UNKNOWN** (command survey).
 ### Key behaviours
 
 - **NAV_TAKEOFF (cmd=22) is UNSUPPORTED** — `MAV_RESULT_UNSUPPORTED (3)`.  ArduRover is a ground vehicle; the 3 command tests that assert `result != UNSUPPORTED` fail by design.  Observational tests still pass.
+
+## ArduCopter mode restriction for NAV_TAKEOFF
+
+`GCS_MAVLink_Copter.cpp:578` checks `has_user_takeoff(must_navigate)` before executing NAV_TAKEOFF.  With default param3=0 (`must_navigate=true`):
+
+| Mode | Number | Accepts NAV_TAKEOFF | Autonomous climb (no RC) |
+|------|--------|---------------------|--------------------------|
+| STABILIZE | 0 | ❌ | — |
+| ALT_HOLD | 2 | ❌ | — |
+| **GUIDED** | **4** | **✅** | **✅ uses `_AutoTakeoff::run()`** |
+| LOITER | 5 | ✅ | ❌ uses pilot controller |
+| POSHOLD | 16 | ✅ | ❌ uses pilot controller |
+
+Only GUIDED overrides `do_user_takeoff_start_m()` to use the autonomous
+`_AutoTakeoff::run()` controller.  LOITER/POSHOLD accept the command but use
+`_TakeOff::do_pilot_takeoff_ms()` which reads the RC throttle channel — no
+autonomous climb without RC input.  All ArduPilot autotest calls to
+`user_takeoff()` are preceded by `change_mode("GUIDED")`.
+
+Additional ArduPilot MAVSDK quirks (see `tests/command/baseline_takeoff/README.md`):
+- MAVSDK reports ArduCopter GUIDED (custom_mode=4) as `"OFFBOARD"` in `telemetry.flight_mode()`
+- MAVSDK reports ArduPlane GUIDED (custom_mode=15) as `"GUIDED"` or `"OFFBOARD"`
+- ArduCopter/ArduPlane does not stream `GLOBAL_POSITION_INT` by default — must send
+  `MAV_CMD_SET_MESSAGE_INTERVAL (511)` with `param1=33` first
+
+## Autopilot-specific behaviour (ArduRover, continued)
+
+### Key behaviours (ArduRover)
+
 - **DO_FLIGHTTERMINATION (cmd=185) is UNSUPPORTED** on rover (vs SUPPORTED on copter/plane).
 - **DO_REPOSITION (cmd=192), DO_FENCE_ENABLE (207), DO_SET_MISSION_CURRENT (224), MISSION_START (300)** are all SUPPORTED — rover has full mission-management capability.
 - **Broader DO_ coverage** than ArduPlane: 49 SUPPORTED commands including camera, relay, servo, gimbal, and logging commands that ArduPlane doesn't respond to.
