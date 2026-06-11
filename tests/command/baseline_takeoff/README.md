@@ -1,7 +1,7 @@
 # Baseline Takeoff Tests
 
 Minimum verified takeoff sequences for each supported (stack, vehicle-type) combination.
-Run these before the higher-level execution tests in `tests/command/takeoff/test_flight.py`.
+Run these before the higher-level execution tests in `tests/command/nav_takeoff/test_flight.py`.
 
 ## Tests
 
@@ -24,39 +24,33 @@ It executes a full VTOL sequence via `vtol_takeoff.cpp`:
 3. **TRANSITION**: transition to fixed-wing flight
 4. **CLIMB**: continue climbing in FW mode to `loiter_altitude + LOITER_ALT_OFFSET`
 
-The test passes once the initial MC hover phase reaches the airborne threshold (5 m),
-without requiring the full FW transition. The full sequence may take 60–120 s.
+The test passes once the initial MC hover phase reaches the airborne threshold (5 m), without requiring the full FW transition.
+The full sequence may take 60–120 s.
 
-If `NAV_VTOL_TAKEOFF` returns `UNSUPPORTED` (e.g. the frame is not VTOL-capable),
-the test falls back to `NAV_TAKEOFF (22)`.
+If `NAV_VTOL_TAKEOFF` returns `UNSUPPORTED` (e.g. the frame is not VTOL-capable), the test falls back to `NAV_TAKEOFF (22)`.
 
 ### ArduPlane QuadPlane — NAV_VTOL_TAKEOFF is mission-only
 
-On ArduPlane QuadPlane, `NAV_VTOL_TAKEOFF (84)` is handled in `commands_logic.cpp`
-during AUTO mode mission execution only. Sending it as a direct COMMAND_INT returns
-FAILED. The correct sequence for a direct autonomous VTOL takeoff is:
+On ArduPlane QuadPlane, `NAV_VTOL_TAKEOFF (84)` is handled in `commands_logic.cpp` during AUTO mode mission execution only.
+Sending it as a direct COMMAND_INT returns FAILED.
+The correct sequence for a direct autonomous VTOL takeoff is:
 
 ```
 DO_SET_MODE GUIDED (mode=15)  →  arm  →  COMMAND_LONG NAV_TAKEOFF (22) p7=alt
 ```
 
-ArduPlane QuadPlane's GUIDED mode (custom_mode=15) activates the VTOL position
-controller: `quadplane.cpp:4039` sets `guided_takeoff=true` on NAV_TAKEOFF receipt,
-and `in_vtol_mode()` returns true, triggering the quadplane attitude controller.
+ArduPlane QuadPlane's GUIDED mode (custom_mode=15) activates the VTOL position controller: `quadplane.cpp:4039` sets `guided_takeoff=true` on NAV_TAKEOFF receipt, and `in_vtol_mode()` returns true, triggering the quadplane attitude controller.
 The vehicle climbs vertically using its VTOL motors.
 
-The quadplane autotest (quadplane.py) uses the same sequence:
-`takeoff(height, mode="GUIDED")` → change_mode("GUIDED") → user_takeoff().
+The quadplane autotest (quadplane.py) uses the same sequence: `takeoff(height, mode="GUIDED")` → change_mode("GUIDED") → user_takeoff().
 
-QHOVER (18) and QLOITER (19) are NOT suitable for autonomous MAVLink takeoff
-because their throttle comes from `get_pilot_desired_climb_rate_ms()` (RC channel).
+QHOVER (18) and QLOITER (19) are NOT suitable for autonomous MAVLink takeoff because their throttle comes from `get_pilot_desired_climb_rate_ms()` (RC channel).
 
 ## ArduCopter / ArduPlane mode restriction
 
-With param3=0 (default, `must_navigate=True`), only GUIDED (4 / 15), LOITER (5),
-and POSHOLD (16) accept NAV_TAKEOFF. But only GUIDED uses `_AutoTakeoff::run()`
-(autonomous). See `tests/command/baseline_takeoff/test_baseline.py` module docstring
-for the full table.
+With param3=0 (default, `must_navigate=True`), only GUIDED (4 / 15), LOITER (5), and POSHOLD (16) accept NAV_TAKEOFF.
+But only GUIDED uses `_AutoTakeoff::run()` (autonomous).
+See `tests/command/baseline_takeoff/test_baseline.py` module docstring for the full table.
 
 ## Running
 

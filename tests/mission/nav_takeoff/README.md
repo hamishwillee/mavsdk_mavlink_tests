@@ -1,10 +1,8 @@
 # NAV_TAKEOFF (cmd=22) — Protocol Conformance Tests
 
-This directory contains Tier 1 (protocol acceptance) and Tier 2 (execution verification)
-tests for `MAV_CMD_NAV_TAKEOFF`.
+This directory contains Tier 1 (protocol acceptance) and Tier 2 (execution verification) tests for `MAV_CMD_NAV_TAKEOFF`.
 
-See the root `CLAUDE.md` for the two-tier testing model, parameter conventions, and
-the NaN-first three-probe pattern for unused params.
+See the root `CLAUDE.md` for the two-tier testing model, parameter conventions, and the NaN-first three-probe pattern for unused params.
 
 ## Command parameters (MAVLink spec)
 
@@ -46,10 +44,9 @@ pytest tests/mission/nav_takeoff/test_protocol.py \
 
 ## Tier 1 Results — Protocol acceptance
 
-Tested: 2026-05-25. Results updated after adding 6 new tests.
-Logs: `logs/nav_takeoff_px4_mc_20260525b.log`, `logs/nav_takeoff_px4_fw_20260525b.log`,
-`logs/nav_takeoff_px4_vtol_20260525b.log`, `logs/nav_takeoff_arducopter_20260525b.log`,
-`logs/nav_takeoff_arduplane_20260525b.log`, `logs/nav_takeoff_quadplane_20260525b.log`.
+Tested: 2026-05-25.
+Results updated after adding 6 new tests.
+Logs: `logs/nav_takeoff_px4_mc_20260525b.log`, `logs/nav_takeoff_px4_fw_20260525b.log`, `logs/nav_takeoff_px4_vtol_20260525b.log`, `logs/nav_takeoff_arducopter_20260525b.log`, `logs/nav_takeoff_arduplane_20260525b.log`, `logs/nav_takeoff_quadplane_20260525b.log`.
 
 **Key: PASS = test passed &nbsp; FAIL = test failed &nbsp; NOTE = advisory (test passes, behavior noted)**
 
@@ -81,9 +78,10 @@ NaN-first three-probe pattern for the unused param2.
 | PASS   | PASS   | PASS     | **FAIL**      | **FAIL**     | **FAIL**     |
 
 - **PX4**: accepts NaN (spec-correct); non-NaN value 1.0 silently altered to 0.0 (NOTE).
-- **ArduPilot** (all variants): rejects NaN with `INVALID_ARGUMENT` — spec violation. The
-  `sanity_check_params` mask for NAV_TAKEOFF disallows NaN in param2.
-  Workaround: use `0.0`. Non-NaN value 1.0 silently altered to 0.0 (NOTE).
+- **ArduPilot** (all variants): rejects NaN with `INVALID_ARGUMENT` — spec violation.
+  The `sanity_check_params` mask for NAV_TAKEOFF disallows NaN in param2.
+  Workaround: use `0.0`.
+  Non-NaN value 1.0 silently altered to 0.0 (NOTE).
 
 ### test_protocol_param3_flags_preserved
 
@@ -93,7 +91,8 @@ Upload `param3=1.0` (NAV_TAKEOFF_FLAGS bit 0); assert `downloaded param3 ≈ 1.0
 |--------|--------|----------|---------------|--------------|--------------|
 | **FAIL** (zeroed → 0.0) | **FAIL** | **FAIL** | **FAIL** (zeroed → 0.0) | **FAIL** | **FAIL** |
 
-No stack tested stores param3. PX4 zeroes it; ArduPilot never reads or stores it.
+No stack tested stores param3.
+PX4 zeroes it; ArduPilot never reads or stores it.
 `NAV_TAKEOFF_FLAGS` (added in MAVLink 2.0) is not yet implemented in either stack.
 
 ### test_protocol_param4_yaw_specific
@@ -104,7 +103,8 @@ Upload `param4=90.0`; assert `downloaded param4 ≈ 90.0`.
 |--------|--------|----------|---------------|--------------|--------------|
 | PASS   | PASS   | PASS     | **FAIL** (zeroed → 0.0) | **FAIL** | **FAIL** |
 
-PX4 stores param4 (Yaw) correctly. ArduPilot's NAV_TAKEOFF handler does not store param4.
+PX4 stores param4 (Yaw) correctly.
+ArduPilot's NAV_TAKEOFF handler does not store param4.
 
 ### test_protocol_param4_yaw_nan
 
@@ -134,9 +134,8 @@ Upload `x=INT32_MAX, y=INT32_MAX` (0x7FFF_FFFF — "use current position" sentin
 |--------|--------|----------|---------------|--------------|--------------|
 | PASS   | PASS   | PASS     | **FAIL** (NACKed — INVALID_ARGUMENT) | **FAIL** | **FAIL** |
 
-PX4 accepts and stores INT32_MAX for lat/lon — the "take off from current position" sentinel is
-supported. ArduPilot rejects INT32_MAX with `INVALID_ARGUMENT` for all three vehicle types; this
-is a spec violation for a command marked `hasLocation="true"` and `isDestination="true"`.
+PX4 accepts and stores INT32_MAX for lat/lon — the "take off from current position" sentinel is supported.
+ArduPilot rejects INT32_MAX with `INVALID_ARGUMENT` for all three vehicle types; this is a spec violation for a command marked `hasLocation="true"` and `isDestination="true"`.
 
 ### test_protocol_location_nan_altitude
 
@@ -146,9 +145,10 @@ Upload `z=NaN` (altitude field); assert accepted (observational — any outcome 
 |--------|--------|----------|---------------|--------------|--------------|
 | PASS (NaN preserved — accepted) | PASS | PASS | PASS (NaN NACKed — INVALID_ARGUMENT) | PASS | PASS |
 
-PX4 accepts NaN altitude (stores it as NaN — "use default altitude"). ArduPilot rejects NaN
-altitude with `INVALID_ARGUMENT`. Both behaviours are protocol-valid for an altitude that is
-arguably required for takeoff. Test is observational — no hard assertion either way.
+PX4 accepts NaN altitude (stores it as NaN — "use default altitude").
+ArduPilot rejects NaN altitude with `INVALID_ARGUMENT`.
+Both behaviours are protocol-valid for an altitude that is arguably required for takeoff.
+Test is observational — no hard assertion either way.
 
 ### test_protocol_param3_flags_zero
 
@@ -158,9 +158,9 @@ Upload `param3=0.0` (no flags); assert `downloaded param3 ≈ 0.0`.
 |--------|--------|----------|---------------|--------------|--------------|
 | PASS   | PASS   | PASS     | PASS          | PASS         | PASS         |
 
-All stacks accept param3=0.0. Note: this PASS is trivially satisfied for PX4 (which zeroes param3
-regardless of the uploaded value) and ArduPilot (which discards param3 entirely). The zero
-download is indistinguishable from "param not stored at all".
+All stacks accept param3=0.0.
+Note: this PASS is trivially satisfied for PX4 (which zeroes param3 regardless of the uploaded value) and ArduPilot (which discards param3 entirely).
+The zero download is indistinguishable from "param not stored at all".
 
 ### test_protocol_param3_flags_undefined_bits
 
@@ -171,9 +171,9 @@ Upload `param3=2.0` (bit 1 — undefined in `NAV_TAKEOFF_FLAGS`); observe outcom
 | PX4 (all) | NOTE: undefined bit silently altered to 0.0 | PX4 zeroes param3 regardless (same as all param3 values) |
 | ArduPilot (all) | NOTE: undefined bit silently altered to 0.0 | ArduPilot discards param3; 0.0 is returned (not stored) |
 
-No stack NACKs the undefined bit value. Both silently discard it (producing 0.0), which is the
-same behaviour as for the defined bit (param3 is not stored by any tested stack). A NACK would
-be preferred per the methodology for undefined enum/bitmask values.
+No stack NACKs the undefined bit value.
+Both silently discard it (producing 0.0), which is the same behaviour as for the defined bit (param3 is not stored by any tested stack).
+A NACK would be preferred per the methodology for undefined enum/bitmask values.
 
 ### test_protocol_param1_nan
 
@@ -184,9 +184,9 @@ Upload `param1=NaN` ("no minimum pitch constraint"); observe outcome (observatio
 | PX4 (all) | ALTERED to 0.0 | NaN normalised to 0.0 (not rejected; param1 not stored anyway) |
 | ArduPilot (all) | NaN rejected — INVALID_ARGUMENT | `sanity_check_params` rejects NaN for param1 (defined param) |
 
-ArduPilot rejects NaN for param1 via `sanity_check_params` — the mask for NAV_TAKEOFF requires
-a numeric pitch value. This is consistent with the param1 NaN rejection pattern already observed
-for param2. PX4 normalises NaN to 0.0 without rejection (param1 is not stored anyway).
+ArduPilot rejects NaN for param1 via `sanity_check_params` — the mask for NAV_TAKEOFF requires a numeric pitch value.
+This is consistent with the param1 NaN rejection pattern already observed for param2.
+PX4 normalises NaN to 0.0 without rejection (param1 is not stored anyway).
 
 ### test_protocol_param1_pitch_very_large
 
@@ -221,7 +221,8 @@ Upload `param1=180.0` (above implicit 90° maximum); observe outcome (observatio
 |--------|--------|----------|---------------|--------------|--------------|
 | PASS (0.0° stored) | PASS | PASS | PASS (0.0° returned — **vacuous PASS**: ArduPilot does not store param4; the 0.0 is the zero-initialised default, not a stored north heading) | PASS (vacuous) | PASS (vacuous) |
 
-The test specifically checks that 0.0° is not aliased to NaN (which would be a spec violation). For ArduPilot the PASS is vacuous — param4 is not stored at all, so 0.0° (north) is indistinguishable from the stack's "not set" state.
+The test specifically checks that 0.0° is not aliased to NaN (which would be a spec violation).
+For ArduPilot the PASS is vacuous — param4 is not stored at all, so 0.0° (north) is indistinguishable from the stack's "not set" state.
 
 #### test_protocol_param1_pitch_large — upload `param1=89.0`
 
@@ -259,36 +260,33 @@ The test specifically checks that 0.0° is not aliased to NaN (which would be a 
 | param1 (Pitch) NaN | ~ → 0.0 | ~ | ~ | ~ NACKed | ~ NACKed | ~ NACKed |
 | param1 (Pitch) 180° | ~ zeroed | ~ | ~ | ~ preserved | ~ | ~ |
 
-¹ ArduPilot's `sanity_check_params` for NAV_TAKEOFF explicitly disallows NaN in param2, which
-is a spec violation. The MAVLink spec requires unused params to accept NaN. Workaround: use 0.0.
+¹ ArduPilot's `sanity_check_params` for NAV_TAKEOFF explicitly disallows NaN in param2, which is a spec violation.
+The MAVLink spec requires unused params to accept NaN.
+Workaround: use 0.0.
 
-² ArduPilot rejects INT32_MAX for lat/lon with `INVALID_ARGUMENT`. The MAVLink spec for commands
-with `hasLocation="true"` and `isDestination="true"` requires INT32_MAX to be accepted as the
-"use current position" sentinel. This is a spec violation.
+² ArduPilot rejects INT32_MAX for lat/lon with `INVALID_ARGUMENT`.
+The MAVLink spec for commands with `hasLocation="true"` and `isDestination="true"` requires INT32_MAX to be accepted as the "use current position" sentinel.
+This is a spec violation.
 
-³ Trivially satisfied: PX4 zeroes param3 regardless of upload value; ArduPilot discards it
-entirely. A zero PASS here is indistinguishable from "param not stored at all".
+³ Trivially satisfied: PX4 zeroes param3 regardless of upload value; ArduPilot discards it entirely.
+A zero PASS here is indistinguishable from "param not stored at all".
 
-**PX4 results are identical across multicopter, fixed-wing, and VTOL** — PX4 uses the same
-mission storage code regardless of vehicle type. Only params 4 (Yaw) and 5/6/7 (Location) are
-stored; params 1, 2, 3 are discarded. PX4 additionally accepts the INT32_MAX location sentinel
-and NaN altitude.
+**PX4 results are identical across multicopter, fixed-wing, and VTOL** — PX4 uses the same mission storage code regardless of vehicle type.
+Only params 4 (Yaw) and 5/6/7 (Location) are stored; params 1, 2, 3 are discarded.
+PX4 additionally accepts the INT32_MAX location sentinel and NaN altitude.
 
-**ArduPilot results are identical across ArduCopter, ArduPlane, and QuadPlane** — the same
-`mavlink_int_to_mission_cmd` handler is used. Only param1 (Pitch) and 5/6/7 (Location) are
-stored; params 3 and 4 are discarded. ArduPilot rejects NaN for param1 and param2 (defined and
-undefined params alike), and rejects INT32_MAX for the location sentinel — all spec violations.
+**ArduPilot results are identical across ArduCopter, ArduPlane, and QuadPlane** — the same `mavlink_int_to_mission_cmd` handler is used.
+Only param1 (Pitch) and 5/6/7 (Location) are stored; params 3 and 4 are discarded.
+ArduPilot rejects NaN for param1 and param2 (defined and undefined params alike), and rejects INT32_MAX for the location sentinel — all spec violations.
 
 ### param4 (Yaw) — mission storage vs COMMAND_INT execution
 
-There are two distinct paths where param4 yaw matters: **mission protocol** (MISSION_ITEM_INT
-upload/download via `mission_raw`) and **direct execution** via COMMAND_INT.  They behave
-differently.
+There are two distinct paths where param4 yaw matters: **mission protocol** (MISSION_ITEM_INT upload/download via `mission_raw`) and **direct execution** via COMMAND_INT.
+They behave differently.
 
 #### Mission storage — PX4 wraps yaw to [0°, 360°)
 
-PX4 **wraps** yaw to [0°, 360°) on mission storage rather than clamping or rejecting out-of-range
-values:
+PX4 **wraps** yaw to [0°, 360°) on mission storage rather than clamping or rejecting out-of-range values:
 
 | Uploaded | Stored | Interpretation |
 |----------|--------|----------------|
@@ -298,13 +296,11 @@ values:
 | −90° (negative) | 270° | wrapped: −90 + 360 |
 | 450° (> 360°) | 90° | wrapped: 450 mod 360 |
 
-**Implication for mission GCS**: pre-normalisation is not required before sending NAV_TAKEOFF
-mission items to PX4 — any value is accepted and PX4 will wrap it correctly via modular arithmetic.
-There is no evidence of clamping (e.g. a value beyond ±360° being pinned to ±360°); the behaviour
-is pure wrap-around.
+**Implication for mission GCS**: pre-normalisation is not required before sending NAV_TAKEOFF mission items to PX4 — any value is accepted and PX4 will wrap it correctly via modular arithmetic.
+There is no evidence of clamping (e.g. a value beyond ±360° being pinned to ±360°); the behaviour is pure wrap-around.
 
-ArduPilot does not store param4 (Yaw) at all in the mission path. Source confirmation
-(`AP_Mission.cpp`, `mavlink_int_to_mission_cmd`):
+ArduPilot does not store param4 (Yaw) at all in the mission path.
+Source confirmation (`AP_Mission.cpp`, `mavlink_int_to_mission_cmd`):
 
 ```cpp
 case MAV_CMD_NAV_TAKEOFF:                           // MAV ID: 22
@@ -312,13 +308,12 @@ case MAV_CMD_NAV_TAKEOFF:                           // MAV ID: 22
     break;
 ```
 
-Only `param1`/`cmd.p1` is copied in both the upload path (storing) and the download path
-(serialising back to MISSION_ITEM_INT). param4 is absent from both; it is silently discarded.
+Only `param1`/`cmd.p1` is copied in both the upload path (storing) and the download path (serialising back to MISSION_ITEM_INT).
+param4 is absent from both; it is silently discarded.
 
 #### COMMAND_INT direct execution — both PX4 and ArduPilot ignore yaw
 
-When NAV_TAKEOFF is sent as a direct COMMAND_INT (not via mission upload), **both stacks ignore
-param4 yaw**:
+When NAV_TAKEOFF is sent as a direct COMMAND_INT (not via mission upload), **both stacks ignore param4 yaw**:
 
 **PX4** (`navigator_main.cpp`, `VEHICLE_CMD_NAV_TAKEOFF` handler):
 ```cpp
@@ -326,29 +321,28 @@ param4 yaw**:
 // The yaw setpoint generation is handled by FlightTaskAuto.
 rep->current.yaw = NAN;
 ```
-`cmd.param4` is not read. Yaw is unconditionally set to NaN (use current heading), regardless of
-what param4 contains.  Note: this is a different code path from mission execution — the
-normalisation seen in mission storage does not apply here.
+`cmd.param4` is not read.
+Yaw is unconditionally set to NaN (use current heading), regardless of what param4 contains.
+Note: this is a different code path from mission execution — the normalisation seen in mission storage does not apply here.
 
 **ArduCopter** (`GCS_MAVLink_Copter.cpp`, `handle_MAV_CMD_NAV_TAKEOFF`):
 ```cpp
 // param4 : yaw angle   (not supported)
 ```
-param4 is explicitly documented as unsupported and never read. Only param3 (flags) and altitude are
-used.
+param4 is explicitly documented as unsupported and never read.
+Only param3 (flags) and altitude are used.
 
-**ArduPlane** (`GCS_MAVLink_Plane.cpp`, `handle_command_MAV_CMD_NAV_TAKEOFF`): reads only altitude;
-param4 is never referenced.
+**ArduPlane** (`GCS_MAVLink_Plane.cpp`, `handle_command_MAV_CMD_NAV_TAKEOFF`): reads only altitude; param4 is never referenced.
 
-**Summary**: GCS implementations cannot use COMMAND_INT to set a takeoff yaw heading on any tested
-stack. For PX4 missions, yaw is stored and used during mission execution; COMMAND_INT bypasses this
-and always uses current heading.
+**Summary**: GCS implementations cannot use COMMAND_INT to set a takeoff yaw heading on any tested stack.
+For PX4 missions, yaw is stored and used during mission execution; COMMAND_INT bypasses this and always uses current heading.
 
 ---
 
 ## Tier 2 Results — Execution verification
 
-See `test_flight.py`. Tests require `--drone-address`; they are skipped in paired/mock mode.
+See `test_flight.py`.
+Tests require `--drone-address`; they are skipped in paired/mock mode.
 
 > Tier 2 tests have not been run as part of generating this README.
 > Run them manually against a SITL with a real drone address to obtain execution results.

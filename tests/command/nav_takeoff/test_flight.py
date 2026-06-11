@@ -13,21 +13,21 @@ Running
 -------
 PX4 multicopter::
 
-    pytest tests/command/takeoff/test_flight.py \\
+    pytest tests/command/nav_takeoff/test_flight.py \\
         --drone-address=udp://:14540 --connection-timeout=60 \\
         --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx \\
         --vehicle-type=quadcopter --autopilot=px4 -v --log-cli-level=INFO
 
 PX4 fixed-wing::
 
-    pytest tests/command/takeoff/test_flight.py \\
+    pytest tests/command/nav_takeoff/test_flight.py \\
         --drone-address=udp://:14540 --connection-timeout=60 \\
         --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_airplane \\
         --vehicle-type=fixed_wing --autopilot=px4 -v --log-cli-level=INFO
 
 ArduCopter::
 
-    pytest tests/command/takeoff/test_flight.py \\
+    pytest tests/command/nav_takeoff/test_flight.py \\
         --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 \\
         --ardupilot-sitl=~/ardu_sitl/arducopter \\
         --home-lat=37.6234 --home-lon=-122.0811 --home-alt=0 \\
@@ -35,7 +35,7 @@ ArduCopter::
 
 ArduPlane::
 
-    pytest tests/command/takeoff/test_flight.py \\
+    pytest tests/command/nav_takeoff/test_flight.py \\
         --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 \\
         --ardupilot-sitl=~/ardu_sitl/arduplane --vehicle-type=fixed_wing \\
         --autopilot=ardupilot -v --log-cli-level=INFO
@@ -92,7 +92,7 @@ _last_sitl_reboot_ts: float = 0.0  # monotonic timestamp of last successful rebo
 # ---------------------------------------------------------------------------
 # Behaviour summary — per-run log file + inline README section update
 # ---------------------------------------------------------------------------
-_README = Path("tests/command/takeoff/README.md")
+_README = Path("tests/command/nav_takeoff/README.md")
 
 # Map (autopilot, vehicle) → the Tier-2 section heading prefix in the README.
 # The suffix " (Tier 2)" or " (M.m.p)" is handled dynamically.

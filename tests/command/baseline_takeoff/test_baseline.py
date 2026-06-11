@@ -102,7 +102,7 @@ from tests.command.conftest import (
     probe_command_long,
     _FMT,
 )
-from tests.command.takeoff.test_flight import (
+from tests.command.nav_takeoff.test_flight import (
     _get_home_position,
     _wait_armable,
     _rtl_and_land,

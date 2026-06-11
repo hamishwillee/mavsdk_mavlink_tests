@@ -21,11 +21,11 @@ Running
 -------
 Paired mock (no autopilot)::
 
-    pytest tests/command/takeoff/test_command.py -v --log-cli-level=INFO
+    pytest tests/command/nav_takeoff/test_command.py -v --log-cli-level=INFO
 
 Standalone::
 
-    pytest tests/command/takeoff/test_command.py --drone-address=udp://:14540 -v --log-cli-level=INFO
+    pytest tests/command/nav_takeoff/test_command.py --drone-address=udp://:14540 -v --log-cli-level=INFO
 """
 
 import logging
