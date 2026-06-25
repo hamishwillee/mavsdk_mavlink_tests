@@ -23,6 +23,7 @@ Default behaviour:
 import asyncio
 import json
 import logging
+import math
 
 from mavsdk import System
 from mavsdk.mavlink_direct import MavlinkMessage
@@ -102,6 +103,15 @@ class MockFlightStack:
     command_in_progress : dict[int, list[int]] | None
         ``{command_id: [p0, p1, ...]}`` — emit one IN_PROGRESS ACK per entry
         (with the given progress value) before sending the final result ACK.
+    require_valid_location_cmds : set[int] | None
+        Command IDs that require a real GNSS coordinate (no sentinel allowed).
+        For these commands the INT32_MAX "use current position" sentinel is
+        treated as invalid (DENIED), and NaN altitude is also DENIED.
+        By default the mock treats INT32_MAX as always valid; this overrides
+        that behaviour for the listed commands.
+    emit_gps_global_origin : bool
+        When True, send GPS_GLOBAL_ORIGIN (id=49) after COMMAND_ACK(ACCEPTED)
+        for any command in ``require_valid_location_cmds``.  Default True.
     """
 
     def __init__(
@@ -114,6 +124,8 @@ class MockFlightStack:
         command_results: dict | None = None,
         drop_command_acks: dict | None = None,
         command_in_progress: dict | None = None,
+        require_valid_location_cmds: set | None = None,
+        emit_gps_global_origin: bool = True,
     ) -> None:
         self.capability_bits = capability_bits
         self.item_request_delay_s = item_request_delay_s
@@ -123,6 +135,8 @@ class MockFlightStack:
         self._command_results: dict[int, int] = dict(command_results or {})
         self._drop_ack_remaining: dict[int, int] = dict(drop_command_acks or {})
         self._command_in_progress: dict[int, list[int]] = dict(command_in_progress or {})
+        self._require_valid_location_cmds: frozenset[int] = frozenset(require_valid_location_cmds or set())
+        self.emit_gps_global_origin: bool = emit_gps_global_origin
         # Records every received COMMAND_INT and non-capability COMMAND_LONG
         self.received_commands: list[dict] = []
         # mission_type (int) → list of item field dicts
@@ -231,6 +245,18 @@ class MockFlightStack:
             target_component_id=_GCS_COMPID,
             fields_json=json.dumps(fields),
         ))
+
+    async def _send_gps_global_origin(
+        self, system: System, lat_e7: int, lon_e7: int, alt_m: float
+    ) -> None:
+        """Send GPS_GLOBAL_ORIGIN (message id=49) echoing the commanded coordinates."""
+        await self._send(system, "GPS_GLOBAL_ORIGIN", {
+            "latitude": lat_e7,
+            "longitude": lon_e7,
+            "altitude": int(alt_m * 1000),  # m → mm (message field is int32, units mm)
+            "time_usec": 0,
+        })
+        log.debug("GPS_GLOBAL_ORIGIN sent: lat=%d lon=%d alt_mm=%d", lat_e7, lon_e7, int(alt_m * 1000))
 
     async def _send_ack(self, system: System, mission_type: int, result: int) -> None:
         await self._send(system, "MISSION_ACK", {
@@ -379,9 +405,10 @@ class MockFlightStack:
                 msg = await self._recv("COMMAND_LONG")
                 fields = json.loads(msg.fields_json)
                 cmd = int(fields.get("command", 0))
-                param1 = float(fields.get("param1", 0.0))
+                param1 = _f(fields.get("param1"))  # _f handles None (JSON null) → NaN
                 # MAV_CMD_REQUEST_MESSAGE (512) with param1=148 (AUTOPILOT_VERSION)
-                if cmd == 512 and abs(param1 - 148.0) < 0.5:
+                # NaN param1 (math.isnan) correctly falls to the else branch
+                if cmd == 512 and not math.isnan(param1) and abs(param1 - 148.0) < 0.5:
                     await self._send(system, "AUTOPILOT_VERSION", {
                         "capabilities": self.capability_bits,
                         "flight_sw_version": 0,
@@ -411,7 +438,39 @@ class MockFlightStack:
                         "param7": _f(fields.get("param7")),
                     }
                     self.received_commands.append(record)
-                    await self._send_command_ack(system, cmd)
+
+                    if cmd in self._require_valid_location_cmds:
+                        # In COMMAND_LONG, param5/6 are float degrees; param7 is float metres.
+                        # Reject: NaN for any coordinate, or lat/lon outside valid range.
+                        # float(INT32_MAX) ≈ 2.1e9° is far outside range and caught here.
+                        p5, p6, p7 = record["param5"], record["param6"], record["param7"]
+                        coord_invalid = (
+                            math.isnan(p5) or math.isnan(p6) or math.isnan(p7)
+                            or abs(p5) > 90.0 or abs(p6) > 180.0
+                        )
+                        if coord_invalid:
+                            log.debug(
+                                "COMMAND_LONG cmd=%d: invalid coordinates (p5=%s p6=%s p7=%s) → DENIED",
+                                cmd, p5, p6, p7,
+                            )
+                            await self._send(system, "COMMAND_ACK", {
+                                "command": cmd,
+                                "result": MAV_RESULT_DENIED,
+                                "progress": 255,
+                                "result_param2": 0,
+                                "target_system": _GCS_SYSID,
+                                "target_component": _GCS_COMPID,
+                            })
+                        else:
+                            result = self._command_results.get(cmd, MAV_RESULT_ACCEPTED)
+                            await self._send_command_ack(system, cmd)
+                            if self.emit_gps_global_origin and result == MAV_RESULT_ACCEPTED:
+                                lat_e7 = int(p5 * 1e7)
+                                lon_e7 = int(p6 * 1e7)
+                                await self._send_gps_global_origin(system, lat_e7, lon_e7, p7)
+                    else:
+                        await self._send_command_ack(system, cmd)
+
                     log.debug("COMMAND_LONG cmd=%d confirmation=%d", cmd, confirmation)
             except asyncio.CancelledError:
                 raise
@@ -428,6 +487,7 @@ class MockFlightStack:
                 cmd = int(fields.get("command", 0))
                 x = int(fields.get("x", 0))
                 y = int(fields.get("y", 0))
+                z = _f(fields.get("z"))
                 record = {
                     "type": "COMMAND_INT",
                     "command": cmd,
@@ -438,18 +498,31 @@ class MockFlightStack:
                     "param4": _f(fields.get("param4")),
                     "x": x,
                     "y": y,
-                    "z": _f(fields.get("z")),
+                    "z": z,
                 }
                 self.received_commands.append(record)
-                # INT32_MAX is the "use current position" sentinel — always valid.
-                # Any other value outside the physical lat/lon range is DENIED.
-                lat_invalid = x != _INT32_MAX and abs(x) > _MAX_LAT_INT
-                lon_invalid = y != _INT32_MAX and abs(y) > _MAX_LON_INT
-                if lat_invalid or lon_invalid:
-                    log.debug(
-                        "COMMAND_INT cmd=%d: out-of-range lat/lon (x=%d, y=%d) → DENIED",
-                        cmd, x, y,
-                    )
+
+                denied = False
+
+                if cmd in self._require_valid_location_cmds:
+                    # Command requires a real GNSS coordinate — INT32_MAX sentinel and NaN alt invalid.
+                    if x == _INT32_MAX or y == _INT32_MAX:
+                        log.debug("COMMAND_INT cmd=%d: INT32_MAX sentinel invalid for this command → DENIED", cmd)
+                        denied = True
+                    elif math.isnan(z):
+                        log.debug("COMMAND_INT cmd=%d: NaN altitude invalid for this command → DENIED", cmd)
+                        denied = True
+
+                if not denied:
+                    # INT32_MAX is the "use current position" sentinel — valid for other commands.
+                    # Any other value outside the physical lat/lon range is DENIED.
+                    lat_invalid = x != _INT32_MAX and abs(x) > _MAX_LAT_INT
+                    lon_invalid = y != _INT32_MAX and abs(y) > _MAX_LON_INT
+                    if lat_invalid or lon_invalid:
+                        log.debug("COMMAND_INT cmd=%d: out-of-range lat/lon (x=%d, y=%d) → DENIED", cmd, x, y)
+                        denied = True
+
+                if denied:
                     await self._send(system, "COMMAND_ACK", {
                         "command": cmd,
                         "result": MAV_RESULT_DENIED,
@@ -459,7 +532,15 @@ class MockFlightStack:
                         "target_component": _GCS_COMPID,
                     })
                 else:
+                    result = self._command_results.get(cmd, MAV_RESULT_ACCEPTED)
                     await self._send_command_ack(system, cmd)
+                    if (
+                        self.emit_gps_global_origin
+                        and cmd in self._require_valid_location_cmds
+                        and result == MAV_RESULT_ACCEPTED
+                    ):
+                        await self._send_gps_global_origin(system, x, y, z)
+
                 log.debug("COMMAND_INT cmd=%d frame=%d", cmd, record["frame"])
             except asyncio.CancelledError:
                 raise
