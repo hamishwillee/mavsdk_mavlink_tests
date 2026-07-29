@@ -13,6 +13,8 @@ The same MAV_CMD may behave differently in the two paths — see `CLAUDE.md § C
 | `test_protocol.py` | Protocol mechanics: ACK receipt, echo, ACCEPTED result, COMMAND_LONG, retry, IN_PROGRESS |
 | `nav_takeoff/test_command.py` | `MAV_CMD_NAV_TAKEOFF` (cmd=22) via COMMAND_INT — ACK result tests |
 | `nav_land/test_command.py` | `MAV_CMD_NAV_LAND` (cmd=21) via COMMAND_INT — ACK result tests |
+| `do_set_mission_current/test_command.py` | `MAV_CMD_DO_SET_MISSION_CURRENT` (cmd=224) via COMMAND_LONG — ACK result tests |
+| `do_set_mission_current/test_flight.py` | `MAV_CMD_DO_SET_MISSION_CURRENT` param2 — Tier 2 behavioural test: does the reset flag actually reset a `DO_JUMP` repeat counter |
 
 ## Running
 
@@ -160,13 +162,15 @@ Commands not in either table above — supported by some ArduPilot vehicles but 
 | DO_FIGURE_EIGHT | 35 | ✗ | ✗ | ✗ | ✗ | ? | ✓ | ✓ | ? | ✓ |
 | DO_REPOSITION | 192 | ✓ | ? | ? | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
 | DO_FENCE_ENABLE | 207 | ✓ | ? | ? | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| DO_SET_MISSION_CURRENT | 224 | ✓ | ? | ? | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| DO_SET_MISSION_CURRENT | 224 | ✓ | ? | ? | ✓ | ✗³ | ✗ | ✗ | ✗ | ✓ |
 | DO_VTOL_TRANSITION | 3000 | ✗ | ✗ | ✗ | ✗ | ? | ? | ✓ | ? | ✓ |
 
 `DO_FIGURE_EIGHT` (35) is SUPPORTED on PX4 FW and VTOL but gives no ACK on MC and Rover (UNKNOWN).
 `DO_VTOL_TRANSITION` (3000) is SUPPORTED only on PX4 VTOL; all other PX4 vehicle types give no ACK.
 NAV_LOITER_UNLIM is supported by ArduCopter and ArduPlane FW/QP but not PX4 or ArduRover.
 DO_REPOSITION, DO_FENCE_ENABLE, and DO_SET_MISSION_CURRENT are confirmed by ArduCopter and ArduRover; ArduPlane FW/QP gave no ACK (?); all PX4 vehicle types return UNSUPPORTED.
+
+³ **Stale** — this row was tested 2026-05-27 against PX4 1.18.0-alpha. Live testing against PX4 1.18.0-beta shows PX4 MC actively processes DO_SET_MISSION_CURRENT (never UNSUPPORTED) and matches the full authoritative behaviour matrix exactly — see [`do_set_mission_current/README.md`](do_set_mission_current/README.md) for the complete deep-dive. The PX4 FW/VTOL/Rover ✗ entries for this row have not been re-verified and should not be trusted without a fresh survey run.
 
 Tested: 2026-05-27.
 
@@ -212,3 +216,5 @@ Logs: `logs/command_survey_ardupilot_copter_4.8.0-dev_20260526_211627.log`, `log
 See [`nav_takeoff/README.md`](nav_takeoff/README.md) for `MAV_CMD_NAV_TAKEOFF` COMMAND_INT test results and a comparison with the mission protocol path.
 
 See [`nav_land/README.md`](nav_land/README.md) for `MAV_CMD_NAV_LAND` COMMAND_INT test results, including notes on why several parameters (notably the "ground level" altitude semantics and precision-landing flags) can only be tested observationally at the ACK level — and the Tier 2 (flight) results that resolve those execution-semantics questions empirically (headline finding: the commanded lat/lon/alt is **not** the touchdown point on PX4 MC/VTOL or ArduCopter MC — the vehicle descends in place from wherever it already is).
+
+See [`do_set_mission_current/README.md`](do_set_mission_current/README.md) for `MAV_CMD_DO_SET_MISSION_CURRENT` COMMAND_LONG test results against an authoritative, maintainer-provided behaviour matrix (Mock, PX4 MC — 18/18 Tier 1 tests passing with zero deviation, ArduCopter MC blocked by a SITL environment issue) — plus the Tier 2 `test_flight.py` jump-counter reset test, which confirms `param2=1` genuinely resets a `DO_JUMP` repeat counter on PX4 MC, including mid-flight. A design outline (not yet implemented) remains for verifying that the command actually changes the current mission item via `MISSION_CURRENT`.

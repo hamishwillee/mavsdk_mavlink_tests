@@ -205,6 +205,15 @@ Implemented in `_wait_for_connection` and any helper that cancels a gRPC subscri
    Needs investigation: (a) is z conversion required by spec for geofence?
    (b) if so, this is a PX4 bug to report upstream.
 
+6. **DO_SET_MISSION_CURRENT mission-item-change verification** — confirm the command actually moves the current mission item by subscribing to raw `MISSION_CURRENT` (msg id 42) via `mavlink_direct` before/after two different `param1` sends and asserting the emitted `seq` changes accordingly.
+   Needs a `MockFlightStack` extension (current-seq tracking + `MISSION_CURRENT` emission, analogous to `emit_gps_global_origin`) to run in mock mode; see `tests/command/do_set_mission_current/README.md` § Design: verifying that DO_SET_MISSION_CURRENT changes the current mission item.
+
+7. **ArduCopter SITL cannot complete initialisation in this environment** — `is_armable` never goes true; gyro/accel/mag `calibration_ok` telemetry flags stay `False` indefinitely (confirmed via direct `telemetry.health()` probe out to 40s+); the SITL console log stalls at `Waiting for internal clock bits to be set (current=0x00)` shortly after connection.
+   Confirmed identically on three independent builds: the prebuilt `~/ardu_sitl/arducopter` binary, a fresh build of ArduPilot master, and a fresh build of the latest stable release (`Copter-4.6.3`) — the latter two launched via the officially-recommended `Tools/autotest/sim_vehicle.py`, not a raw binary invocation.
+   Since a stable release fails the same way as a same-day development build, and PX4 SITL flight is confirmed working fine in the same environment, this looks like an environment-specific issue (not an ArduPilot bug, not a launch-method issue) — root cause not yet identified; further progress needs lower-level debugging (`strace`/`gdb`) not currently available (no `sudo`).
+   Blocks `tests/command/do_set_mission_current/test_flight.py::test_param2_resets_jump_counter` (and any other Tier 2 flight test) on ArduCopter until resolved — Tier 1 (ACK-only, no arming) tests are unaffected.
+   See `tests/command/do_set_mission_current/README.md` § ArduCopter SITL boot issue for full detail.
+
 ## Change log
 
 See `CHANGELOG.md` for full development history.

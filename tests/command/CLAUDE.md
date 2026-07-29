@@ -139,6 +139,31 @@ Full per-test tables in `tests/command/nav_land/README.md` § Tier 1 test result
   **New finding**: for the COMMAND_LONG `float(INT32_MAX)` lat/lon sentinel test, ArduCopter gives **no ACK at all** (`UNKNOWN`, logged per the no-ACK policy, not asserted) — a different failure mode than PX4's explicit `DENIED`. Both are arguably spec violations (the sentinel should be `ACCEPTED`), but ArduCopter's silent drop is harder to distinguish from "busy/transient" without further probing.
 - **ArduPlane FW / ArduPlane QP / ArduRover**: NAV_LAND **UNSUPPORTED** on all three — `_ensure_supported()` skips all 19 tests (19 SKIP each), exactly as the survey predicted. Consistent with NAV_LAND being aerial-landing-specific: ArduPlane and ArduRover gate it out entirely, while PX4 accepts it on every vehicle type including rover.
 
+## DO_SET_MISSION_CURRENT (cmd=224) — see `tests/command/do_set_mission_current/README.md`
+
+`hasLocation="false" isDestination="false"` → COMMAND_LONG is the primary message type (no location, no float coordinate params — see COMMAND_INT vs COMMAND_LONG selection rules above).
+
+**Authoritative behaviour matrix** (provided by the project maintainer, refining the bare common.xml text — this is what the test assertions in `test_command.py` encode, not just the XML alone):
+
+- **No mission uploaded**: ANY param1/param2 combination → `MAV_RESULT_FAILED`. A precondition-failure gate, not just an instance of the out-of-range case — takes priority over param-level validation entirely.
+- **Mission uploaded, param1 ("Number")**: `-1` → `ACCEPTED` (keeps current item unchanged); `> number of mission items` → `FAILED`; a valid index → `ACCEPTED` (sets current item); any other value (e.g. negative, not `-1`) → `DENIED`.
+- **Mission uploaded, param2 ("Reset Mission", `MAV_BOOL`)**: `0` → `ACCEPTED` (jump counters untouched); `1` → `ACCEPTED` (resets `DO_JUMP` repeat counters + promotes a `MISSION_STATE_COMPLETE` mission to `PAUSED`/`ACTIVE`, making a completed mission restartable); any other value → `DENIED`.
+- params 3–7 (`Empty`, reserved) aren't covered by the matrix above — spec doesn't name a result code for non-NaN values there, so those stay the usual ambiguous-result xfail convention.
+
+Because "no mission" masks per-parameter validation, `test_command.py` has two classes: `TestDoSetMissionCurrentNoMission` (confirms the gate itself, 3 tests) and `TestDoSetMissionCurrentWithMission` (the full matrix above, 15 tests, mission uploaded via an autouse fixture). Every matrix case is a hard assertion on real stacks (xfail-with-DOC-DISCREPANCY-log-line as a regression guard if not met, rather than a bare assert), observational in mock mode (`MockFlightStack` has no per-command mission-state tracking for cmd 224).
+
+Survey status (`tests/command/README.md`): SUPPORTED on ArduCopter MC and ArduRover; UNSUPPORTED on all PX4 vehicle types (MC/FW/VTOL/Rover) per the 2026-05-27 survey (PX4 1.18.0-alpha); UNKNOWN (no ACK) on ArduPlane FW/QP; SUPPORTED on the Mock. **This PX4 status is known stale** — live testing shows PX4 MC actively processes the command (never `UNSUPPORTED`); survey table not yet regenerated.
+
+One execution-semantics question remains out of ACK-level test scope and is documented as a **design outline only** (not implemented) in `tests/command/do_set_mission_current/README.md`: does the command actually move the current mission item (would need `MISSION_CURRENT` message observation, requiring a `MockFlightStack` extension analogous to `emit_gps_global_origin`).
+
+The second — does `param2` actually reset a `DO_JUMP` repeat counter — **is implemented** (`tests/command/do_set_mission_current/test_flight.py::test_param2_resets_jump_counter`, Tier 2 flight-execution) and has been run against Mock (SKIP — no mission executor) and PX4 MC (**PASS** — confirms `param2=1` genuinely resets the counter, including the `param1=-1` reset sentinel working correctly mid-flight). ArduCopter MC is blocked by a SITL initialisation issue confirmed present across the prebuilt binary, a fresh ArduPilot master build, and a fresh `Copter-4.6.3` stable build — see item 7 in the root `CLAUDE.md`'s Future work list and `tests/command/do_set_mission_current/README.md` § ArduCopter SITL boot issue.
+
+### Findings (PX4 MC 1.18.0-beta)
+
+Live testing found PX4 MC actively processes DO_SET_MISSION_CURRENT — contradicting the 2026-05-27 survey's `UNSUPPORTED` (survey table not yet regenerated to reflect this). All 18 Tier 1 tests pass with zero deviation from the authoritative matrix above, and the Tier 2 jump-counter test confirms `param2=1` genuinely resets a `DO_JUMP` repeat counter, including via the spec-correct `param1=-1` sentinel sent mid-flight.
+
+Also found: PX4's `MISSION_CURRENT`/`mission_progress()` stream oscillates rapidly (alternating seq values at ~1 Hz, no real vehicle movement) around a `DO_JUMP` item — a reporting artifact that breaks naive "count seq transitions" visit-tallying; `test_flight.py` works around it by requiring a genuine loop traversal (an intervening waypoint) before counting a revisit. Full detail, raw traces, and per-stack Tier 1/Tier 2 result tables: `tests/command/do_set_mission_current/README.md`.
+
 ## MAVLink XML submodule
 
 `mavlink/message_definitions/v1.0/common.xml` contains 168 MAV_CMD entries. common.xml includes standard.xml which includes minimal.xml (common is the full superset).
