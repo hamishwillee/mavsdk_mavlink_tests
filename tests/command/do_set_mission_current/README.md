@@ -111,6 +111,9 @@ execution-semantics questions are out of scope for Tier 1:
   `MISSION_CURRENT` message)? — **still deferred, design only** (see below).
 - Does `param2=1` actually reset a `DO_JUMP` repeat counter? — **implemented
   and run**, see the Tier 2 section below.
+- Does `param2=1` actually make a `MISSION_STATE_COMPLETE` mission restartable
+  (and does `param2=0` leave it untouched)? — **implemented, not yet run**,
+  see the Tier 2 section below.
 
 ## Tier 1 test groups (`tests/command/do_set_mission_current/test_command.py`)
 
@@ -313,6 +316,215 @@ attempt every time, including mid-flight.
 | PX4 MC (1.18.0-beta) | **PASS** | 3 | 4 | `param1=-1, param2=1` reset `ACCEPTED` on the first attempt (mid-flight); test_visits (4) is exactly control_visits+1, matching the expected effect of restoring the counter from 1→2 mid-loop. **param2=1 genuinely resets the DO_JUMP counter on PX4, and the -1 sentinel works correctly mid-flight.** |
 | ArduCopter MC | **BLOCKED** | — | — | See "ArduCopter SITL boot issue" above — Tier 2 requires arming/flight, so it's blocked until a working ArduCopter SITL instance is available. |
 
+## Tier 2 — completed-mission restart test (`tests/command/do_set_mission_current/test_flight.py`)
+
+Implements `test_param2_restarts_completed_mission`: added to check the other
+half of the authoritative matrix's `param2` claim — that `param2=1` makes a
+`MISSION_STATE_COMPLETE` mission restartable, while `param2=0` leaves it
+completed. `test_param2_resets_jump_counter` above validates the *jump-counter*
+half of that claim via a mid-flight (never-completed) reset; this test
+validates the *mission-state* half by actually driving the mission to
+completion first.
+
+```
+seq  command         purpose
+0    NAV_TAKEOFF     climb to 15 m
+1    NAV_WAYPOINT    single nearby waypoint (15 m north of home)
+2    NAV_RETURN_TO_LAUNCH
+```
+
+A deliberately minimal (non-looping) mission — unlike the jump-loop mission
+above, the goal here is to reach `MISSION_STATE_COMPLETE` as fast as possible,
+not to count revisits.
+
+**Method**: subscribes to raw `MISSION_CURRENT` (msg id 42) via
+`mavlink_direct`, tracking the `mission_state` field (`MAV_MISSION_STATE` enum:
+`ACTIVE`=3, `PAUSED`=4, `COMPLETE`=5) — the field the matrix's "completed"
+claim is actually about; `mission_raw.mission_progress()` has no equivalent
+concept. Flies the mission to `MISSION_STATE_COMPLETE`, then:
+
+1. Sends `DO_SET_MISSION_CURRENT(param1=-1, param2=0)` and asserts
+   `mission_state` stays `COMPLETE` (not restarted).
+2. Sends `DO_SET_MISSION_CURRENT(param1=-1, param2=1)` and asserts
+   `mission_state` becomes `ACTIVE` or `PAUSED` (restarted).
+
+Reuses the same `-1`-sentinel-DENIED fallback pattern as
+`test_param2_resets_jump_counter` (`_send_restart_command`, mirroring
+`_fly_jump_mission`'s reset send): if a stack denies the `-1` sentinel, retries
+with an explicit valid index (the RTL item's seq) so a `-1`-sentinel bug
+doesn't mask whether `param2` itself changes `mission_state`.
+
+**Spec-legal escape hatch**: if `mission_state` is never reported as anything
+but `MISSION_STATE_UNKNOWN`(0) (or `MISSION_CURRENT` is never received at all)
+within the completion timeout, the test is skipped as inconclusive rather than
+failed — "state reporting not supported" is explicitly spec-legal, and a
+stack that never populates the field can't be asked to prove either half of
+the restart claim.
+
+### Results
+
+| Stack | Result | Notes |
+|-------|--------|-------|
+| Mock | — | Not run this session; expected `SKIP` — `MockFlightStack` has no mission executor and doesn't emit `MISSION_CURRENT` at all (see "Design: verifying that DO_SET_MISSION_CURRENT changes the current mission item" below); `require_real_stack` should gate it out the same way it gates `test_param2_resets_jump_counter`. |
+| PX4 MC (1.18.0-beta) | **XFAIL** | `param2=0` correctly left `mission_state=COMPLETE(5)`. `param2=1` was `ACCEPTED` but `mission_state` stayed `COMPLETE(5)` (expected `ACTIVE`/`PAUSED`) — see root-cause analysis below. Log: `logs/command_do_set_mission_current_flight_px4_quadcopter_1.18.0-beta_20260730_122757.log`. |
+| ArduCopter MC | — | Blocked by the same "ArduCopter SITL boot issue" as the jump-counter test above (requires arming/flight). |
+
+### What PX4 sees as "mission completion"
+
+Purely positional, no semantics: `MissionBase::goToNextItem()`
+(`mission_base.cpp`) fails once `current_seq + 1 >= count`. That sets
+`mission_result.finished = true` (`setEndOfMissionItems()`) — the sole input
+to `MISSION_CURRENT.mission_state == COMPLETE` (`update_mission_state()`,
+`mavlink_mission.cpp`). No check for landed/at-home/etc. A `RETURN_TO_LAUNCH`
+last item completes instantly (`is_mission_item_reached_or_completed()`
+returns `true` for it with zero travel); an ordinary waypoint completes only
+once actually reached.
+
+### Root cause of the PX4 MC XFAIL (traced in PX4-Autopilot source, 2026-07-30)
+
+Before accepting this as a stack discrepancy, traced why `mission_state` never
+moved off `COMPLETE` — an earlier version of this test had a genuine bug
+(`_rtl_and_land()`, which disarms, ran *before* the restart commands were
+sent); fixing that ordering did **not** change the result, ruling the bug out
+as the cause. Reading PX4's source explains what's actually happening:
+
+1. `MavlinkMissionManager::update_mission_state()` (`mavlink_mission.cpp`)
+   computes `mission_state = COMPLETE` whenever `mission_result.finished` is
+   `true` — checked *before*, and independent of, whether the vehicle is in
+   `AUTO.MISSION` mode.
+2. `mission_result.finished` is only reset to `false` by
+   `MissionBase::set_mission_result()`, reached only via
+   `update_mission()`/`set_mission_items()`.
+3. `Mission::set_current_mission_index()` — what `DO_SET_MISSION_CURRENT`
+   calls (`navigator_main.cpp`) — only invokes
+   `update_mission()`/`set_mission_items()` `if (isActive())`, i.e. only if
+   the Mission navigator mode is *currently* PX4's active flight mode.
+4. Once our mission's last item (`NAV_RETURN_TO_LAUNCH`) is reached, PX4
+   switches the vehicle's nav_state away from `AUTO.MISSION` into a dedicated
+   `RETURN_TO_LAUNCH` mode — confirmed via `telemetry.flight_mode()` reading
+   `'RETURN_TO_LAUNCH'` at the moment `mission_state` first read `COMPLETE`,
+   and still `'RETURN_TO_LAUNCH'` after the `param2=1` reset. So `isActive()`
+   is `false` for Mission mode by the time the reset is sent, and the reset's
+   effect (even though the command itself is `ACCEPTED`) never propagates to
+   `mission_state`.
+5. A follow-up diagnostic (not part of the committed test) confirmed
+   re-engaging Mission mode does flip `mission_state` to `ACTIVE` — but doing
+   so via `MISSION_START(param1=0)` also rewinds `current_seq` to the first
+   item, which independently explains the transition and doesn't cleanly
+   isolate `param2`'s effect.
+6. Separately: `param2`'s only concrete PX4-side effect is resetting
+   `DO_JUMP` repeat counters (`resetMissionJumpCounter()`) — which is moot for
+   this test's minimal, non-looping takeoff→waypoint→RTL mission. There is no
+   `DO_JUMP` item for a counter reset to do anything to; that specific effect
+   is already exercised properly by `test_param2_resets_jump_counter` above
+   (which uses a real `DO_JUMP` loop, mid-flight, while still in
+   `AUTO.MISSION` mode).
+
+**Conclusion**: the XFAIL is a genuine result, not a test artifact — but it
+also shows the authoritative matrix's "makes a completed mission restartable"
+claim is subtler on PX4 than a single `COMMAND_LONG` round-trip can
+demonstrate: `mission_state` only reflects the reset once Mission mode is
+reactivated, and a mission with no `DO_JUMP` item gives `param2` nothing to
+reset in the first place. A test that isolates `param2`'s effect more
+faithfully would need a `DO_JUMP`-loop mission driven to genuine completion,
+plus an explicit reactivation step that doesn't itself move `current_seq`
+(e.g. `MISSION_START(param1=-1)`, which PX4's Navigator skips entirely per
+`navigator_main.cpp`'s `cmd.param1 >= 0` guard) between the reset and the
+`mission_state` observation — implemented as
+`test_param2_restarts_from_early_item_after_hold` below.
+
+## Tier 2 — restart-after-Hold test, corrected design (`test_param2_restarts_from_early_item_after_hold`)
+
+Follow-up to `test_param2_restarts_completed_mission` above, fixing the two
+things that test got wrong (per the project maintainer's design, given ahead
+of running it):
+
+1. **Mission ends on an ORDINARY waypoint, not RTL.** Reaching RTL as the last
+   item makes PX4 leave `AUTO.MISSION` mode entirely for a dedicated
+   `RETURN_TO_LAUNCH` mode — that's *why* the original test's reset command
+   had nothing to propagate into. Ending on a plain waypoint instead completes
+   into **Hold** mode (confirmed via `telemetry.flight_mode()`).
+2. **The restart command targets an early valid index (not `-1`)**, followed
+   by a raw `MAV_CMD_MISSION_START(param1=-1)` to explicitly re-engage
+   `AUTO.MISSION`. `param1=-1` is deliberate: PX4's Navigator only acts on
+   `MISSION_START`'s `param1` when it is `>= 0` (`navigator_main.cpp`), so
+   `-1` lets Commander switch mode/arm without Navigator overwriting the index
+   we just set — isolating `param2`'s effect from `param1`'s own
+   index-setting side effect.
+
+Mission shape:
+
+```
+seq  command       purpose
+0    NAV_TAKEOFF   climb to HOLD_ALT_M
+1    NAV_WAYPOINT  early item / restart target (15 m north of home)
+2    NAV_WAYPOINT  last item — completes into Hold (30 m north of home)
+```
+
+### Code-inspection prediction (done *before* running, per the maintainer's request)
+
+Traced `Mission::set_current_mission_index()` (`mission.cpp`) and
+`MissionBase::isMissionValid()` / `update_mission()` / `set_mission_items()`
+(`mission_base.cpp`):
+
+- For a genuinely different target index (not `-1`, not the current index),
+  `set_current_mission_index()` sets `_is_current_planned_mission_item_valid
+  = true;` **unconditionally** — not gated by `reset_jump_counters` (param2).
+- `isMissionValid()` checks `current_seq < count`, the dataman id, timestamp,
+  and `mission_result.valid` — it **never inspects `mission_result.finished`**.
+- So once Mission mode reactivates (`on_activation()` → `update_mission()` →
+  `set_mission_items()`), the resolved current item is the early index we
+  set — not the terminal one — and `set_mission_items()` calls
+  `setActiveMissionItems()` (which calls `set_mission_result()`, clearing
+  `finished`) rather than `setEndOfMissionItems()`.
+
+**Prediction**: none of this appears to depend on `param2` — moving
+`current_seq` to a valid non-terminal index looks, from the source alone,
+sufficient by itself to make the mission resume once Mission mode
+reactivates, regardless of whether `param2` was `0` or `1`. `param2`'s only
+concrete PX4-side effect (`resetMissionJumpCounter()`) would then only matter
+for a mission that actually has a `DO_JUMP` item to reset — which this one,
+like the original restart test's mission, does not.
+
+### Empirical result (PX4 MC 1.18.0-beta, 2026-07-30) — **prediction confirmed**
+
+Log: `logs/command_do_set_mission_current_flight_px4_quadcopter_1.18.0-beta_20260730_hold_restart.log`.
+
+```
+Mission run finished — mission_state=5 (seq=2) flight_mode='HOLD'
+Attempt A: DO_SET_MISSION_CURRENT(param1=1, param2=0) ack=0
+Attempt A: MISSION_START(param1=-1) ack=0 -> mission_state=3 flight_mode='MISSION' (seq=1)
+Attempt A resumed the mission (param2=0!) — waited for re-completion: mission_state=5
+Attempt B: DO_SET_MISSION_CURRENT(param1=1, param2=1) ack=0
+Attempt B: MISSION_START(param1=-1) ack=0 -> mission_state=3 flight_mode='MISSION' (seq=1)
+PASSED
+```
+
+- Completing on a plain waypoint does put PX4 into **Hold** (`'HOLD'`), not
+  RTL — confirms the first half of the corrected design.
+- **Attempt A (`param2=0`) also resumed the mission** — `mission_state` went
+  `COMPLETE` → `ACTIVE` and the vehicle genuinely re-flew from the early item
+  (seq 1) to the end again (re-reaching `COMPLETE`), exactly as the
+  code-inspection prediction said, and contrary to the original hypothesis
+  that `param2=0` "won't cause any action because the mission is complete."
+- Attempt B (`param2=1`) also resumed it, as the matrix requires — the test's
+  hard assertion is on this half only.
+- **Conclusion**: on PX4 MC, `param2` does **not** gate whether a completed
+  mission can be resumed. What gates it is whether `DO_SET_MISSION_CURRENT`'s
+  `param1` points at a valid, non-terminal item *and* Mission mode is
+  reactivated afterwards (e.g. via `MISSION_START`). `param2`'s only
+  demonstrated effect on PX4 remains the `DO_JUMP` repeat-counter reset,
+  already covered by `test_param2_resets_jump_counter`. The authoritative
+  matrix's "resets jump counters AND changes mission state 'completed' to
+  'active'/'paused'" reads as one combined causal claim; on PX4, `param1`
+  (not `param2`) is what does the "completed → active" part, at least for a
+  mission without a `DO_JUMP` item still to reset.
+- The test itself asserts only the matrix's literal claim (`param2=1` must
+  restart a completed mission) and passes; the `param2=0`-also-resumes finding
+  is logged as a `DOC DISCREPANCY` (see below) rather than asserted, since the
+  matrix doesn't explicitly promise `param2=0` will *fail* to resume — it's
+  silent on what an unrelated `param1` change does.
+
 ## DOC DISCREPANCY summary
 
 Per `CLAUDE.md`'s spec-discrepancy workflow — logged in test output, recorded
@@ -325,13 +537,39 @@ here, and in `tests/command/CLAUDE.md`:
    (`scripts/generate_command_tables.py` after `test_survey.py`) is
    recommended to refresh the table; not done here as out of scope for this
    change (168-command survey vs. one command's deep-dive).
+2. **Completed-mission restart, RTL-ending mission (2026-07-30)**:
+   `test_param2_restarts_completed_mission` XFAILs on PX4 MC —
+   `DO_SET_MISSION_CURRENT(param1=-1, param2=1)` is `ACCEPTED` but does not
+   flip `mission_state` from `COMPLETE` to `ACTIVE`/`PAUSED` while the vehicle
+   has already left `AUTO.MISSION` mode (e.g. during the mission's own
+   `RETURN_TO_LAUNCH` item). Root cause traced to PX4 source — see "Root cause
+   of the PX4 MC XFAIL" above. Superseded by item 3 below, which corrects the
+   mission shape and confirms the underlying claim can hold with the right
+   setup.
+3. **`param2` does not gate mission resumption on PX4 (2026-07-30)**: the
+   corrected `test_param2_restarts_from_early_item_after_hold` (PASS) shows
+   that `param1` alone — pointed at a valid, non-terminal item, followed by
+   `MISSION_START` to reactivate `AUTO.MISSION` — is sufficient to resume a
+   `MISSION_STATE_COMPLETE` mission on PX4 MC, **regardless of `param2`**.
+   Confirmed both by code inspection (`isMissionValid()` never checks
+   `mission_result.finished`; `_is_current_planned_mission_item_valid` is set
+   unconditionally for a genuinely different target index) and by running the
+   test: attempt A (`param2=0`) resumed the mission just as attempt B
+   (`param2=1`) did. Not treated as a bug — the matrix is silent on what
+   `param1` alone does, and `param2`'s one demonstrated PX4-side effect
+   (`DO_JUMP` counter reset, see `test_param2_resets_jump_counter`) is simply
+   moot for a mission with no `DO_JUMP` item. See "Tier 2 — restart-after-Hold
+   test, corrected design" above for the full trace and log.
 
-No other discrepancies found — PX4 MC matches the authoritative behaviour
-matrix exactly across all 18 Tier 1 tests and the Tier 2 jump-counter test.
-The corresponding test assertions are hard asserts on real stacks with an
-xfail-and-log fallback (not bare asserts), so a future regression would
-surface as an `XFAIL` with a "DOC DISCREPANCY:" log line rather than a silent
-pass, worth watching given PX4 appears to be under active development.
+Items 2 and 3 above are related (same underlying "when does mission_state
+actually reflect a reset" question, approached with two different mission
+shapes); no other discrepancies found. PX4 MC otherwise matches the
+authoritative behaviour matrix exactly across all 18 Tier 1 tests and the
+Tier 2 jump-counter test. The corresponding test assertions are hard asserts
+on real stacks with an xfail-and-log fallback (not bare asserts), so a future
+regression would surface as an `XFAIL` with a "DOC DISCREPANCY:" log line
+rather than a silent pass, worth watching given PX4 appears to be under
+active development.
 
 ## Design: verifying that DO_SET_MISSION_CURRENT changes the current mission item
 
@@ -399,7 +637,7 @@ pytest tests/command/do_set_mission_current/test_command.py \
     --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx \
     --vehicle-type=quadcopter --autopilot=px4 -v --log-cli-level=INFO
 
-# Tier 2 — jump-counter reset test (skips on mock; needs a real flight stack)
+# Tier 2 — jump-counter reset + completed-mission restart tests (skips on mock; needs a real flight stack)
 pytest tests/command/do_set_mission_current/test_flight.py \
     --drone-address=udp://:14540 --connection-timeout=60 \
     --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx \

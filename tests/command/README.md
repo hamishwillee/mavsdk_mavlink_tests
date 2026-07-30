@@ -14,7 +14,7 @@ The same MAV_CMD may behave differently in the two paths — see `CLAUDE.md § C
 | `nav_takeoff/test_command.py` | `MAV_CMD_NAV_TAKEOFF` (cmd=22) via COMMAND_INT — ACK result tests |
 | `nav_land/test_command.py` | `MAV_CMD_NAV_LAND` (cmd=21) via COMMAND_INT — ACK result tests |
 | `do_set_mission_current/test_command.py` | `MAV_CMD_DO_SET_MISSION_CURRENT` (cmd=224) via COMMAND_LONG — ACK result tests |
-| `do_set_mission_current/test_flight.py` | `MAV_CMD_DO_SET_MISSION_CURRENT` param2 — Tier 2 behavioural test: does the reset flag actually reset a `DO_JUMP` repeat counter |
+| `do_set_mission_current/test_flight.py` | `MAV_CMD_DO_SET_MISSION_CURRENT` param2 — Tier 2 behavioural tests: does the reset flag actually reset a `DO_JUMP` repeat counter (PASS on PX4 MC), and does it make a completed mission restartable (RTL-ending mission: XFAIL; corrected Hold-ending mission + `MISSION_START` reactivation: PASS, but shows `param1` alone — not `param2` — gates resumption on PX4; see `do_set_mission_current/README.md`) |
 
 ## Running
 
