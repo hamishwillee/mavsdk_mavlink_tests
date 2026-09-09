@@ -2,15 +2,50 @@
 
 See `tests/command/README.md` for survey result tables and per-stack test results.
 
+## ACK uniqueness (`test_ack_uniqueness.py`)
+
+Complements `test_survey.py` (which asks "what result?") by asking "how many terminal ACKs?" — sends every MAV_CMD via COMMAND_INT and, unlike the survey's first-match-then-cancel `probe_command_int()`, stays subscribed for a fixed 1.5 s window per command so a duplicate ACK arriving shortly after the first is not missed. IN_PROGRESS ACKs are exempt (a command may legitimately emit any number before its one terminal result); receiving the terminal result more than once is asserted as a failure — unlike the survey, this test is not purely observational.
+
+Confirmed clean on real PX4 MC 1.18.0-beta (2026-08-19): 145 commands with exactly one terminal ACK, 23 UNKNOWN (no response — already tracked by the survey), 0 duplicates. Found one duplicate in **mock mode only**: `MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES` (cmd=520) gets ACK'd twice by the mavsdk_server binary itself (a legacy auto-responder, confirmed via raw wire inspection — not a bug in `MockFlightStack`'s Python logic, and not something a real vehicle exhibits). See root `CLAUDE.md` § Capability response interaction for detail; the test excludes cmd 520 from its mock-mode assertion via `_MOCK_ONLY_KNOWN_DUPLICATES`.
+
 ## COMMAND_INT vs COMMAND_LONG selection rules (per MAVLink spec)
 
-- **COMMAND_INT**: required for commands where params 5/6 carry lat/lon (integer ×1e7 in `x`/`y` fields).
-  Preserves coordinate precision.
-  Explicitly required for commands with `hasLocation="true"` or `isDestination="true"` in common.xml.
-- **COMMAND_LONG**: required when params 5/6 carry non-integer float values (e.g. speed, duration, camera ID).
-  All 7 params are floats; coordinate precision is lost for lat/lon.
-- NAV_TAKEOFF → **COMMAND_INT** (hasLocation + isDestination).
-- NAV_LAND → **COMMAND_INT** (hasLocation + isDestination); see `tests/command/nav_land/README.md`.
+For a command's **per-parameter semantic tests** (Group C onward in a typical `test_command.py` — the tests that send real, meaningful values and check per-field behaviour), pick ONE primary message type:
+
+1. **Has location** (`hasLocation="true"` or `isDestination="true"` in the XML, i.e. params 5/6 carry lat/lon): prefer **COMMAND_INT** (integer ×1e7 in `x`/`y` preserves coordinate precision). If COMMAND_INT is rejected (`UNSUPPORTED`, or an explicit `MAV_RESULT_COMMAND_LONG_ONLY`), fall back to COMMAND_LONG for that command's tests.
+2. **No location, but params 5/6 carry non-integer float values** (e.g. speed, duration, camera ID): use **COMMAND_LONG** — all 7 params are floats, so nothing is lost, and COMMAND_INT would force those values through `x`/`y` int32 fields.
+3. **Otherwise**: use **COMMAND_INT** by default.
+
+Examples: NAV_TAKEOFF / NAV_LAND → COMMAND_INT (hasLocation + isDestination; see `nav_land/README.md`). DO_SET_MISSION_CURRENT / EXTERNAL_WIND_ESTIMATE → COMMAND_LONG (no location, meaningful floats).
+
+This per-command "primary" choice is separate from the **mandatory common tests** below, which are always sent via both message types regardless of which one is primary.
+
+## Mandatory common tests (every command's `test_command.py`)
+
+Every per-command `test_command.py` must include these six checks, in addition to whatever per-parameter tests are specific to that command. Checks 1–5 are sent **via COMMAND_INT, then via COMMAND_LONG** (`probe_dual()` in `conftest.py` does both sends and reduces each to its `effective_ack()` — see its docstring for the dual-ACK-race rationale). **Report the result once**; only call out both message types separately when they *disagree* (log it as a finding — a real protocol inconsistency, not just noise).
+
+1. **Always ACKs** — a non-response (`UNKNOWN`, no ACK from either message type) is a spec violation. Assert an ACK was received.
+2. **Not UNSUPPORTED** — the baseline (valid, meaningful parameters) must not ACK `UNSUPPORTED(3)`.
+3. **Exactly one terminal ACK** — collect the full window (`probe_command_*_all_acks()`); more than one terminal result for a single send is a bug (own bug, or a stack-side race — see the confirmed PX4 Commander/EKF2 dual-ACK bug in § EXTERNAL_WIND_ESTIMATE below for a worked example of the latter).
+4. **Undefined ("Empty") params accept their own sentinel, reject anything else** — for every param with no MAVLink definition, as an explicit **accepted/rejected pair**:
+   - accepted: send the correct sentinel for each wire form together, expect not `UNSUPPORTED`/`DENIED`.
+   - rejected: send a real (non-sentinel) value in each wire form, expect `DENIED`.
+
+   **The sentinel — the ONE value that means "no value" — is `NaN` for a float slot and `INT32_MAX` for an int32 slot.** Get this right per param, not per command:
+   - `INT32_MAX` is **only ever relevant for a param whose COMMAND_INT wire form is `x` or `y`** (the only genuinely int32 fields either message type has — this is normally param5/param6 for a `hasLocation` command, or whatever param5/param6 map to for a non-location command). When that same param is sent via COMMAND_LONG, it's a float there too, so its sentinel is `NaN`, not `INT32_MAX` — do **not** test `float(INT32_MAX)` as a separate "is this denied" case; it's just an arbitrary non-NaN float, no different from `1.0`.
+   - Every other param — including COMMAND_INT's `z` (↔ some command's param7) and param1–4 — is a float in **both** message types and **never** has an INT32_MAX form. Testing `INT32_MAX` there is a bug, not extra coverage (caught and fixed in `external_wind_estimate/test_command.py` — an earlier version had a `test_param7_int32max_denied`, which cannot happen since param7 is never int32).
+5. **Defined (used) params tolerate their sentinel** — the converse of (4): sending the sentinel (`NaN` for a used float param, `INT32_MAX` for a used int32 param such as a hasLocation command's `x`/`y`) must **not** return `DENIED`, even where the command's own spec text doesn't explicitly document a NaN/INT32_MAX meaning for that specific field. This generalises the general MAVLink "value not specified" convention to every used param, not just the ones with documented sentinel text — treat it as the default expectation, and only exempt a specific param if the command's docs make clear the value is *mandatory* with no fallback (e.g. DO_SET_GLOBAL_ORIGIN's lat/lon, which must be a real coordinate).
+6. **Frame validation survey** — COMMAND_INT only (COMMAND_LONG has no `frame` field, so there is no COMMAND_LONG counterpart). Send the baseline command across the full `MAV_FRAME_CATALOGUE` (`conftest.py`, 22 values, 0–21 — same catalogue `tests/mission/test_frame_types.py` uses) and check whether *any* response is `MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME` (9). This is **observational, not a pass/fail assertion**:
+   - Seeing 9 for at least one frame is positive evidence the stack validates `frame` for this command — record it as the finding (a real result, not a guess).
+   - Seeing it for **no** frame proves nothing either way — the stack may still validate frame using a value outside the tested catalogue, or check it via some other mechanism. Record this as **INCONCLUSIVE**, never as a failure or as "frame is unvalidated".
+   - A location-bearing command (frame genuinely affects interpretation of `x`/`y`/`z`) is far more likely to actually exercise frame validation than a non-location command like EXTERNAL_WIND_ESTIMATE (where PX4's handler never reads `frame` at all, so INCONCLUSIVE is the expected, source-consistent outcome there) — don't read too much into an INCONCLUSIVE result for a non-location command.
+   - **Report format**: log the full per-frame breakdown (frame id/name → result or `UNKNOWN`) only if at least one frame got no ACK at all; otherwise a single terse "all N frames ACKed" note is enough — but always state the primary finding (which frame(s) hit 9, or that none did) regardless of which report format is used. `_record_detail()` / `_DETAILS` (`external_wind_estimate/test_command.py`) appends this as a supplementary block in the Tier 1 log, since it doesn't fit the one-line-per-test table.
+
+**Naming convention**: a test name states (a) which param, (b) whether it is **defined** (has a MAVLink meaning) or **undefined** (Empty — no MAVLink meaning), and (c) the pass case in one word: `test_param{N}_defined_nan_not_denied` / `test_param{N}_undefined_{sentinel}_accepted` / `test_param{N}_undefined_nonsentinel_rejected`. Each test's docstring first line is a one-sentence statement of its pass case, and is the single source of truth for the test's name, the auto-generated results log (below), and any results table in the command's own README.md — write it once, don't duplicate it as a separate string.
+
+**Auto-generated results log**: every `test_command.py` run (any mode — mock or a real stack) must write its Tier 1 results to `logs/command_<command>_tier1_<autopilot>_<vehicle>_<version>_<timestamp>.log` (test name, outcome, observed `MAV_RESULT`, one-line pass case), always — regardless of pass/fail — mirroring the existing `test_survey.py` / `test_ack_uniqueness.py` convention. See `_check()` / `_write_tier1_log` in `external_wind_estimate/test_command.py` for the reference implementation (a class-level results list populated by a shared `_check()` assertion helper, written by an autouse class-scoped fixture teardown, reusing `_format_autopilot_header()` from `tests/conftest.py`).
+
+`external_wind_estimate/test_command.py` is the reference implementation of this whole pattern.
 
 ## MAV_RESULT values
 
@@ -25,8 +60,10 @@ See `tests/command/README.md` for survey result tables and per-stack test result
 | 6 | CANCELLED | Was executing; now cancelled |
 | 7 | COMMAND_LONG_ONLY | Must use COMMAND_LONG, not COMMAND_INT |
 | 8 | COMMAND_INT_ONLY | Must use COMMAND_INT, not COMMAND_LONG |
+| 9 | COMMAND_UNSUPPORTED_MAV_FRAME | A frame is required and the specified frame is not supported |
+| 10 | NOT_IN_CONTROL | Source system is not in control of the target (`<wip/>` in common.xml) |
 
-Values 0–8 are defined in MAVLink master common.xml.
+Values 0–10 are defined in MAVLink master common.xml.
 CANCELLED (6) is absent from pymavlink 2.4.49 — always use the MAVLink submodule XML as the authoritative source.
 
 ## Command protocol flow
@@ -170,6 +207,48 @@ A third — does `param2=1` actually make a `MISSION_STATE_COMPLETE` mission res
 Live testing found PX4 MC actively processes DO_SET_MISSION_CURRENT — contradicting the 2026-05-27 survey's `UNSUPPORTED` (survey table not yet regenerated to reflect this). All 18 Tier 1 tests pass with zero deviation from the authoritative matrix above, and the Tier 2 jump-counter test confirms `param2=1` genuinely resets a `DO_JUMP` repeat counter, including via the spec-correct `param1=-1` sentinel sent mid-flight.
 
 Also found: PX4's `MISSION_CURRENT`/`mission_progress()` stream oscillates rapidly (alternating seq values at ~1 Hz, no real vehicle movement) around a `DO_JUMP` item — a reporting artifact that breaks naive "count seq transitions" visit-tallying; `test_flight.py` works around it by requiring a genuine loop traversal (an intervening waypoint) before counting a revisit. Full detail, raw traces, and per-stack Tier 1/Tier 2 result tables: `tests/command/do_set_mission_current/README.md`.
+
+## EXTERNAL_WIND_ESTIMATE (cmd=43004) — see `tests/command/external_wind_estimate/README.md`
+
+`development.xml`-only command (not in the survey). `hasLocation="false" isDestination="false"`,
+all params float → COMMAND_LONG is primary. Params: 1=Wind speed (m/s, min=0),
+2=Wind speed accuracy (m/s, NaN=unknown), 3=Direction (deg 0–360, azimuth wind
+blows FROM), 4=Direction accuracy (deg, NaN=unknown), 5–7=Empty (undefined).
+
+**Confirmed PX4 bug — Commander/EKF2 dual-ACK race** (source-traced and
+empirically reproduced, PX4 MC 1.18.0-beta-dev HEAD `c1808fb4`, 2026-09-09):
+`Commander::handle_command()` (`Commander.cpp`) has an explicit ignore-list of
+commands "handled by other parts of the system" that includes
+`EXTERNAL_ATTITUDE_ESTIMATE`, `EXTERNAL_POSITION_ESTIMATE` and
+`ESTIMATOR_SENSOR_ENABLE` — EKF2's other three vehicle_command handlers added
+in the same family of work — but `EXTERNAL_WIND_ESTIMATE` is missing from it.
+Commander falls through to its `default:` case and answers `UNSUPPORTED(3)`
+for every send — via EITHER message type (COMMAND_INT and COMMAND_LONG both
+funnel into the same internal `vehicle_command_s`) — racing EKF2's own
+unconditional `ACCEPTED(0)`; which ACK reaches the GCS first is
+non-deterministic (observed flipping between runs, between consecutive
+sends, and independently between COMMAND_INT and COMMAND_LONG within the same
+run — e.g. one run saw `COMMAND_INT: [0, 3]` and `COMMAND_LONG: [3, 0]`
+moments apart). `test_ack_uniqueness.py`-style all-in-window ACK collection
+(`probe_command_int_all_acks()` / `probe_command_long_all_acks()`, plus the
+shared `effective_ack()` and `probe_dual()` helpers, all in
+`tests/command/conftest.py`) is required to test this command's real
+behaviour rather than the race; a dedicated test XFAILs the race itself, for
+both message types. Likely a one-line upstream fix (add the missing case).
+
+**DOC DISCREPANCY — ground vs air** (source-traced and empirically confirmed
+via Tier 2 flight test, same PX4 build): `Ekf::resetWindToExternalObservation()`
+(`wind.cpp`) is gated `if (!_control_status.flags.in_air)` — the wind-state
+reset, and the flag that makes PX4 publish `WIND_COV` at all
+(`get_wind_status()` = `_control_status.flags.wind || _external_wind_init`),
+only applies while landed. The `COMMAND_ACK` path has no such gate (always
+`ACCEPTED`). The command's own `development.xml` description explicitly
+describes an in-flight ("operating at altitude") use case — PX4 currently
+only implements the on-the-ground half of it. Empirically confirmed: ground
+send of (8 m/s, 90°) → WIND_COV moved to exactly (north=0, east=−8); air send
+of a different (15 m/s, 180°) → WIND_COV stayed pinned at the prior ground
+value, completely unmoved, despite an `ACCEPTED` ack. Full write-up,
+mechanism, and result tables: `tests/command/external_wind_estimate/README.md`.
 
 ## MAVLink XML submodule
 

@@ -32,8 +32,8 @@ pytest tests/
 ```
 
 Starts two local `mavsdk_server` processes over loopback UDP and runs `MockFlightStack` as the drone-side handler.
-All 214 tests run without any external simulator.
-Expected result: **161 passed, 50 skipped, 3 xfailed** (the skips are Tier 2 execution tests and stack-specific probes that require a real flight stack).
+All 242 tests run without any external simulator.
+Expected result: **176 passed, 52 skipped, 14 xfailed** (the skips are Tier 2 execution tests and stack-specific probes that require a real flight stack).
 
 ### Against a real drone or simulator
 

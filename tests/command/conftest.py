@@ -46,6 +46,36 @@ _FMT = "%-14s | %-44s | %s"
 # Sentinel: "use current position" for lat/lon in COMMAND_INT
 INT32_MAX = 0x7FFF_FFFF
 
+# Canonical MAV_FRAME catalogue (0-21) for frame-validation surveys — see
+# CLAUDE.md § Mandatory common tests item 6. Mirrors
+# tests/mission/test_frame_types.py's frame list (kept as an independent copy
+# since the two live in different subpackages and are used for different
+# protocols — mission items vs COMMAND_INT).
+MAV_FRAME_CATALOGUE: list[tuple[int, str]] = [
+    (0, "MAV_FRAME_GLOBAL"),
+    (1, "MAV_FRAME_LOCAL_NED"),
+    (2, "MAV_FRAME_MISSION"),
+    (3, "MAV_FRAME_GLOBAL_RELATIVE_ALT"),
+    (4, "MAV_FRAME_LOCAL_ENU"),
+    (5, "MAV_FRAME_GLOBAL_INT"),
+    (6, "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT"),
+    (7, "MAV_FRAME_LOCAL_OFFSET_NED"),
+    (8, "MAV_FRAME_BODY_NED"),
+    (9, "MAV_FRAME_BODY_OFFSET_NED"),
+    (10, "MAV_FRAME_GLOBAL_TERRAIN_ALT"),
+    (11, "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT"),
+    (12, "MAV_FRAME_BODY_FRD"),
+    (13, "MAV_FRAME_RESERVED_13"),
+    (14, "MAV_FRAME_RESERVED_14"),
+    (15, "MAV_FRAME_RESERVED_15"),
+    (16, "MAV_FRAME_RESERVED_16"),
+    (17, "MAV_FRAME_RESERVED_17"),
+    (18, "MAV_FRAME_RESERVED_18"),
+    (19, "MAV_FRAME_RESERVED_19"),
+    (20, "MAV_FRAME_LOCAL_FRD"),
+    (21, "MAV_FRAME_LOCAL_FLU"),
+]
+
 # ---------------------------------------------------------------------------
 # XML command loading
 # ---------------------------------------------------------------------------
@@ -254,6 +284,151 @@ async def _probe_with_send(system, command_id, timeout_s, send_fn) -> dict | Non
         task.cancel()
 
 
+
+
+async def probe_command_int_all_acks(
+    system: System,
+    command: int,
+    frame: int = 6,
+    window_s: float = 1.5,
+    **send_kwargs,
+) -> list[dict]:
+    """
+    Subscribe to COMMAND_ACK, send COMMAND_INT once, and collect every matching
+    COMMAND_ACK received within window_s — not just the first.
+
+    Unlike probe_command_int() (which returns as soon as the first matching ACK
+    arrives, then cancels the subscription), this keeps listening for the full
+    window so a duplicate ACK sent shortly after the first one is not missed.
+    Used to verify the "exactly one terminal ACK per command" protocol
+    invariant.  IN_PROGRESS ACKs are not exempt from the returned list — the
+    caller decides how to classify them (a command may legitimately emit any
+    number of IN_PROGRESS ACKs before its one terminal result).
+
+    Returns the list of ACK field dicts in receipt order (may be empty).
+    """
+    received: list[dict] = []
+
+    async def _collect() -> None:
+        async for msg in system.mavlink_direct.message("COMMAND_ACK"):
+            fields = json.loads(msg.fields_json)
+            if int(fields.get("command", -1)) == command:
+                received.append(fields)
+
+    task = asyncio.create_task(_collect())
+    await asyncio.sleep(_SUBSCRIPTION_SETTLE_S)  # let gRPC stream register on server
+
+    await send_command_int(system, command, frame, **send_kwargs)
+
+    await asyncio.sleep(window_s)
+    # Fire-and-forget cancel: see CLAUDE.md §4a — do NOT await the task.
+    task.cancel()
+    return received
+
+
+async def probe_command_long_all_acks(
+    system: System,
+    command: int,
+    window_s: float = 1.5,
+    confirmation: int = 0,
+    **send_kwargs,
+) -> list[dict]:
+    """
+    COMMAND_LONG equivalent of probe_command_int_all_acks() — see its
+    docstring.  Collects every matching COMMAND_ACK received within window_s,
+    not just the first.
+    """
+    received: list[dict] = []
+
+    async def _collect() -> None:
+        async for msg in system.mavlink_direct.message("COMMAND_ACK"):
+            fields = json.loads(msg.fields_json)
+            if int(fields.get("command", -1)) == command:
+                received.append(fields)
+
+    task = asyncio.create_task(_collect())
+    await asyncio.sleep(_SUBSCRIPTION_SETTLE_S)  # let gRPC stream register on server
+
+    await send_command_long(system, command, confirmation=confirmation, **send_kwargs)
+
+    await asyncio.sleep(window_s)
+    # Fire-and-forget cancel: see CLAUDE.md §4a — do NOT await the task.
+    task.cancel()
+    return received
+
+
+def effective_ack(acks: list[dict]) -> dict | None:
+    """
+    Reduce a window of collected ACKs (from probe_command_int_all_acks() /
+    probe_command_long_all_acks()) to the single "effective" one, preferring
+    a non-UNSUPPORTED result when present.
+
+    Some stacks have more than one internal handler racing to answer the same
+    command (confirmed on PX4 for MAV_CMD_EXTERNAL_WIND_ESTIMATE — see
+    external_wind_estimate/CLAUDE.md notes: a catch-all module answers
+    UNSUPPORTED while the command's real handler answers ACCEPTED, and which
+    one a naive "first ACK wins" listener sees is non-deterministic). Using
+    the non-UNSUPPORTED result when one exists tests the command's real,
+    intended behaviour rather than which racing module happened to answer
+    first. Returns None if the list is empty (no ACK at all — UNKNOWN).
+    """
+    if not acks:
+        return None
+    from tests.mock_flight_stack import MAV_RESULT_UNSUPPORTED
+    non_unsupported = [a for a in acks if int(a["result"]) != MAV_RESULT_UNSUPPORTED]
+    return non_unsupported[0] if non_unsupported else acks[0]
+
+
+async def probe_dual(
+    system: System,
+    command: int,
+    *,
+    param1: float = 0.0,
+    param2: float = 0.0,
+    param3: float = 0.0,
+    param4: float = 0.0,
+    long5: float = 0.0,
+    long6: float = 0.0,
+    long7: float = 0.0,
+    int_x: int = 0,
+    int_y: int = 0,
+    int_z: float = 0.0,
+    frame: int = 6,
+    window_s: float = 1.5,
+) -> tuple[dict | None, dict | None]:
+    """
+    Send the same logical command via COMMAND_INT, then COMMAND_LONG, each
+    using the full-window multi-ACK collection (probe_command_*_all_acks())
+    reduced to one effective_ack() — see its docstring for why that matters.
+
+    param1-4 are identical fields in both message types and are passed
+    through verbatim. MAVLink's COMMAND_INT has no param5/6/7 — it has x, y
+    (int32) and z (float) instead, which correspond 1:1 to COMMAND_LONG's
+    param5/6/7 for any command with hasLocation="true" (x/y carry lat/lon
+    ×1e7, z carries altitude). For a command WITHOUT location, x/y/z still
+    exist on the wire and must be given *some* value; long5/long6/long7 and
+    int_x/int_y/int_z let the caller populate the "same" logical slot
+    correctly-typed for each message: e.g. to test an undefined float slot
+    with a non-NaN value, pass long5=1.0 for the COMMAND_LONG send and
+    int_x=<some real-looking int> for the COMMAND_INT send (a real int is the
+    x/y-appropriate equivalent of "a non-NaN float" — see
+    tests/command/CLAUDE.md § Mandatory common tests for the full rationale
+    and the NaN/INT32_MAX sentinel convention this mirrors).
+
+    Returns (int_result, long_result) — each an effective_ack() dict, or None
+    if that message type got no ACK at all (UNKNOWN).
+    """
+    int_acks = await probe_command_int_all_acks(
+        system, command, frame=frame, window_s=window_s,
+        param1=param1, param2=param2, param3=param3, param4=param4,
+        x=int_x, y=int_y, z=int_z,
+    )
+    long_acks = await probe_command_long_all_acks(
+        system, command, window_s=window_s,
+        param1=param1, param2=param2, param3=param3, param4=param4,
+        param5=long5, param6=long6, param7=long7,
+    )
+    return effective_ack(int_acks), effective_ack(long_acks)
 
 
 async def await_command_ack(
