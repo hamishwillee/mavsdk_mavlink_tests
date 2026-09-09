@@ -44,6 +44,8 @@ MAV_RESULT_IN_PROGRESS          = 5
 MAV_RESULT_CANCELLED            = 6  # defined in MAVLink master; absent from pymavlink 2.4.49
 MAV_RESULT_COMMAND_LONG_ONLY    = 7
 MAV_RESULT_COMMAND_INT_ONLY     = 8
+MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME = 9
+MAV_RESULT_NOT_IN_CONTROL       = 10  # wip in MAVLink master common.xml
 
 # Default: MAV_PROTOCOL_CAPABILITY_MISSION_INT (bit 2)
 DEFAULT_CAPABILITY_BITS: int = 4
@@ -103,6 +105,13 @@ class MockFlightStack:
     command_in_progress : dict[int, list[int]] | None
         ``{command_id: [p0, p1, ...]}`` — emit one IN_PROGRESS ACK per entry
         (with the given progress value) before sending the final result ACK.
+    duplicate_command_acks : dict[int, int] | None
+        ``{command_id: N}`` — send N extra copies of the terminal COMMAND_ACK
+        for that command (beyond the normal single ACK), simulating a
+        double-ACK protocol bug.  Consumed after the first send (resets to 0),
+        so it fires once per test.  IN_PROGRESS ACKs (if configured via
+        ``command_in_progress``) are unaffected — only the terminal result ACK
+        is duplicated.
     require_valid_location_cmds : set[int] | None
         Command IDs that require a real GNSS coordinate (no sentinel allowed).
         For these commands the INT32_MAX "use current position" sentinel is
@@ -124,6 +133,7 @@ class MockFlightStack:
         command_results: dict | None = None,
         drop_command_acks: dict | None = None,
         command_in_progress: dict | None = None,
+        duplicate_command_acks: dict | None = None,
         require_valid_location_cmds: set | None = None,
         emit_gps_global_origin: bool = True,
     ) -> None:
@@ -135,6 +145,7 @@ class MockFlightStack:
         self._command_results: dict[int, int] = dict(command_results or {})
         self._drop_ack_remaining: dict[int, int] = dict(drop_command_acks or {})
         self._command_in_progress: dict[int, list[int]] = dict(command_in_progress or {})
+        self._duplicate_ack_remaining: dict[int, int] = dict(duplicate_command_acks or {})
         self._require_valid_location_cmds: frozenset[int] = frozenset(require_valid_location_cmds or set())
         self.emit_gps_global_origin: bool = emit_gps_global_origin
         # Records every received COMMAND_INT and non-capability COMMAND_LONG
@@ -568,12 +579,20 @@ class MockFlightStack:
             await asyncio.sleep(0.05)
 
         result = self._command_results.get(cmd, MAV_RESULT_ACCEPTED)
-        await self._send(system, "COMMAND_ACK", {
+        ack_fields = {
             "command": cmd,
             "result": result,
             "progress": 255,
             "result_param2": 0,
             "target_system": _GCS_SYSID,
             "target_component": _GCS_COMPID,
-        })
+        }
+        await self._send(system, "COMMAND_ACK", ack_fields)
         log.debug("COMMAND_ACK cmd=%d result=%d", cmd, result)
+
+        n_dup = self._duplicate_ack_remaining.get(cmd, 0)
+        if n_dup > 0:
+            self._duplicate_ack_remaining[cmd] = 0
+            for _ in range(n_dup):
+                await self._send(system, "COMMAND_ACK", ack_fields)
+                log.debug("COMMAND_ACK cmd=%d result=%d (injected duplicate)", cmd, result)

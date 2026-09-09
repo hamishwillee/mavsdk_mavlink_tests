@@ -22,6 +22,7 @@ Detailed notes for each test subtree live in their own CLAUDE.md files:
   - Command protocol class-based tests (`TestCommandProtocol`, `TestNavTakeoffCommand`): `@pytest.mark.timeout(300)`.
   - Flight tests (`test_flight.py`): `pytestmark = pytest.mark.timeout(360)`.
   - Command survey (`test_survey.py`): `@pytest.mark.timeout(900)`.
+  - Command ACK-uniqueness survey (`test_ack_uniqueness.py::TestCommandAckUniqueness`): `@pytest.mark.timeout(900)` — 168 commands × a fixed 1.5 s post-send listen window each (it cannot early-exit on the first ACK like `test_survey.py` does, since it must wait out the window to catch a delayed duplicate).
     When adding a new test that could legitimately exceed 120 s, add the override and document the reason.
 - **MAVLink spec discrepancies**: When observed flight-stack behaviour contradicts the official MAVLink documentation (mavlink.io), note the discrepancy explicitly in:
   1. The test log output (`log.warning` with "DOC DISCREPANCY:" prefix).
@@ -90,6 +91,8 @@ The INT32_MAX sentinel is always valid.
 
 **Capability response interaction**: the drone mavsdk_server binary also responds to AUTOPILOT_VERSION requests with its own bits (0x2000 = MAV_PROTOCOL_CAPABILITY_MAVLINK2).
 `_get_autopilot_capabilities()` OR-combines all responses within a 0.3 s window.
+
+**Legacy-command auto-ACK duplication (`MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES`, cmd=520)**: discovered via `tests/command/test_ack_uniqueness.py` — the drone-side mavsdk_server binary auto-ACKs this deprecated command itself, in addition to whatever MockFlightStack sends. Confirmed by raw wire inspection: two byte-identical `COMMAND_ACK(cmd=520, result=0)` messages arrive at the GCS even though `received_commands` shows only one incoming `COMMAND_INT` was ever delivered to the Python handler. Same family of behaviour as the AUTOPILOT_VERSION dual-response above — a MAVSDK test-harness artifact, not a flight-stack bug, and it does not occur in standalone mode (a real vehicle is the sole ACK source there). `test_ack_uniqueness.py` excludes cmd 520 from its assertion in mock mode only (`_MOCK_ONLY_KNOWN_DUPLICATES`).
 
 All tests are async (pytest-asyncio, asyncio_mode=auto).
 
