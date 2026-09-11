@@ -1,11 +1,6 @@
 # MAV_CMD_DO_SET_GLOBAL_ORIGIN (cmd=611) — command protocol tests
 
-Sets the GNSS coordinates of the vehicle local origin (0,0,0) position.
-Supersedes the `SET_GPS_GLOBAL_ORIGIN` message (id=48, deprecated 2025-04).
-
-**Spec reference**: `mavlink/message_definitions/v1.0/development.xml` entry
-`value=611`.  The command is in `development.xml`, not `common.xml`, and does
-not appear in the command survey.
+Sets the GNSS coordinates of the vehicle's local origin (0,0,0). Supersedes the deprecated `SET_GPS_GLOBAL_ORIGIN` message (id=48, deprecated 2025-04). `development.xml` entry `value=611` — not in `common.xml`, so not covered by the command survey.
 
 ## Parameter layout
 
@@ -18,75 +13,27 @@ not appear in the command survey.
 
 ## Frame
 
-The current submodule spec text says "Expected frame is MAV_FRAME_GLOBAL (0)",
-but PR #2530 corrects this to **MAV_FRAME_GLOBAL_INT (6)**, consistent with
-every other COMMAND_INT with location in this suite.  Tests use frame=6.
+Submodule spec text says "Expected frame is MAV_FRAME_GLOBAL (0)", but PR #2530 corrects this to **MAV_FRAME_GLOBAL_INT (6)**, consistent with every other COMMAND_INT-with-location in this suite. Tests use frame=6.
 
 ## Sentinel semantics
 
-Unlike NAV_TAKEOFF/NAV_LAND (where INT32_MAX in lat/lon means "use current
-position"), **DO_SET_GLOBAL_ORIGIN requires an explicit GNSS coordinate**.
-There is no "use current" sentinel.  Params 5–7 that carry a sentinel or
-invalid value must be DENIED.
+Unlike NAV_TAKEOFF/NAV_LAND (INT32_MAX = "use current position"), this command **requires an explicit GNSS coordinate** — there is no "use current" sentinel. Params 5–7 carrying a sentinel or invalid value must be DENIED.
 
-## What these tests cover
+## Test coverage
 
-### Spec requirements verified
+**Verified:**
+1. `GPS_GLOBAL_ORIGIN` response: changes on a new origin (`test_gps_global_origin_changes_when_new_value_set`), stays unchanged but is still emitted on a repeated identical origin per spec "irrespective of whether the origin is changed" (`test_gps_global_origin_unchanged_and_emitted_on_repeat`), emitted exactly once per accepted command (`test_gps_global_origin_emitted`), and NOT emitted when DENIED (`test_gps_global_origin_not_emitted_on_nack`).
+2. Exactly one COMMAND_ACK per send (`test_exactly_one_ack`).
+3. Params 1–4 must be NaN; non-NaN must be DENIED — **xfail on all known stacks** (spec gap, nothing enforces it): `test_reserved_param1_zero_ack` (the common `0.0`-for-NaN GCS mistake), `test_reserved_param{1,2,3,4}_nonnan_ack`.
+4. Params 5–7 must reject sentinels/out-of-range values — **xfail on PX4** (see implementation notes below): `test_location_int32max_denied`, `test_location_out_of_range_latlon_denied`, `test_altitude_nan_denied`.
 
-1. **GPS_GLOBAL_ORIGIN response emission**:
-   - **Changes** when a new (different) origin is commanded
-     → `test_gps_global_origin_changes_when_new_value_set`
-   - **Does NOT change** when the same origin is commanded again
-     → `test_gps_global_origin_unchanged_and_emitted_on_repeat`
-   - **Emitted in either case** (change or no change) per spec
-     "irrespective of whether the origin is changed"
-     → `test_gps_global_origin_unchanged_and_emitted_on_repeat`
-   - **Emitted exactly once** per accepted command
-     → `test_gps_global_origin_emitted` (drain window check)
-   - **NOT emitted** when command is DENIED
-     → `test_gps_global_origin_not_emitted_on_nack`
-
-2. **Exactly one COMMAND_ACK** received per command send
-   → `test_exactly_one_ack`
-
-3. **Params 1–4 must be NaN** (reserved); any non-NaN value must be DENIED
-   Two cases tested, both **xfail** on all known stacks:
-   - `test_reserved_param1_zero_ack` — `param1=0.0` (common GCS mistake; still a spec violation)
-   - `test_reserved_param1_nonnan_ack` through `test_reserved_param4_nonnan_ack` — `param=1.0`
-   No implementation currently enforces NaN for "Empty" params (spec gap)
-
-4. **Params 5–7 must not be sentinel values and must be in valid range**:
-   - INT32_MAX lat/lon → DENIED: `test_location_int32max_denied`
-     **xfail PX4**: PX4 converts INT32_MAX → NaN and EKF2 returns FAILED (not DENIED)
-   - Out-of-range lat (91°N) → DENIED: `test_location_out_of_range_latlon_denied`
-     **xfail PX4**: PX4 passes to EKF2 which returns FAILED (not DENIED)
-   - NaN altitude → DENIED: `test_altitude_nan_denied`
-     **xfail PX4**: PX4/EKF2 accepts NaN altitude without validation
-
-### What tests cannot show
-
-- Whether the vehicle navigation stack actually uses the new origin for
-  local↔global coordinate transforms (requires observing LOCAL_POSITION_NED
-  or GLOBAL_POSITION_INT behaviour — no flight test is planned).
+**Not covered**: whether the navigation stack actually uses the new origin for local↔global coordinate transforms (would need to observe `LOCAL_POSITION_NED`/`GLOBAL_POSITION_INT`; no flight test planned).
 
 ## PX4 implementation notes (branch `pr_cmd_set_global_origin`)
 
-PX4 supports cmd=611 on all vehicle types when built with
-`CONFIG_MAVLINK_DIALECT="development"` (the SITL default).  The flow is:
+Supported on all vehicle types when built with `CONFIG_MAVLINK_DIALECT="development"` (SITL default). Flow: `mavlink_receiver` converts degE7→degrees → Commander's ignore-list passes the command to EKF2 without ACKing → EKF2 calls `setEkfGlobalOrigin()` and sends the ACK → EKF2 publishes `GPS_GLOBAL_ORIGIN` via the vehicle_command_ack path.
 
-1. `mavlink_receiver` converts degE7 lat/lon to degrees via `command_has_location()`
-2. Commander's ignore list passes the command to EKF2 without sending ACK
-3. EKF2 calls `setEkfGlobalOrigin()` and sends COMMAND_ACK (ACCEPTED/FAILED)
-4. EKF2 publishes `GPS_GLOBAL_ORIGIN` via the vehicle_command_ack path
-
-**Known PX4 gaps** (all xfail in test results):
-- **Invalid coordinate result code**: PX4 returns FAILED (4) instead of DENIED (2)
-  for INT32_MAX and out-of-range coordinates — EKF2 attempts the operation and
-  reports failure rather than rejecting at the protocol layer
-- **NaN altitude accepted**: EKF2 does not validate the altitude field; NaN is
-  silently accepted (spec requires DENIED)
-- **Reserved params not enforced**: params 1–4 are ignored rather than rejected
-  when non-NaN (shared gap with all known stacks)
+Confirmed gaps (all xfail, §4 above): PX4 returns `FAILED(4)` instead of `DENIED(2)` for INT32_MAX/out-of-range coordinates (EKF2 attempts the operation and reports failure rather than rejecting at the protocol layer); EKF2 doesn't validate altitude, so NaN is silently accepted.
 
 ## Tier 1 test results
 
@@ -113,17 +60,11 @@ PX4 supports cmd=611 on all vehicle types when built with
 | `test_command_long_float_int32max_denied` | PASS | PASS |
 | `test_gps_global_origin_not_emitted_on_nack` | PASS | SKIP |
 
-`XFAIL` = asserts DENIED but stack returns something else (documented spec gap).
-`SKIP` = mock-only test; skipped in standalone mode.
+`XFAIL` = asserts DENIED but stack returns something else (documented spec gap). `SKIP` = mock-only test.
 
-¹ PX4 MC observed: `alt_mm=-500000 extra=1` — the first `GPS_GLOBAL_ORIGIN`
-received was a late emission from the preceding `test_altitude_negative` (z=−500 m);
-the response for the current command (z=10 m) arrived as the extra.  This is a
-test-ordering timing artifact in standalone mode; GPS_GLOBAL_ORIGIN emission and
-exactly-once assertions are only enforced on the mock.
+¹ PX4 MC: the first `GPS_GLOBAL_ORIGIN` received (`alt_mm=-500000 extra=1`) was a late emission from the preceding `test_altitude_negative` (z=−500 m); the response to the current command (z=10 m) arrived as the extra — a test-ordering timing artifact in standalone mode. Emission and exactly-once assertions are enforced on the mock only.
 
-Other vehicle types (PX4 FW/VTOL/Rover, ArduPilot) not yet tested — add results
-when available.
+Other vehicle types (PX4 FW/VTOL/Rover, ArduPilot) not yet tested.
 
 ## Running
 
