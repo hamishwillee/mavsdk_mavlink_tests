@@ -33,13 +33,15 @@ import logging
 import pytest
 
 from tests.command.conftest import (
+    CommandSpec,
+    INT32_MAX,
+    ParamSpec,
+    Tier1CommandTestBase,
+    _FMT,
+    gcs_system_cls,  # noqa: F401 — see do_set_global_origin/test_command.py comment
+    mock_stack_cls,  # noqa: F401
     probe_command_int,
     probe_command_long,
-    gcs_system_cls,
-    mock_stack_cls,
-    ACK_TIMEOUT_S,
-    INT32_MAX,
-    _FMT,
 )
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
 
@@ -52,58 +54,55 @@ _CMD_ID = 22  # MAV_CMD_NAV_TAKEOFF
 _LAT_INT = 473977000
 _LON_INT = 85456000
 
-
-def _takeoff_cmd(**overrides) -> dict:
-    """Return default COMMAND_INT kwargs for NAV_TAKEOFF."""
-    defaults = dict(
-        command=_CMD_ID,
-        frame=6,       # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
-        param1=0.0,    # Pitch: 0 deg (use default)
-        param2=0.0,    # Unused
-        param3=0.0,    # Flags: none
-        param4=None,   # Yaw: NaN = "use current heading" (non-NaN would assert yaw intent)
-        x=_LAT_INT,
-        y=_LON_INT,
-        z=50.0,        # Altitude: 50 m relative
-    )
-    defaults.update(overrides)
-    return defaults
+# Parameter layout (common.xml): param1=Pitch, param2=Empty, param3=Flags
+# (bitmask, defined despite having no dedicated MAVSDK-visible label text),
+# param4=Yaw, param5/6=Latitude/Longitude (COMMAND_INT x/y), param7=Altitude.
+SPEC = CommandSpec(
+    cmd_id=_CMD_ID,
+    name=_CMD,
+    baseline=dict(
+        param1=0.0,     # Pitch: 0 deg (use default)
+        param3=0.0,     # Flags: none
+        param4=None,    # Yaw: NaN = "use current heading"
+        long5=float(_LAT_INT), long6=float(_LON_INT), long7=50.0,
+        int_x=_LAT_INT, int_y=_LON_INT, int_z=50.0,
+    ),
+    params=[
+        ParamSpec(1, "Pitch", defined=True),
+        ParamSpec(2, "Empty", defined=False),
+        ParamSpec(3, "Flags", defined=True),
+        ParamSpec(4, "Yaw", defined=True),
+        ParamSpec(5, "Latitude", defined=True),
+        ParamSpec(6, "Longitude", defined=True),
+        ParamSpec(7, "Altitude", defined=True),
+    ],
+)
 
 
 async def _probe(system, **kwargs) -> dict | None:
-    """Subscribe first, then send COMMAND_INT, then collect COMMAND_ACK."""
-    kw = _takeoff_cmd(**kwargs)
-    return await probe_command_int(system, **kw)
-
+    """Subscribe first, then send COMMAND_INT, then collect COMMAND_ACK (this file's own bespoke tests only)."""
+    defaults = dict(
+        command=_CMD_ID, frame=6,
+        param1=0.0, param2=0.0, param3=0.0, param4=None,
+        x=_LAT_INT, y=_LON_INT, z=50.0,
+    )
+    defaults.update(kwargs)
+    return await probe_command_int(system, **defaults)
 
 
 @pytest.mark.asyncio(loop_scope="class")
 @pytest.mark.timeout(300)
-class TestNavTakeoffCommand:
-    """NAV_TAKEOFF via COMMAND_INT — ACK result tests."""
+class TestNavTakeoffCommand(Tier1CommandTestBase):
+    """
+    NAV_TAKEOFF — ACK result tests. Groups A/B/C (the six mandatory common
+    checks) are inherited from Tier1CommandTestBase (tests/command/conftest.py).
+    The tests below are this command's own bespoke per-parameter tests,
+    documenting COMMAND_INT execution-path behaviour that differs from the
+    mission protocol's storage behaviour (see module docstring) — mostly
+    single-message-type/observational, predating the dual-probe convention.
+    """
 
-    _supported: bool | None = None  # class-level cache; None = not yet probed
-
-    async def _ensure_supported(self, system, mock_stack) -> None:
-        """Probe NAV_TAKEOFF once per class; skip all subsequent tests if UNSUPPORTED."""
-        if TestNavTakeoffCommand._supported is None:
-            ack = await _probe(system)
-            unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
-            TestNavTakeoffCommand._supported = not unsupported
-        if not TestNavTakeoffCommand._supported:
-            pytest.skip(f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run")
-
-    async def test_command_accepted(self, gcs_system_cls, mock_stack_cls):
-        """Baseline: NAV_TAKEOFF COMMAND_INT returns ACCEPTED (or non-UNSUPPORTED on real stack)."""
-        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
-        ack = await _probe(gcs_system_cls)
-        if ack is None:
-            pytest.skip("No ACK received — UNKNOWN (spec violation by stack)")
-        result = int(ack["result"])
-        log.info(_FMT, _CMD, "baseline COMMAND_INT", f"result={result}")
-        assert result != MAV_RESULT_UNSUPPORTED, (
-            f"NAV_TAKEOFF should be supported by any flight stack; got UNSUPPORTED(3)"
-        )
+    SPEC = SPEC
 
     async def test_param1_pitch_ack_denied(self, gcs_system_cls, mock_stack_cls):
         """

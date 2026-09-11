@@ -47,16 +47,27 @@ import time as _time_m
 import pytest
 from mavsdk import System
 from mavsdk.mavlink_direct import MavlinkMessage
-from mavsdk.telemetry import LandedState
 
 from tests.command.conftest import (
     probe_command_int,
     probe_command_long,
-    send_command_int,
     send_command_long,
     ACK_TIMEOUT_S,
     INT32_MAX,
     _FMT,
+)
+from tests.flight_helpers import (
+    _arm_and_send_takeoff,
+    _dist_m,
+    _get_heading,
+    _get_home_position,
+    _get_position,
+    _offset_lat_lon,
+    _request_position_stream,
+    _rtl_and_land,
+    _wait_for_altitude,
+    _wait_for_horizontal_position,
+    require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
 )
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
 
@@ -93,142 +104,12 @@ _FLAG_CHANGE_MODE  = 1
 _FLAG_RELATIVE_YAW = 2
 
 # ---------------------------------------------------------------------------
-# Geometry helpers
-# ---------------------------------------------------------------------------
-
-def _dist_m(lat1_deg: float, lon1_deg: float,
-            lat2_deg: float, lon2_deg: float) -> float:
-    """Flat-earth distance in metres (accurate to < 0.1% for distances < 10 km)."""
-    mid_lat = math.radians((lat1_deg + lat2_deg) / 2)
-    dlat = (lat2_deg - lat1_deg) * 111111.0
-    dlon = (lon2_deg - lon1_deg) * 111111.0 * math.cos(mid_lat)
-    return math.sqrt(dlat**2 + dlon**2)
-
-
-def _offset_lat_lon(lat_deg: float, lon_deg: float,
-                    north_m: float, east_m: float) -> tuple[float, float]:
-    """Return (lat, lon) displaced by north_m and east_m from the given point."""
-    lat = lat_deg + north_m / 111111.0
-    lon = lon_deg + east_m / (111111.0 * math.cos(math.radians(lat_deg)))
-    return lat, lon
-
-
-# ---------------------------------------------------------------------------
-# Telemetry helpers (shared with takeoff/test_flight.py pattern)
-# ---------------------------------------------------------------------------
-
-async def _request_position_stream(system: System, rate_hz: float = 5.0) -> None:
-    """Request GLOBAL_POSITION_INT streaming (ArduCopter doesn't stream by default)."""
-    interval_us = int(1_000_000 / rate_hz)
-    await system.mavlink_direct.send_message(MavlinkMessage(
-        message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
-        target_system_id=1, target_component_id=0,
-        fields_json=json.dumps({
-            "target_system": 1, "target_component": 0,
-            "command": 511,   # MAV_CMD_SET_MESSAGE_INTERVAL
-            "param1": 33.0,  # MAVLINK_MSG_ID_GLOBAL_POSITION_INT
-            "param2": float(interval_us),
-            "param3": 0.0, "param4": 0.0, "param5": 0.0,
-            "param6": 0.0, "param7": 0.0,
-            "confirmation": 0,
-        }),
-    ))
-    await asyncio.sleep(0.2)
-
-
-async def _get_home_position(system: System, timeout_s: float = 30.0):
-    """Return the vehicle's home Position from telemetry."""
-    async with asyncio.timeout(timeout_s):
-        async for home in system.telemetry.home():
-            return home
-    raise TimeoutError("Home position not received")
-
-
-async def _get_position(system: System, timeout_s: float = 5.0):
-    """Return current Position."""
-    async with asyncio.timeout(timeout_s):
-        async for pos in system.telemetry.position():
-            return pos
-    raise TimeoutError("Position not received")
-
-
-async def _get_heading(system: System, timeout_s: float = 5.0) -> float:
-    """Return current heading in degrees."""
-    async with asyncio.timeout(timeout_s):
-        async for hdg in system.telemetry.heading():
-            return hdg.heading_deg
-    raise TimeoutError("Heading not received")
-
-
-async def _get_flight_mode(system: System, timeout_s: float = 5.0) -> str:
-    """Return current flight mode as string."""
-    async with asyncio.timeout(timeout_s):
-        async for fm in system.telemetry.flight_mode():
-            return str(fm)
-    raise TimeoutError("Flight mode not received")
-
-
-async def _wait_armable(system: System, timeout_s: float = 60.0) -> None:
-    """Block until is_armable=True (fire-and-forget pattern per §4a)."""
-    event = asyncio.Event()
-
-    async def _watch() -> None:
-        async for health in system.telemetry.health():
-            if health.is_armable:
-                event.set()
-                return
-
-    task = asyncio.create_task(_watch())
-    try:
-        await asyncio.wait_for(event.wait(), timeout=timeout_s)
-    finally:
-        task.cancel()
-
-
-async def _wait_for_altitude(system: System, threshold_m: float,
-                              timeout_s: float = 60.0):
-    """Block until relative_altitude_m >= threshold_m; return Position."""
-    async with asyncio.timeout(timeout_s):
-        async for pos in system.telemetry.position():
-            if pos.relative_altitude_m >= threshold_m:
-                return pos
-    raise TimeoutError(f"Altitude {threshold_m:.1f} m not reached in {timeout_s:.0f} s")
-
-
-async def _wait_for_horizontal_position(
-    system: System,
-    target_lat: float, target_lon: float,
-    threshold_m: float,
-    timeout_s: float = _ARRIVE_TIMEOUT_S,
-):
-    """Block until vehicle is within threshold_m of target lat/lon; return Position."""
-    async with asyncio.timeout(timeout_s):
-        async for pos in system.telemetry.position():
-            d = _dist_m(pos.latitude_deg, pos.longitude_deg, target_lat, target_lon)
-            if d <= threshold_m:
-                return pos
-    raise TimeoutError(
-        f"Did not reach target within {threshold_m:.0f} m in {timeout_s:.0f} s"
-    )
-
-
-async def _rtl_and_land(system: System, timeout_s: float = 120.0) -> None:
-    """Command RTL and wait for landed state; then disarm. Best-effort."""
-    try:
-        await system.action.return_to_launch()
-        async with asyncio.timeout(timeout_s):
-            async for state in system.telemetry.landed_state():
-                if state == LandedState.ON_GROUND:
-                    break
-    except Exception as exc:
-        log.warning("RTL/land wait failed: %s", exc)
-    await asyncio.sleep(2.0)
-    try:
-        await system.action.disarm()
-    except Exception:
-        pass
-
+# Geometry/telemetry/wait helpers (_dist_m, _offset_lat_lon,
+# _request_position_stream, _get_home_position, _get_position, _get_heading,
+# _get_flight_mode, _wait_armable, _wait_for_altitude,
+# _wait_for_horizontal_position, _rtl_and_land, _arm_and_send_takeoff) are
+# imported from tests.flight_helpers (above) -- generic vehicle-state
+# scaffolding, not DO_REPOSITION-specific.
 
 # ---------------------------------------------------------------------------
 # Standard modes protocol helper
@@ -364,7 +245,8 @@ async def _find_and_enter_hold_mode(system: System) -> dict | None:
 
 async def _arm_and_takeoff(system: System, alt_m: float = _INITIAL_ALT_M) -> "Position":
     """
-    Arm the vehicle and take off to alt_m relative altitude.
+    Arm the vehicle and take off to alt_m relative altitude, via the shared
+    _arm_and_send_takeoff() helper (tests/flight_helpers.py).
 
     Returns the home Position (for computing reposition targets).
     Raises TimeoutError if the vehicle does not reach the threshold altitude.
@@ -375,24 +257,7 @@ async def _arm_and_takeoff(system: System, alt_m: float = _INITIAL_ALT_M) -> "Po
              f"lat={home.latitude_deg:.5f}° lon={home.longitude_deg:.5f}° "
              f"amsl={home.absolute_altitude_m:.1f} m")
 
-    await _wait_armable(system, timeout_s=60.0)
-    await system.action.arm()
-    await asyncio.sleep(0.5)
-
-    # PX4: COMMAND_INT with absolute AMSL z (ignores frame); ArduCopter: relative z
-    cmd_z     = home.absolute_altitude_m + alt_m
-    cmd_frame = 5  # GLOBAL_INT absolute (PX4); also accepted by ArduCopter
-
-    await send_command_int(
-        system,
-        command=22,    # MAV_CMD_NAV_TAKEOFF
-        frame=cmd_frame,
-        param1=0.0, param2=0.0, param3=0.0, param4=None,
-        x=int(home.latitude_deg * 1e7),
-        y=int(home.longitude_deg * 1e7),
-        z=cmd_z,
-    )
-
+    await _arm_and_send_takeoff(system, z=alt_m)
     pos = await _wait_for_altitude(system, alt_m * 0.85, _INITIAL_TIMEOUT_S)
     log.info(_FMT, _CMD, "airborne", f"altitude={pos.relative_altitude_m:.1f} m")
     return home
@@ -425,16 +290,7 @@ async def _send_reposition(system: System, **overrides) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Autouse skip fixture
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def require_real_stack(request):
-    """Skip every test in this module when no --drone-address is given."""
-    if request.config.getoption("--drone-address") is None:
-        pytest.skip("Execution tests require a real flight stack (--drone-address not set)")
-
-
+# require_real_stack is imported from tests.flight_helpers (above).
 # ---------------------------------------------------------------------------
 # Comprehensive single-flight test
 # ---------------------------------------------------------------------------

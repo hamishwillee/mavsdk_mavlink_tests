@@ -109,29 +109,22 @@ import pytest
 from mavsdk.mission_raw import MissionItem
 
 from tests.command.conftest import probe_command_long
-from tests.mission.conftest import (  # noqa: F401
-    clear_all_mission_types,
-    home_item_for_mission,
-    requires_home_slot,  # dependency of home_item_for_mission
-)
-from tests.mission.nav_takeoff.test_flight import (
+from tests.flight_helpers import (
+    _get_flight_mode,
     _get_home_position,
     _north_of,
     _rtl_and_land,
     _wait_armable,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate in this module
 )
+from tests.mission.conftest import (  # noqa: F401
+    clear_all_mission_types,
+    home_item_for_mission,
+    requires_home_slot,  # dependency of home_item_for_mission
+)
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_UNSUPPORTED
 
 log = logging.getLogger(__name__)
-
-
-async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
-    """Return current vehicle flight mode name as a string."""
-    async with asyncio.timeout(timeout_s):
-        async for fm in system.telemetry.flight_mode():
-            return str(fm)
-    raise TimeoutError("Flight mode not received")
 
 
 # Arming (60s) + up to ~7 loop passes (fast, small offsets) + RTL/land (120s) x2 runs + margin.

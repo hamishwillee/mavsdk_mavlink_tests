@@ -43,6 +43,9 @@ conftest.py              CLI options: --drone-address, --connection-timeout, --m
                            --ardupilot-sitl, --ardupilot-model, --px4-sitl, --px4-model, --home-lat/lon/alt
 tests/conftest.py        GCS (gcs_system) and drone (drone_system) fixtures; autopilot probe (_autopilot_header session fixture)
 tests/mock_flight_stack.py  MockFlightStack — configurable MAVLink drone simulator
+tests/flight_helpers.py  Shared Tier 2 (flight/execution) helpers: arm/wait/observe scaffolding
+                           used by both tests/command/ and tests/mission/ — protocol-neutral,
+                           not command- or mission-specific execution semantics
 mavlink/                 Git submodule: https://github.com/mavlink/mavlink (authoritative XML)
 tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   conftest.py            load_plan(), items_match(), clear_all_mission_types() helpers
@@ -52,7 +55,8 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   nav_takeoff/           NAV_TAKEOFF mission-protocol tests — see nav_takeoff/CLAUDE.md
   plans/                 JSON plan files (MISSION_ITEM_INT fields)
 tests/command/           Command protocol tests — see tests/command/CLAUDE.md
-  conftest.py            send/receive helpers (probe_command_int/long), class-scoped fixtures
+  conftest.py            send/receive helpers (probe_command_int/long), class-scoped fixtures,
+                           shared Tier1CommandTestBase / CommandSpec / ParamSpec (Tier 1 test reuse)
   test_survey.py         Probe all 168 MAV_CMD from common.xml; write support matrix to logs/
   test_protocol.py       Command protocol mechanics (ACK, retry, confirmation, in-progress)
   takeoff/               NAV_TAKEOFF via COMMAND_INT (test_command.py, README.md)

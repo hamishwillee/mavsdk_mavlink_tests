@@ -70,20 +70,21 @@ from tests.command.conftest import (
     _FMT,
 )
 
-from tests.command.nav_takeoff.test_flight import (
+from tests.flight_helpers import (
+    AIRBORNE_THRESHOLD_M,
+    TAKEOFF_ALT_M,
+    _dist_m,
+    _get_flight_mode,
+    _get_heading,
     _get_home_position,
     _request_home_position,
     _request_position_stream,
+    _rtl_and_land,
+    _set_guided_mode_ardupilot,
+    _takeoff_cmd,
     _wait_armable,
     _wait_for_altitude,
-    _get_flight_mode,
-    _get_heading,
-    _set_guided_mode_ardupilot,
-    _rtl_and_land,
-    _dist_m,
-    _takeoff_cmd,
-    TAKEOFF_ALT_M,
-    AIRBORNE_THRESHOLD_M,
+    require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
 )
 
 log = logging.getLogger(__name__)
@@ -339,16 +340,7 @@ async def _arm_and_climb(
 
 
 # ---------------------------------------------------------------------------
-# Autouse fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def require_real_stack(request):
-    """Skip every test in this module when no --drone-address is given."""
-    if request.config.getoption("--drone-address") is None:
-        pytest.skip("Execution tests require a real flight stack (--drone-address not set)")
-
-
+# require_real_stack is imported from tests.flight_helpers (above).
 # ---------------------------------------------------------------------------
 # MC comprehensive — trajectory shape + landing-point identity
 # ---------------------------------------------------------------------------
