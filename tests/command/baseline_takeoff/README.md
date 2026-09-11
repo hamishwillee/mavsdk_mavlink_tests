@@ -1,7 +1,6 @@
 # Baseline Takeoff Tests
 
-Minimum verified takeoff sequences for each supported (stack, vehicle-type) combination.
-Run these before the higher-level execution tests in `tests/command/nav_takeoff/test_flight.py`.
+Minimum verified takeoff sequence for each supported (stack, vehicle-type) combination. Run before the higher-level tests in `tests/command/nav_takeoff/test_flight.py`.
 
 ## Tests
 
@@ -14,43 +13,13 @@ Run these before the higher-level execution tests in `tests/command/nav_takeoff/
 
 ## Command selection for VTOL frames
 
-### PX4 VTOL — NAV_VTOL_TAKEOFF (84) preferred
+**PX4 VTOL — NAV_VTOL_TAKEOFF (84) preferred.** Directly supported as COMMAND_INT; `vtol_takeoff.cpp` runs TAKEOFF_HOVER (climb in MC mode) → ALIGN_HEADING → TRANSITION (to FW) → CLIMB (in FW mode, to `loiter_altitude + LOITER_ALT_OFFSET`). The test only requires reaching the airborne threshold (5 m) during the MC hover phase — the full sequence can take 60–120s. Falls back to NAV_TAKEOFF (22) if NAV_VTOL_TAKEOFF returns UNSUPPORTED (non-VTOL-capable frame).
 
-`MAV_CMD_NAV_VTOL_TAKEOFF (84)` is directly supported as a COMMAND_INT on PX4 VTOL.
-It executes a full VTOL sequence via `vtol_takeoff.cpp`:
-
-1. **TAKEOFF_HOVER**: climb to takeoff altitude in MC mode
-2. **ALIGN_HEADING**: rotate to face the loiter destination
-3. **TRANSITION**: transition to fixed-wing flight
-4. **CLIMB**: continue climbing in FW mode to `loiter_altitude + LOITER_ALT_OFFSET`
-
-The test passes once the initial MC hover phase reaches the airborne threshold (5 m), without requiring the full FW transition.
-The full sequence may take 60–120 s.
-
-If `NAV_VTOL_TAKEOFF` returns `UNSUPPORTED` (e.g. the frame is not VTOL-capable), the test falls back to `NAV_TAKEOFF (22)`.
-
-### ArduPlane QuadPlane — NAV_VTOL_TAKEOFF is mission-only
-
-On ArduPlane QuadPlane, `NAV_VTOL_TAKEOFF (84)` is handled in `commands_logic.cpp` during AUTO mode mission execution only.
-Sending it as a direct COMMAND_INT returns FAILED.
-The correct sequence for a direct autonomous VTOL takeoff is:
-
-```
-DO_SET_MODE GUIDED (mode=15)  →  arm  →  COMMAND_LONG NAV_TAKEOFF (22) p7=alt
-```
-
-ArduPlane QuadPlane's GUIDED mode (custom_mode=15) activates the VTOL position controller: `quadplane.cpp:4039` sets `guided_takeoff=true` on NAV_TAKEOFF receipt, and `in_vtol_mode()` returns true, triggering the quadplane attitude controller.
-The vehicle climbs vertically using its VTOL motors.
-
-The quadplane autotest (quadplane.py) uses the same sequence: `takeoff(height, mode="GUIDED")` → change_mode("GUIDED") → user_takeoff().
-
-QHOVER (18) and QLOITER (19) are NOT suitable for autonomous MAVLink takeoff because their throttle comes from `get_pilot_desired_climb_rate_ms()` (RC channel).
+**ArduPlane QuadPlane — NAV_VTOL_TAKEOFF is mission-only.** `commands_logic.cpp` only handles it during AUTO mission execution; a direct COMMAND_INT returns FAILED. Correct sequence: `DO_SET_MODE GUIDED (15) → arm → COMMAND_LONG NAV_TAKEOFF (22) p7=alt`. GUIDED (custom_mode=15) sets `guided_takeoff=true` on NAV_TAKEOFF (`quadplane.cpp:4039`) and `in_vtol_mode()` returns true, engaging the VTOL attitude controller for a vertical climb — the same sequence `quadplane.py`'s autotest uses (`takeoff(mode="GUIDED")` → `change_mode("GUIDED")` → `user_takeoff()`). QHOVER (18)/QLOITER (19) don't work for autonomous MAVLink takeoff — their throttle comes from the RC channel (`get_pilot_desired_climb_rate_ms()`).
 
 ## ArduCopter / ArduPlane mode restriction
 
-With param3=0 (default, `must_navigate=True`), only GUIDED (4 / 15), LOITER (5), and POSHOLD (16) accept NAV_TAKEOFF.
-But only GUIDED uses `_AutoTakeoff::run()` (autonomous).
-See `tests/command/baseline_takeoff/test_baseline.py` module docstring for the full table.
+See root `tests/command/CLAUDE.md` § ArduCopter mode restriction for NAV_TAKEOFF.
 
 ## Running
 

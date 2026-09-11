@@ -44,9 +44,17 @@ import logging
 
 import pytest
 from mavsdk.mission_raw import MissionItem, MissionRawError
-from mavsdk.telemetry import LandedState
 
 from ..conftest import clear_all_mission_types
+from tests.flight_helpers import (
+    _get_heading,
+    _get_home_position,
+    _north_of,
+    _rtl_and_land,
+    _wait_armable,
+    _wait_for_altitude,
+    require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
+)
 
 log = logging.getLogger(__name__)
 
@@ -54,23 +62,11 @@ log = logging.getLogger(__name__)
 pytestmark = pytest.mark.timeout(360)
 
 TRANSFER_TIMEOUT_S = 30.0
-ARMABLE_TIMEOUT_S  = 60.0
-TAKEOFF_ALT_M      = 20.0   # metres relative to home
-TAKEOFF_TIMEOUT_S  = 90.0
+TAKEOFF_ALT_M      = 20.0   # metres relative to home — this file's own nominal altitude
 YAW_TOLERANCE_DEG  = 20.0   # ± degrees for heading assertion
 TARGET_YAW_DEG     = 137.0  # unusual value to distinguish from default heading
-RTL_LAND_TIMEOUT_S = 120.0
 
 NAN = float("nan")
-
-
-# ---------------------------------------------------------------------------
-# Geometry
-# ---------------------------------------------------------------------------
-
-def _north_of(lat_deg: float, metres: float) -> int:
-    """Return latitude as int×1e7 for a position metres north of lat_deg."""
-    return int((lat_deg + metres / 111111.0) * 1e7)
 
 
 # ---------------------------------------------------------------------------
@@ -111,70 +107,14 @@ def _build_mission(home_item, *probes):
 
 
 # ---------------------------------------------------------------------------
-# Telemetry helpers
+# Telemetry helpers (_get_home_position, _wait_armable, _wait_for_altitude,
+# _get_heading, _rtl_and_land) and require_real_stack are imported from
+# tests.flight_helpers (above) — generic vehicle-state scaffolding, not
+# specific to the mission protocol. Note: the previous local _wait_armable()
+# here did not use the fire-and-forget task + asyncio.Event pattern the
+# command-tree version uses (CLAUDE.md §4a) — importing the shared version
+# fixes that latent gRPC-cancellation risk here too.
 # ---------------------------------------------------------------------------
-
-async def _get_home_position(system, timeout_s: float = 30.0):
-    """Return the vehicle's home Position from telemetry."""
-    async with asyncio.timeout(timeout_s):
-        async for home in system.telemetry.home():
-            return home
-    raise TimeoutError("Home position not received within timeout")
-
-
-async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
-    """Block until the vehicle reports is_armable=True."""
-    async with asyncio.timeout(timeout_s):
-        async for health in system.telemetry.health():
-            if health.is_armable:
-                return
-
-
-async def _wait_for_altitude(system, threshold_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S):
-    """Block until relative_altitude_m >= threshold_m; return the Position."""
-    async with asyncio.timeout(timeout_s):
-        async for pos in system.telemetry.position():
-            if pos.relative_altitude_m >= threshold_m:
-                return pos
-    raise TimeoutError(
-        f"Relative altitude {threshold_m:.1f} m not reached within {timeout_s:.0f} s"
-    )
-
-
-async def _get_heading(system, timeout_s: float = 5.0) -> float:
-    """Return current vehicle heading in degrees (0–360)."""
-    async with asyncio.timeout(timeout_s):
-        async for hdg in system.telemetry.heading():
-            return hdg.heading_deg
-    raise TimeoutError("Heading not received")
-
-
-async def _rtl_and_land(system, timeout_s: float = RTL_LAND_TIMEOUT_S):
-    """Command RTL and wait for landed state; then disarm.  Best-effort — never raises."""
-    try:
-        await system.action.return_to_launch()
-        async with asyncio.timeout(timeout_s):
-            async for state in system.telemetry.landed_state():
-                if state == LandedState.ON_GROUND:
-                    break
-    except Exception as exc:
-        log.warning("RTL/land wait failed: %s", exc)
-    await asyncio.sleep(2.0)
-    try:
-        await system.action.disarm()
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def require_real_stack(request):
-    """Skip every test in this module when no --drone-address is given."""
-    if request.config.getoption("--drone-address") is None:
-        pytest.skip("Execution tests require a real flight stack (--drone-address not set)")
 
 
 # ---------------------------------------------------------------------------

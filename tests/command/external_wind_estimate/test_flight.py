@@ -64,7 +64,7 @@ import pytest
 
 from tests.command.conftest import probe_command_long
 from tests.command.external_wind_estimate.test_command import _probe, _reduce
-from tests.command.nav_takeoff.test_flight import (
+from tests.flight_helpers import (
     AIRBORNE_THRESHOLD_M,
     _arm_and_send_takeoff,
     _request_position_stream,

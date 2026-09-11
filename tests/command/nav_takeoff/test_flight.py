@@ -44,11 +44,9 @@ ArduPlane::
 import asyncio
 import datetime
 import logging
-import time as _time_m
 from pathlib import Path
 
 import pytest
-from mavsdk.telemetry import LandedState
 
 from tests.command.conftest import (
     probe_command_int,
@@ -58,6 +56,27 @@ from tests.command.conftest import (
     ACK_TIMEOUT_S,
     INT32_MAX,
     _FMT,
+)
+from tests.flight_helpers import (
+    ARMABLE_TIMEOUT_S,
+    TAKEOFF_ALT_M,
+    TAKEOFF_TIMEOUT_S,
+    AIRBORNE_THRESHOLD_M,
+    _arm_and_send_takeoff,
+    _dist_m,
+    _get_flight_mode,
+    _get_heading,
+    _get_home_position,
+    _reboot_sitl_if_degraded as _reboot_sitl_if_degraded_generic,
+    _request_home_position,
+    _request_position_stream,
+    _rtl_and_land,
+    _set_guided_mode_ardupilot,
+    _takeoff_cmd,
+    _wait_armable,
+    _wait_for_altitude,
+    _wait_for_altitude_with_peak_pitch,
+    require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
 )
 from tests.mock_flight_stack import MAV_RESULT_UNSUPPORTED, MAV_RESULT_DENIED
 
@@ -69,25 +88,17 @@ pytestmark = pytest.mark.timeout(360)
 _CMD = "NAV_TAKEOFF"
 _CMD_ID = 22  # MAV_CMD_NAV_TAKEOFF
 
-ARMABLE_TIMEOUT_S  = 60.0
-TAKEOFF_ALT_M      = 30.0   # metres relative (nominal altitude for assertion tests)
-TAKEOFF_TIMEOUT_S  = 90.0   # timeout for reaching TAKEOFF_ALT_M (assertion tests)
-RTL_LAND_TIMEOUT_S = 120.0
 YAW_TOLERANCE_DEG  = 20.0   # ± degrees for heading assertion
 
 # For observational tests (yaw, position, mode), check that the vehicle is
-# airborne at a low threshold so they work on stacks that use a fixed safety
-# altitude (e.g. PX4 MPC_TKO_ALT ≈ 2.5 m) regardless of the requested z.
-AIRBORNE_THRESHOLD_M = 2.0   # metres — confirms vehicle left the ground
+# airborne at a low threshold (AIRBORNE_THRESHOLD_M, imported above) so they
+# work on stacks that use a fixed safety altitude (e.g. PX4 MPC_TKO_ALT ≈ 2.5 m)
+# regardless of the requested z.
 AIRBORNE_TIMEOUT_S   = 30.0  # seconds — short check for observational tests
 
 # Module-level caches — each probed once per session.
 _nav_takeoff_supported: bool | None = None   # ACK result: True if not UNSUPPORTED
 _nav_takeoff_executes: bool | None = None    # execution: True if vehicle actually climbs
-
-# SITL self-recovery state
-_REBOOT_COOLDOWN_S: float = 300.0  # 5 min between reboots (prevents loops)
-_last_sitl_reboot_ts: float = 0.0  # monotonic timestamp of last successful reboot
 
 # ---------------------------------------------------------------------------
 # Behaviour summary — per-run log file + inline README section update
@@ -224,321 +235,14 @@ def _write_and_update_readme(
 
 
 # ---------------------------------------------------------------------------
-# Takeoff command builder
+# NAV_TAKEOFF-specific helpers.  Generic vehicle-state scaffolding
+# (_takeoff_cmd, _arm_and_send_takeoff, _request_position_stream,
+# _wait_armable, _wait_for_altitude[_with_peak_pitch], _get_home_position,
+# _get_heading, _get_flight_mode, _set_guided_mode_ardupilot, _rtl_and_land,
+# _reboot_sitl_if_degraded) now lives in tests/flight_helpers.py — imported
+# above. This module keeps only what's genuinely specific to testing
+# NAV_TAKEOFF itself.
 # ---------------------------------------------------------------------------
-
-def _takeoff_cmd(**overrides) -> dict:
-    """Return default COMMAND_INT kwargs for NAV_TAKEOFF."""
-    defaults = dict(
-        command=_CMD_ID,
-        frame=6,       # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
-        param1=0.0,    # Pitch: 0 deg (use default)
-        param2=0.0,    # Unused
-        param3=0.0,    # Flags: none
-        param4=0.0,    # Yaw: 0.0 = north (None encodes as NaN — "use current heading")
-        x=0,           # lat: 0 → most stacks treat as "use current position"
-        y=0,           # lon: 0
-        z=float(TAKEOFF_ALT_M),
-    )
-    defaults.update(overrides)
-    return defaults
-
-
-# ---------------------------------------------------------------------------
-# Telemetry helpers
-# ---------------------------------------------------------------------------
-
-async def _request_home_position(system) -> None:
-    """Request HOME_POSITION (msg id=242) from the autopilot once.
-
-    ArduCopter does not re-broadcast HOME_POSITION automatically after the
-    initial connect.  MAVSDK's telemetry.home() uses this message.  After many
-    function-scoped System reconnects within the same session, the stream may
-    have gone stale.  MAV_CMD_REQUEST_MESSAGE (512) fetches one fresh copy.
-    """
-    from mavsdk.mavlink_direct import MavlinkMessage as _MavlinkMessage
-    import json as _json_rh
-    await system.mavlink_direct.send_message(_MavlinkMessage(
-        message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
-        target_system_id=1, target_component_id=0,
-        fields_json=_json_rh.dumps({
-            "target_system": 1, "target_component": 0,
-            "command": 512,      # MAV_CMD_REQUEST_MESSAGE
-            "param1": 242.0,    # MAVLINK_MSG_ID_HOME_POSITION = 242
-            "param2": 0.0, "param3": 0.0, "param4": 0.0,
-            "param5": 0.0, "param6": 0.0, "param7": 0.0,
-            "confirmation": 0,
-        }),
-    ))
-    await asyncio.sleep(0.3)
-
-
-async def _request_position_stream(system, rate_hz: float = 5.0) -> None:
-    """Request GLOBAL_POSITION_INT (msg id=33) from the autopilot.
-
-    MAVSDK mavsdk_server does not automatically request position streaming from
-    ArduCopter (unlike PX4, which sends it by default).  ArduCopter requires an
-    explicit REQUEST_DATA_STREAM or MAV_CMD_SET_MESSAGE_INTERVAL before it begins
-    streaming GLOBAL_POSITION_INT.  Without this, telemetry.position() and
-    mavlink_direct.message("GLOBAL_POSITION_INT") both time out indefinitely.
-
-    Uses MAV_CMD_SET_MESSAGE_INTERVAL (511) which is supported by ArduPilot
-    v4.0+ and all PX4 versions.
-    """
-    from mavsdk.mavlink_direct import MavlinkMessage as _MavlinkMessage
-    import json as _json
-    interval_us = int(1_000_000 / rate_hz)  # microseconds between messages
-    await system.mavlink_direct.send_message(_MavlinkMessage(
-        message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
-        target_system_id=1, target_component_id=0,
-        fields_json=_json.dumps({
-            "target_system": 1, "target_component": 0,
-            "command": 511,     # MAV_CMD_SET_MESSAGE_INTERVAL
-            "param1": 33.0,    # MAVLINK_MSG_ID_GLOBAL_POSITION_INT = 33
-            "param2": float(interval_us),
-            "param3": 0.0, "param4": 0.0, "param5": 0.0,
-            "param6": 0.0, "param7": 0.0,
-            "confirmation": 0,
-        }),
-    ))
-    await asyncio.sleep(0.2)  # brief settle for stream to start
-
-
-async def _get_home_position(system, timeout_s: float = 30.0):
-    """Return the vehicle's home Position from telemetry."""
-    async with asyncio.timeout(timeout_s):
-        async for home in system.telemetry.home():
-            return home
-    raise TimeoutError("Home position not received within timeout")
-
-
-async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
-    """Block until the vehicle reports is_armable=True.
-
-    Uses fire-and-forget task + asyncio.Event to avoid leaving a dangling gRPC
-    health stream after timeout cancellation (CLAUDE.md §4a pattern).  The gRPC
-    stream does not respond to asyncio cancellation reliably; wrapping it in a
-    background task and only awaiting a plain Event ensures clean timeout handling.
-    """
-    armable_event = asyncio.Event()
-
-    async def _watch() -> None:
-        async for health in system.telemetry.health():
-            if health.is_armable:
-                armable_event.set()
-                return
-
-    task = asyncio.create_task(_watch())
-    try:
-        await asyncio.wait_for(armable_event.wait(), timeout=timeout_s)
-    finally:
-        task.cancel()  # fire-and-forget — do NOT await (§4a)
-
-
-async def _wait_for_altitude(system, threshold_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S):
-    """Block until relative_altitude_m >= threshold_m; return the Position."""
-    async with asyncio.timeout(timeout_s):
-        async for pos in system.telemetry.position():
-            if pos.relative_altitude_m >= threshold_m:
-                return pos
-    raise TimeoutError(
-        f"Relative altitude {threshold_m:.1f} m not reached within {timeout_s:.0f} s"
-    )
-
-
-async def _wait_for_altitude_with_peak_pitch(
-    system, threshold_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S
-):
-    """Block until threshold_m reached; also return max |pitch| sampled during the wait."""
-    peak_pitch: float = 0.0
-
-    async def _sample_pitch() -> None:
-        nonlocal peak_pitch
-        async for att in system.telemetry.attitude_euler():
-            mag = abs(att.pitch_deg)
-            if mag > peak_pitch:
-                peak_pitch = mag
-
-    pitch_task = asyncio.create_task(_sample_pitch())
-    try:
-        pos = await _wait_for_altitude(system, threshold_m, timeout_s)
-    finally:
-        pitch_task.cancel()
-        # Do not await the task: the attitude gRPC stream may not yield promptly
-        # after cancellation (same issue as CLAUDE.md §4a for connection_state()).
-        # The task is cleaned up at its next I/O event.
-
-    return pos, peak_pitch
-
-
-async def _get_heading(system, timeout_s: float = 5.0) -> float:
-    """Return current vehicle heading in degrees (0–360)."""
-    async with asyncio.timeout(timeout_s):
-        async for hdg in system.telemetry.heading():
-            return hdg.heading_deg
-    raise TimeoutError("Heading not received")
-
-
-async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
-    """Return current flight mode name as a string."""
-    async with asyncio.timeout(timeout_s):
-        async for fm in system.telemetry.flight_mode():
-            return str(fm)
-    raise TimeoutError("Flight mode not received")
-
-
-async def _set_guided_mode_ardupilot(
-    system, timeout_s: float = 15.0, custom_mode: int = 4
-) -> bool:
-    """Set ArduPilot GUIDED mode and verify via telemetry.
-
-    Sends DO_SET_MODE (176) with the given ``custom_mode`` and polls
-    ``telemetry.flight_mode()`` until the mode is confirmed.
-
-    MAVSDK mode string mapping (observed):
-    - ArduCopter GUIDED (custom_mode=4)  → ``"OFFBOARD"``
-    - ArduPlane GUIDED  (custom_mode=15) → ``"UNKNOWN"`` (MAVSDK has no
-      mapping for ArduPlane custom modes beyond a small set)
-
-    Acceptance rules:
-    - ``"OFFBOARD"`` or ``"GUIDED"`` in the mode string: definitive confirmation.
-    - ``"UNKNOWN"``: MAVSDK has no mode mapping but the DO_SET_MODE ACK was
-      accepted; treat as confirmed since we cannot verify further.
-    - Any other definite mode (e.g. ``"MANUAL"``, ``"STABILIZED"``): retry.
-
-    Returns True when confirmed (including UNKNOWN-after-ACK), False on timeout.
-    """
-    guided_ack_accepted = False
-    async with asyncio.timeout(timeout_s):
-        while True:
-            ack = await probe_command_long(
-                system, 176, param1=1.0, param2=float(custom_mode)
-            )
-            if ack and int(ack["result"]) == 0:
-                guided_ack_accepted = True
-            await asyncio.sleep(0.5)
-            try:
-                mode = await _get_flight_mode(system, timeout_s=1.0)
-                if "OFFBOARD" in mode or "GUIDED" in mode:
-                    log.info(_FMT, _CMD, "GUIDED mode confirmed", f"telemetry reports {mode!r}")
-                    return True
-                if "UNKNOWN" in mode and guided_ack_accepted:
-                    # MAVSDK has no mapping for this custom_mode; trust the ACK.
-                    log.info(_FMT, _CMD, "GUIDED mode confirmed (ACK only)",
-                             f"telemetry reports {mode!r} — no MAVSDK mapping for custom_mode={custom_mode}")
-                    return True
-                log.info(_FMT, _CMD, "GUIDED mode not yet active", f"current mode: {mode!r} — retrying")
-            except TimeoutError:
-                pass
-            await asyncio.sleep(0.5)
-    return False
-
-
-async def _rtl_and_land(system, timeout_s: float = RTL_LAND_TIMEOUT_S) -> None:
-    """Command RTL and wait for landed state; then disarm.  Best-effort — never raises."""
-    try:
-        await system.action.return_to_launch()
-        async with asyncio.timeout(timeout_s):
-            async for state in system.telemetry.landed_state():
-                if state == LandedState.ON_GROUND:
-                    break
-    except Exception as exc:
-        log.warning("RTL/land wait failed: %s", exc)
-    await asyncio.sleep(2.0)
-    try:
-        await system.action.disarm()
-    except Exception:
-        pass
-
-
-async def _reboot_sitl_if_degraded(system) -> None:
-    """Reboot the flight stack via MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN (cmd=246).
-
-    Called when ``_wait_armable()`` times out, indicating the SITL has degraded
-    after many consecutive arm-takeoff-RTL cycles.  PX4 SIH accumulates EKF drift
-    and physics state over ~17 cycles until ``is_armable`` never returns True.
-
-    After sending the reboot command:
-    - PX4 reboots its firmware and the SIH physics module (~15 s).
-    - The session-scoped ``mavsdk_server`` reconnects automatically on the same
-      UDP port when PX4 resumes broadcasting heartbeats.
-    - Position and home streams are re-requested so the next ``_wait_armable``
-      has fresh telemetry.
-
-    A 5-minute cooldown prevents reboot loops if recovery fails.  Caller must
-    call ``_wait_armable(system, timeout_s=120.0)`` after this returns.
-    """
-    global _last_sitl_reboot_ts
-    now = _time_m.monotonic()
-    if now - _last_sitl_reboot_ts < _REBOOT_COOLDOWN_S:
-        log.warning(
-            _FMT, _CMD, "SITL reboot",
-            f"within cooldown ({_REBOOT_COOLDOWN_S:.0f} s) — not rebooting; "
-            "caller's _wait_armable will raise TimeoutError",
-        )
-        return
-    _last_sitl_reboot_ts = now
-    log.info(
-        _FMT, _CMD, "SITL reboot",
-        "is_armable=False after timeout — sending MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN "
-        "(SITL degraded after many flight cycles)",
-    )
-    try:
-        # param1=1.0: reboot autopilot (not companion).  PX4 may disconnect before
-        # the ACK arrives, so exceptions are suppressed.
-        await probe_command_long(system, 246, param1=1.0)
-    except Exception:
-        pass
-    # Wait for PX4 SIH to boot and for EKF to begin converging before re-requesting
-    # streams (streams silently timeout if PX4 isn't ready yet).
-    await asyncio.sleep(15.0)
-    await _request_position_stream(system)
-    await _request_home_position(system)
-    log.info(_FMT, _CMD, "SITL reboot", "done — caller should now _wait_armable(120 s)")
-
-
-async def _arm_and_send_takeoff(system, **overrides) -> None:
-    """Wait for armable → arm → send NAV_TAKEOFF COMMAND_INT.
-
-    PX4 treats the z field in COMMAND_INT as absolute AMSL altitude (it ignores
-    the frame field).  The caller passes z as a RELATIVE altitude (above home);
-    this function adds the home AMSL altitude to produce the correct absolute z.
-
-    Special cases:
-    - z=None: passed as-is (NaN on wire → stack uses its default altitude).
-    - z=0.0: treated literally (0m AMSL) for the zero-altitude observation test.
-
-    Home lat/lon is used as x/y unless overrides specify different values.
-    Frame is forced to 5 (GLOBAL_INT, absolute AMSL) to match the absolute z.
-    """
-    home = await _get_home_position(system)
-    home_lat_int = int(home.latitude_deg * 1e7)
-    home_lon_int = int(home.longitude_deg * 1e7)
-    home_amsl_m = home.absolute_altitude_m
-
-    # Convert relative z to absolute; preserve None (NaN) and 0.0 as-is.
-    relative_z = overrides.pop("z", float(TAKEOFF_ALT_M))
-    if relative_z is not None and relative_z != 0.0:
-        absolute_z = home_amsl_m + relative_z
-    else:
-        absolute_z = relative_z  # None (NaN) or 0.0 absolute for observation tests
-
-    merged = {
-        "x": home_lat_int,
-        "y": home_lon_int,
-        "z": absolute_z,
-        "frame": 5,  # GLOBAL_INT: absolute AMSL — matches PX4 COMMAND_INT behavior
-    }
-    merged.update(overrides)
-    await _request_position_stream(system)  # ArduCopter doesn't stream by default
-    await _wait_armable(system)
-    await system.action.arm()
-    await asyncio.sleep(0.5)  # brief settle after arm before command
-    kw = _takeoff_cmd(**merged)
-    await send_command_int(system, **kw)
-
 
 # ---------------------------------------------------------------------------
 # Module-level support gate
@@ -594,12 +298,9 @@ async def _ensure_nav_takeoff_supported(system) -> None:
 # ---------------------------------------------------------------------------
 # Autouse fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def require_real_stack(request):
-    """Skip every test in this module when no --drone-address is given."""
-    if request.config.getoption("--drone-address") is None:
-        pytest.skip("Execution tests require a real flight stack (--drone-address not set)")
+# require_real_stack is imported from tests.flight_helpers (above); pytest
+# picks up an autouse fixture by name regardless of which module defines it,
+# as long as it's imported into this module's namespace.
 
 
 @pytest.fixture(autouse=True)
@@ -1599,7 +1300,7 @@ async def test_unarmed_takeoff(gcs_system):
     except (TimeoutError, asyncio.TimeoutError):
         log.info(_FMT, _CMD, "unarmed takeoff",
                  "armable timeout — rebooting SITL before test")
-        await _reboot_sitl_if_degraded(gcs_system)
+        await _reboot_sitl_if_degraded_generic(gcs_system, label=_CMD)
         try:
             await _wait_armable(gcs_system, timeout_s=120.0)
         except (TimeoutError, asyncio.TimeoutError):
@@ -1698,12 +1399,7 @@ async def test_required_flight_mode(gcs_system):
 # ---------------------------------------------------------------------------
 # Post-takeoff mode (informational)
 # ---------------------------------------------------------------------------
-
-def _dist_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Approximate horizontal distance in metres between two WGS84 points."""
-    dlat = (lat1 - lat2) * 111111.0
-    dlon = (lon1 - lon2) * 111111.0 * abs(lat2 / 90.0 + 0.001)
-    return (dlat**2 + dlon**2) ** 0.5
+# _dist_m is imported from tests.flight_helpers (above).
 
 
 async def test_mode_after_takeoff(gcs_system):

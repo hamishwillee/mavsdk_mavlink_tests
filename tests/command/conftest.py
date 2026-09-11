@@ -16,7 +16,9 @@ is unsupported.  Log at WARNING level when no ACK is received.
 import asyncio
 import json
 import logging
+import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -24,8 +26,13 @@ import pytest_asyncio
 from mavsdk import System
 from mavsdk.mavlink_direct import MavlinkMessage
 
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
-from tests.mock_flight_stack import MockFlightStack
+from tests.conftest import DRONE_GRPC_PORT, _format_autopilot_header, _wait_for_connection
+from tests.mock_flight_stack import (
+    MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME,
+    MAV_RESULT_DENIED,
+    MAV_RESULT_UNSUPPORTED,
+    MockFlightStack,
+)
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +42,12 @@ log = logging.getLogger(__name__)
 
 ACK_TIMEOUT_S = 5.0    # per-attempt timeout waiting for COMMAND_ACK
 RETRY_TIMEOUT_S = 30.0  # total timeout for the retry loop
+
+# Window for collecting ALL acks per send in Tier1CommandTestBase, not just
+# the first — needed to catch a delayed duplicate/racing ACK (see
+# probe_command_int_all_acks() / effective_ack()). Matches the window used by
+# test_ack_uniqueness.py for the same reason.
+_ACK_WINDOW_S = 1.5
 
 _GCS_SYSID = 255
 _GCS_COMPID = 1
@@ -461,6 +474,456 @@ async def await_command_ack(
             timeout_s, command_id,
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 command spec model
+# ---------------------------------------------------------------------------
+#
+# Formalises what every tests/command/*/test_command.py file previously encoded
+# by hand as prose in its module docstring plus scattered literal values: which
+# of a MAV_CMD's 7 parameter slots are DEFINED (have a MAVLink meaning) vs
+# UNDEFINED ("Empty" in the XML), and what a valid baseline send looks like.
+# Drives Tier1CommandTestBase (below) and its pytest_generate_tests hook.
+
+# Slot 5/6/7 are COMMAND_INT's x/y/z — genuinely int32 for x/y (whether or not
+# the command assigns them meaning) and always float for z, a fact of the
+# COMMAND_INT wire struct, not of whether the command's spec uses that slot.
+_SLOT_WIRE_FIELDS: dict[int, tuple[str, str]] = {
+    5: ("long5", "int_x"),
+    6: ("long6", "int_y"),
+    7: ("long7", "int_z"),
+}
+# A plausible non-sentinel value for the int32 x/y fields (SIH home lat/lon
+# scale — arbitrary but realistic, mirrors external_wind_estimate's _REAL_INT).
+_REAL_INT = 473977000
+
+
+@dataclass
+class ParamSpec:
+    """
+    Metadata for one MAV_CMD parameter slot (1-7).
+
+    Drives the mandatory undefined/defined sentinel-pair Tier 1 tests — see
+    CLAUDE.md § Mandatory common tests items 4 and 5.
+    """
+
+    slot: int  # 1-7
+    label: str  # human-readable name, e.g. "Wind speed" or "Empty"
+    defined: bool  # False = no MAVLink meaning ("Empty" in the XML)
+    sentinel_policy: str = "tolerate"  # defined params only: "tolerate"
+        # (category 5, default) or "deny_required" (a mandatory field with no
+        # sentinel fallback, e.g. DO_SET_GLOBAL_ORIGIN's lat/lon/altitude).
+    reject_xfail_reason: str | None = None  # undefined params only: a
+        # per-command known-behaviour xfail reason. Falls back to a generic
+        # message (no known stack validates undefined params) if not given.
+
+    @property
+    def sentinel_kwargs(self) -> dict:
+        """probe_dual() kwargs that set this slot to its own sentinel value."""
+        if self.slot <= 4:
+            return {f"param{self.slot}": None}
+        long_name, int_name = _SLOT_WIRE_FIELDS[self.slot]
+        if int_name == "int_z":  # always float — NaN in both message types
+            return {long_name: None, int_name: None}
+        return {long_name: None, int_name: INT32_MAX}  # int_x / int_y
+
+    @property
+    def nonsentinel_kwargs(self) -> dict:
+        """probe_dual() kwargs that set this slot to a real, non-sentinel value."""
+        if self.slot <= 4:
+            return {f"param{self.slot}": 1.0}
+        long_name, int_name = _SLOT_WIRE_FIELDS[self.slot]
+        if int_name == "int_z":
+            return {long_name: 1.0, int_name: 1.0}
+        return {long_name: 1.0, int_name: _REAL_INT}
+
+
+@dataclass
+class CommandSpec:
+    """Everything Tier1CommandTestBase needs to test one MAV_CMD."""
+
+    cmd_id: int
+    name: str  # e.g. "EXTERNAL_WIND_ESTIMATE" — used in the log filename/labels
+    baseline: dict  # probe_dual() kwargs for a valid baseline send
+    params: list[ParamSpec]  # all 7 slots
+
+    @property
+    def undefined_params(self) -> list["ParamSpec"]:
+        return [p for p in self.params if not p.defined]
+
+    @property
+    def defined_params(self) -> list["ParamSpec"]:
+        return [p for p in self.params if p.defined]
+
+
+def pytest_generate_tests(metafunc):
+    """
+    Dynamically parametrize the count-varying Tier 1 tests (undefined/defined
+    param sentinel checks) from the test class's SPEC. A no-op for any test
+    class without a SPEC (i.e. everything except Tier1CommandTestBase
+    subclasses) — guarded so this hook cannot affect unrelated collection.
+    """
+    spec = getattr(metafunc.cls, "SPEC", None) if metafunc.cls is not None else None
+    if spec is None:
+        return
+    if "undefined_param" in metafunc.fixturenames:
+        params = spec.undefined_params
+        metafunc.parametrize("undefined_param", params, ids=[f"param{p.slot}" for p in params])
+    if "defined_param" in metafunc.fixturenames:
+        params = spec.defined_params
+        metafunc.parametrize("defined_param", params, ids=[f"param{p.slot}" for p in params])
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 results table — recorded by _check(), written to logs/ at class end.
+# Stored per-class (cls._RESULTS / cls._DETAILS, set fresh by
+# Tier1CommandTestBase.__init_subclass__) so results from different commands
+# never mix, even though every migrated Test*Command class shares this code.
+# ---------------------------------------------------------------------------
+
+
+def _record(cls, request, outcome: str, description: str, result: int | None) -> None:
+    cls._RESULTS.append((request.node.name, outcome, description, result))
+
+
+def _record_detail(cls, text: str) -> None:
+    """Attach a supplementary multi-line block to the Tier 1 log (e.g. a full per-frame breakdown)."""
+    cls._DETAILS.append(text)
+
+
+def _check(cls, request, description: str, result: int | None, *, expect, xfail_reason: str | None = None) -> None:
+    """
+    Record this test's outcome into the class's Tier 1 results table, then
+    perform the actual pytest assertion/xfail.
+
+    `expect`: predicate(result:int) -> bool, only called when result is not
+    None. `xfail_reason`: if given and the predicate fails, xfail with this
+    reason (a known, documented stack gap) instead of hard-failing.
+    """
+    if result is None:
+        _record(cls, request, "UNKNOWN", description, None)
+        return  # ambiguous no-ACK on at least one message type; already logged by _reduce_dual()
+    if expect(result):
+        _record(cls, request, "PASS", description, result)
+        return
+    if xfail_reason:
+        _record(cls, request, "XFAIL", description, result)
+        pytest.xfail(xfail_reason)
+    _record(cls, request, "FAIL", description, result)
+    pytest.fail(description)
+
+
+def _safe(s: str) -> str:
+    return s.replace("/", "_").replace(" ", "_").replace("\\", "_")
+
+
+def _reduce_dual(cmd_name: str, label: str, int_ack: dict | None, long_ack: dict | None) -> int | None:
+    """
+    Merge a probe_dual() result pair into a single reported outcome.
+
+    Logs once if COMMAND_INT and COMMAND_LONG agree; logs both explicitly
+    (WARNING) if they disagree — a real protocol inconsistency, not just
+    noise, per CLAUDE.md § Mandatory common tests. Returns None if EITHER
+    message type got no ACK at all (a partial UNKNOWN is itself worth
+    surfacing rather than silently resolved to "whichever answered").
+    """
+    int_result = int(int_ack["result"]) if int_ack is not None else None
+    long_result = int(long_ack["result"]) if long_ack is not None else None
+    if int_result is None or long_result is None:
+        log.warning(_FMT, cmd_name, label,
+                    f"UNKNOWN on at least one message type: COMMAND_INT={int_result} COMMAND_LONG={long_result}")
+        return None
+    if int_result == long_result:
+        log.info(_FMT, cmd_name, label, f"result={long_result} (COMMAND_INT and COMMAND_LONG agree)")
+        return long_result
+    log.warning(_FMT, cmd_name, label, f"INCONSISTENT: COMMAND_INT={int_result} COMMAND_LONG={long_result}")
+    return long_result
+
+
+@pytest.fixture(scope="class", autouse=True)
+def _write_tier1_log(request):
+    """
+    Write the accumulated Tier 1 results table to logs/ once, after every
+    test in the class has run — mirrors test_survey.py / test_ack_uniqueness.py,
+    which always write regardless of pass/fail. A no-op for any test class
+    that isn't a Tier1CommandTestBase subclass (no SPEC / no results).
+    """
+    yield
+    cls = request.cls
+    if cls is None or not hasattr(cls, "SPEC"):
+        return
+    results = getattr(cls, "_RESULTS", None)
+    if not results:
+        return  # nothing ran (e.g. filtered with -k) -- nothing to write
+
+    spec = cls.SPEC
+    info = getattr(request.config, "_autopilot_info", {})
+    drone_address = request.config.getoption("--drone-address")
+    header = _format_autopilot_header(info, drone_address)
+
+    counts: dict[str, int] = {}
+    lines = [
+        f"Tier 1 results: MAV_CMD_{spec.name} (cmd={spec.cmd_id})",
+        "=" * 100,
+        f"{'Test':<52} {'Outcome':<12} {'Result':<7} Pass case",
+        "-" * 100,
+    ]
+    for name, outcome, description, result in results:
+        counts[outcome] = counts.get(outcome, 0) + 1
+        result_str = "-" if result is None else str(result)
+        lines.append(f"{name:<52} {outcome:<12} {result_str:<7} {description}")
+    lines.append("-" * 100)
+    lines.append(
+        f"Total: {len(results)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+    )
+    details = getattr(cls, "_DETAILS", None)
+    if details:
+        lines.append("")
+        lines.append("Supplementary detail")
+        lines.append("=" * 100)
+        for block in details:
+            lines.append(block)
+    table = "\n".join(lines)
+    log.info("\n%s", table)
+
+    ap = _safe(info.get("autopilot", "unknown").lower().replace("ardupilotmega", "ardupilot"))
+    vt = _safe(info.get("vehicle_type", "unknown").lower())
+    ver_raw = info.get("firmware_version", "")
+    ver = f"_{_safe(ver_raw)}" if ver_raw and ver_raw != "N/A" else ""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+    safe_name = _safe(spec.name.lower())
+    log_path = logs_dir / f"command_{safe_name}_tier1_{ap}_{vt}{ver}_{timestamp}.log"
+    log_path.write_text(header + "\n\n" + table + "\n")
+    log.info(_FMT, spec.name, "Tier 1 results log written", str(log_path))
+
+
+class Tier1CommandTestBase:
+    """
+    Shared Tier 1 (ACK-level) mandatory common tests — see CLAUDE.md
+    § Mandatory common tests. Subclass and set `SPEC = CommandSpec(...)`; add
+    the command's own bespoke per-parameter tests as ordinary methods
+    alongside these. Every test sends via both COMMAND_INT and COMMAND_LONG
+    (probe_dual()) and reports one merged result, per CLAUDE.md's dual-send
+    rule for the mandatory checks.
+    """
+
+    SPEC: "CommandSpec"  # set by subclass
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        # Fresh per-subclass state — NOT shared via the base class, since
+        # multiple Test*Command classes (different commands) run in one
+        # pytest session and must not mix results or "supported" caches.
+        cls._RESULTS = []
+        cls._DETAILS = []
+        cls._supported = None
+
+    async def _probe(self, system, **overrides) -> tuple[dict | None, dict | None]:
+        """probe_dual() with this command's baseline defaults applied."""
+        kw = dict(self.SPEC.baseline)
+        kw.update(overrides)
+        return await probe_dual(system, self.SPEC.cmd_id, window_s=_ACK_WINDOW_S, **kw)
+
+    def _reduce(self, label: str, int_ack: dict | None, long_ack: dict | None) -> int | None:
+        return _reduce_dual(self.SPEC.name, label, int_ack, long_ack)
+
+    async def _ensure_supported(self, system, mock_stack) -> None:
+        """Probe once per class; skip all subsequent tests if UNSUPPORTED."""
+        cls = type(self)
+        if cls._supported is None:
+            int_ack, long_ack = await self._probe(system)
+            result = self._reduce("support probe", int_ack, long_ack)
+            cls._supported = (result != MAV_RESULT_UNSUPPORTED)
+        if not cls._supported:
+            pytest.skip(f"{self.SPEC.name} (cmd={self.SPEC.cmd_id}) is UNSUPPORTED on this platform — test not run")
+
+    # -------------------------------------------------------------------
+    # Group A — mandatory common tests 1/2/3/6 (CLAUDE.md § Mandatory common tests)
+    # -------------------------------------------------------------------
+
+    async def test_command_ack_received(self, gcs_system_cls, mock_stack_cls, request):
+        """ACKs (via both COMMAND_INT and COMMAND_LONG) for a baseline, valid send."""
+        int_ack, long_ack = await self._probe(gcs_system_cls)
+        description = "ACKs (via both COMMAND_INT and COMMAND_LONG) for a baseline, valid send"
+        if int_ack is None or long_ack is None:
+            _record(type(self), request, "FAIL", description, None)
+            assert int_ack is not None, (
+                f"No COMMAND_ACK received via COMMAND_INT within {ACK_TIMEOUT_S:.1f}s — "
+                "every command must be acknowledged per spec"
+            )
+            assert long_ack is not None, (
+                f"No COMMAND_ACK received via COMMAND_LONG within {ACK_TIMEOUT_S:.1f}s — "
+                "every command must be acknowledged per spec"
+            )
+        _record(type(self), request, "PASS", description, int(long_ack["result"]))
+        log.info(_FMT, self.SPEC.name, "ACK received",
+                 f"COMMAND_INT={int(int_ack['result'])} COMMAND_LONG={int(long_ack['result'])}")
+
+    async def test_command_supported(self, gcs_system_cls, mock_stack_cls, request):
+        """Not UNSUPPORTED for a baseline, valid send."""
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        int_ack, long_ack = await self._probe(gcs_system_cls)
+        result = self._reduce("baseline", int_ack, long_ack)
+        _check(type(self), request, "Not UNSUPPORTED for a baseline, valid send", result,
+               expect=lambda r: r != MAV_RESULT_UNSUPPORTED)
+
+    async def test_exactly_one_ack(self, gcs_system_cls, mock_stack_cls, request):
+        """Exactly one terminal COMMAND_ACK per send, via each message type."""
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        description = "Exactly one terminal COMMAND_ACK per send, via each message type"
+        spec = self.SPEC
+        kw = spec.baseline
+        int_acks = await probe_command_int_all_acks(
+            gcs_system_cls, spec.cmd_id, window_s=_ACK_WINDOW_S,
+            frame=kw.get("frame", 6),
+            param1=kw.get("param1", 0.0), param2=kw.get("param2", 0.0),
+            param3=kw.get("param3", 0.0), param4=kw.get("param4", 0.0),
+            x=kw.get("int_x", 0), y=kw.get("int_y", 0), z=kw.get("int_z", 0.0),
+        )
+        long_acks = await probe_command_long_all_acks(
+            gcs_system_cls, spec.cmd_id, window_s=_ACK_WINDOW_S,
+            param1=kw.get("param1", 0.0), param2=kw.get("param2", 0.0),
+            param3=kw.get("param3", 0.0), param4=kw.get("param4", 0.0),
+            param5=kw.get("long5", 0.0), param6=kw.get("long6", 0.0), param7=kw.get("long7", 0.0),
+        )
+
+        # Gather both counts BEFORE deciding pass/fail/xfail — pytest.xfail()
+        # raises immediately, so deciding inside a loop over message types
+        # would skip checking whichever type comes second.
+        counts: dict[str, tuple[int, list[int]]] = {}
+        for label, acks in (("COMMAND_INT", int_acks), ("COMMAND_LONG", long_acks)):
+            assert len(acks) >= 1, f"No COMMAND_ACK received via {label}"
+            results = [int(a["result"]) for a in acks]
+            log.info(_FMT, spec.name, f"ACK count ({label})", f"n={len(acks)} results={results}")
+            counts[label] = (len(acks), results)
+
+        offenders = {label: rs for label, (n, rs) in counts.items() if n > 1}
+        if offenders:
+            if mock_stack_cls is not None:
+                _record(type(self), request, "FAIL", description, None)
+                pytest.fail(f"Got more than one ACK per send in mock mode: {offenders}")
+            _record(type(self), request, "XFAIL", description, None)
+            pytest.xfail(
+                f"Got more than one COMMAND_ACK for a single send ({offenders}) — see this "
+                "command's own module docstring / CLAUDE.md for any documented stack-specific cause"
+            )
+        for n, _ in counts.values():
+            assert n == 1
+        _record(type(self), request, "PASS", description, None)
+
+    async def test_frame_validation_survey(self, gcs_system_cls, mock_stack_cls, request):
+        """
+        Frame validation survey: does the stack ever return
+        MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME(9) for any MAV_FRAME value?
+
+        COMMAND_INT only — COMMAND_LONG has no `frame` field. Observational:
+        seeing UNSUPPORTED_MAV_FRAME(9) for at least one frame is positive
+        evidence of frame validation (PASS); seeing it for none is
+        INCONCLUSIVE, never a failure (see CLAUDE.md item 6).
+        """
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        description = "Frame validation survey: any MAV_FRAME value returns MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME(9)"
+        spec = self.SPEC
+        kw = spec.baseline
+        per_frame: list[tuple[int, str, int | None]] = []
+        for frame_id, frame_name in MAV_FRAME_CATALOGUE:
+            acks = await probe_command_int_all_acks(
+                gcs_system_cls, spec.cmd_id, frame=frame_id, window_s=_ACK_WINDOW_S,
+                param1=kw.get("param1", 0.0), param2=kw.get("param2", 0.0),
+                param3=kw.get("param3", 0.0), param4=kw.get("param4", 0.0),
+                x=kw.get("int_x", 0), y=kw.get("int_y", 0), z=kw.get("int_z", 0.0),
+            )
+            ack = effective_ack(acks)
+            result = int(ack["result"]) if ack is not None else None
+            per_frame.append((frame_id, frame_name, result))
+
+        all_acked = all(result is not None for _, _, result in per_frame)
+        hits = [(fid, fname) for fid, fname, result in per_frame
+                if result == MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME]
+
+        if not all_acked:
+            table_lines = [
+                f"  frame={fid:>2} ({fname}): {'UNKNOWN (no ACK)' if result is None else result}"
+                for fid, fname, result in per_frame
+            ]
+            block = (
+                f"Frame validation survey ({spec.name}, cmd={spec.cmd_id}) — full breakdown "
+                f"(not all frames ACKed):\n" + "\n".join(table_lines)
+            )
+        else:
+            block = f"Frame validation survey ({spec.name}, cmd={spec.cmd_id}): all {len(per_frame)} frames ACKed."
+        if hits:
+            hit_desc = ", ".join(f"frame={fid} ({fname})" for fid, fname in hits)
+            block += f"\nUNSUPPORTED_MAV_FRAME(9) returned for: {hit_desc} — frame validation confirmed."
+        else:
+            block += (
+                "\nNo frame returned UNSUPPORTED_MAV_FRAME(9) — inconclusive; this does NOT mean "
+                "frame is unvalidated, only that none of the tested frames triggered a rejection."
+            )
+        _record_detail(type(self), block)
+        log.info(_FMT, spec.name, "frame validation survey", block)
+
+        if hits:
+            _record(type(self), request, "PASS", description, MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME)
+        else:
+            _record(type(self), request, "INCONCLUSIVE", description, None)
+
+    # -------------------------------------------------------------------
+    # Group B — undefined params: sentinel accepted, non-sentinel rejected
+    # (mandatory common test 4). Parametrized per-command via SPEC.undefined_params
+    # (see pytest_generate_tests above).
+    # -------------------------------------------------------------------
+
+    async def test_undefined_param_sentinel_accepted(self, gcs_system_cls, mock_stack_cls, request, undefined_param):
+        """Accepted when an undefined param is sent as its own sentinel."""
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        p = undefined_param
+        int_ack, long_ack = await self._probe(gcs_system_cls, **p.sentinel_kwargs)
+        result = self._reduce(f"param{p.slot} ({p.label}) = sentinel", int_ack, long_ack)
+        description = f"Accepted when param{p.slot} ({p.label}) is sent as its own sentinel (undefined param)"
+        _check(type(self), request, description, result,
+               expect=lambda r: r not in (MAV_RESULT_UNSUPPORTED, MAV_RESULT_DENIED))
+
+    async def test_undefined_param_nonsentinel_rejected(self, gcs_system_cls, mock_stack_cls, request, undefined_param):
+        """Rejected when an undefined param is sent a real (non-sentinel) value."""
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        p = undefined_param
+        int_ack, long_ack = await self._probe(gcs_system_cls, **p.nonsentinel_kwargs)
+        result = self._reduce(f"param{p.slot} ({p.label}) = non-sentinel", int_ack, long_ack)
+        description = f"Rejected when param{p.slot} ({p.label}) is sent a real (non-sentinel) value (undefined param)"
+        xfail_reason = p.reject_xfail_reason or (
+            f"Stack returned {result} for undefined param{p.slot}; expected DENIED — no known "
+            "stack validates parameters with no MAVLink definition (spec gap)"
+        )
+        _check(type(self), request, description, result, expect=lambda r: r == MAV_RESULT_DENIED,
+               xfail_reason=xfail_reason)
+
+    # -------------------------------------------------------------------
+    # Group C — defined (used) params tolerate their sentinel (mandatory
+    # common test 5), except a "deny_required" param (mandatory field with
+    # no sentinel fallback — e.g. DO_SET_GLOBAL_ORIGIN's lat/lon/altitude),
+    # where the expectation flips: DENIED is the correct, passing result.
+    # -------------------------------------------------------------------
+
+    async def test_defined_param_sentinel_tolerated(self, gcs_system_cls, mock_stack_cls, request, defined_param):
+        """Not denied (or denied, for a documented mandatory-field exemption) when a defined param is sent its sentinel."""
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        p = defined_param
+        int_ack, long_ack = await self._probe(gcs_system_cls, **p.sentinel_kwargs)
+        result = self._reduce(f"param{p.slot} ({p.label}, defined) = sentinel", int_ack, long_ack)
+        if p.sentinel_policy == "deny_required":
+            description = (
+                f"Denied when param{p.slot} ({p.label}) is sent its sentinel "
+                "(mandatory field, no sentinel fallback)"
+            )
+            _check(type(self), request, description, result, expect=lambda r: r == MAV_RESULT_DENIED)
+        else:
+            description = f"Not denied when param{p.slot} ({p.label}, defined) is sent its sentinel"
+            _check(type(self), request, description, result, expect=lambda r: r != MAV_RESULT_DENIED)
 
 
 # ---------------------------------------------------------------------------

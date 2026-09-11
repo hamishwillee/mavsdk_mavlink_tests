@@ -102,14 +102,14 @@ from tests.command.conftest import (
     probe_command_long,
     _FMT,
 )
-from tests.command.nav_takeoff.test_flight import (
+from tests.flight_helpers import (
     _get_home_position,
-    _wait_armable,
-    _rtl_and_land,
-    _wait_for_altitude,
     _request_position_stream,
+    _rtl_and_land,
     _set_guided_mode_ardupilot,
     _takeoff_cmd,
+    _wait_armable,
+    _wait_for_altitude,
 )
 
 log = logging.getLogger(__name__)
