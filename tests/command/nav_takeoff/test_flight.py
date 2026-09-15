@@ -73,9 +73,11 @@ from tests.flight_helpers import (
     _rtl_and_land,
     _set_guided_mode_ardupilot,
     _takeoff_cmd,
+    _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome for the Tier 2 log
     _wait_armable,
     _wait_for_altitude,
     _wait_for_altitude_with_peak_pitch,
+    record_tier2_detail,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
 )
 from tests.mock_flight_stack import MAV_RESULT_UNSUPPORTED, MAV_RESULT_DENIED
@@ -87,6 +89,15 @@ pytestmark = pytest.mark.timeout(360)
 
 _CMD = "NAV_TAKEOFF"
 _CMD_ID = 22  # MAV_CMD_NAV_TAKEOFF
+_CMD_NAME = _CMD  # read by tests/flight_helpers.py's flush_tier2_logs()
+
+_IGNORED_WITHOUT_NACK_REASON = (
+    "MAVLink spec violation, common across stacks (root CLAUDE.md's 'ignoring an "
+    "accepted, defined param without NACKing' rule): the command ACKs ACCEPTED for "
+    "{param} but this stack does not apply it at NAV_TAKEOFF execution. Tracked as a "
+    "known, ubiquitous gap, not a per-stack bug — xfail so a stack that fixes this "
+    "shows a clean PASS instead of breaking the suite."
+)
 
 YAW_TOLERANCE_DEG  = 20.0   # ± degrees for heading assertion
 
@@ -1058,6 +1069,69 @@ async def _observe_yaw(gcs_system, label: str, param4_deg) -> None:
         await _rtl_and_land(gcs_system)
 
 
+async def test_yaw_is_honoured(gcs_system, request):
+    """
+    param4=135° — "is yaw honoured" core test.
+
+    The command ACKs ACCEPTED for param4 (Tier 1 test_command.py) on every stack tested.
+    If execution does not turn the vehicle to face param4, that is the general "accepted
+    but silently ignored" spec violation (see module comment above _observe_yaw) —
+    xfail, not a hard failure: source review already confirms PX4, ArduCopter, and
+    ArduPlane all discard param4 in the COMMAND_INT execution path today (see comment
+    above), so this is expected to xfail everywhere until that changes.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    target = 135.0
+    try:
+        await _arm_and_send_takeoff(gcs_system, param4=target, z=TAKEOFF_ALT_M)
+        pos = await _wait_for_altitude(gcs_system, AIRBORNE_THRESHOLD_M, AIRBORNE_TIMEOUT_S)
+        heading = await _get_heading(gcs_system)
+        diff = abs((heading - target + 180) % 360 - 180)
+        detail = f"altitude={pos.relative_altitude_m:.1f}m heading={heading:.1f}° target={target:.0f}° diff={diff:.1f}°"
+        log.info(_FMT, _CMD, "yaw honoured?", detail)
+        record_tier2_detail(request, detail)
+        ok = diff <= YAW_TOLERANCE_DEG
+        if not ok:
+            pytest.xfail(_IGNORED_WITHOUT_NACK_REASON.format(param="param4 (Yaw)"))
+        assert ok
+    finally:
+        await _rtl_and_land(gcs_system)
+
+
+async def test_yaw_sentinel_changes_from_previous(gcs_system, request):
+    """
+    NAV_TAKEOFF param4=NaN sent while already facing an arbitrary heading — does the
+    heading change? Characterisation only, no assertion.
+
+    The spec defines NaN as "use the current system yaw heading mode (e.g. yaw towards
+    next waypoint, yaw to home, etc.)" — a dynamic outcome with no predictable target.
+    COMMAND_INT (unlike a stored mission item) can be re-sent while airborne, so instead
+    of guessing the target, this test sends a distinctive arbitrary yaw first, confirms
+    (or notes failure to confirm) it, then re-sends with param4=NaN and logs whether the
+    heading actually moves — evidence of whether the sentinel is live-processed at all,
+    without needing to know what it resolves to.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    arbitrary = 250.0
+    try:
+        await _arm_and_send_takeoff(gcs_system, param4=arbitrary, z=TAKEOFF_ALT_M)
+        await _wait_for_altitude(gcs_system, AIRBORNE_THRESHOLD_M, AIRBORNE_TIMEOUT_S)
+        heading_before = await _get_heading(gcs_system)
+        await asyncio.sleep(1.0)
+        await send_command_int(gcs_system, **_takeoff_cmd(param4=None, z=TAKEOFF_ALT_M))  # None -> NaN
+        await asyncio.sleep(2.0)  # allow any yaw response to settle before sampling
+        heading_after = await _get_heading(gcs_system)
+        delta = abs((heading_after - heading_before + 180) % 360 - 180)
+        detail = (
+            f"heading_before(param4={arbitrary:.0f}°)={heading_before:.1f}°  "
+            f"heading_after(param4=NaN)={heading_after:.1f}°  delta={delta:.1f}°"
+        )
+        log.info(_FMT, _CMD, "yaw sentinel re-send", detail)
+        record_tier2_detail(request, detail)
+    finally:
+        await _rtl_and_land(gcs_system)
+
+
 async def test_yaw_north(gcs_system):
     """param4=0° (north) — observational: log heading after takeoff."""
     await _ensure_nav_takeoff_supported(gcs_system)
@@ -1219,28 +1293,27 @@ async def test_position_zero_treated_as_current(gcs_system):
 # Pitch comparison (param1) — two full flight cycles
 # ---------------------------------------------------------------------------
 
+PITCH_HONOURED_MARGIN_DEG = 5.0  # peak_high must exceed peak_low by at least this to count as "honoured"
+
+
 @pytest.mark.timeout(600)
-async def test_pitch_comparison_low_vs_high(gcs_system):
+async def test_pitch_is_honoured(gcs_system, request):
     """
-    NAV_TAKEOFF param1=5° vs param1=45° — observational: compare peak pitch during ascent.
+    NAV_TAKEOFF param1=5° vs param1=45° — "is pitch honoured" core test.
 
     Two consecutive takeoff cycles.  For each, a background task samples attitude_euler()
-    during the climb and records the maximum |pitch| value.  The results are logged.
+    during the climb and records the maximum |pitch| value.
 
-    The spec defines param1 as "Minimum pitch (if airspeed sensor present)" for fixed-wing
-    takeoffs.  It is undefined for multicopters.
+    The spec defines param1 as "Minimum pitch (if airspeed sensor present), desired pitch
+    without sensor" — supported means the vehicle attempts to match it, either as a minimum
+    or a set value. There is no absolute expected pitch to assert against (climb dynamics
+    vary by stack/vehicle), so this is a comparison, asserting the high-pitch cycle's peak
+    |pitch| exceeds the low-pitch cycle's by a real margin.
 
-    Known stack behaviour (tier 1 findings for COMMAND_INT path):
-      PX4: both MC and FW accept param1 but the COMMAND_INT execution path likely
-           ignores it (param1 handling not confirmed in navigator_main.cpp for COMMAND_INT).
-      ArduCopter: param1 is accepted; AP_Copter::do_takeoff reads param1 from the
-           COMMAND_INT and may pass it to the takeoff controller.
-      ArduPlane: param1 is the minimum takeoff pitch; values are accepted via COMMAND_INT.
-
-    This test does not assert a specific relationship between param1 and peak pitch because
-    the command-path behaviour is stack-dependent and many stacks ignore param1 entirely.
-    It is informational: if the peak pitches are similar regardless of param1, the stack
-    ignores param1 in the command path.
+    The command ACKs ACCEPTED for param1 on every stack tested (Tier 1 test_command.py).
+    If the peaks come back statistically indistinguishable, that means the stack accepted
+    but ignored the param — the general "accepted but silently ignored" spec violation (see
+    test_yaw_is_honoured) — xfail, not a hard failure.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     target_m = 20.0  # requested altitude (stacks that honour z will climb here)
@@ -1268,14 +1341,83 @@ async def test_pitch_comparison_low_vs_high(gcs_system):
             await _rtl_and_land(gcs_system)
             await asyncio.sleep(5.0)  # brief pause between cycles
 
-    if "param1=5°" in results and "param1=45°" in results:
-        low_pitch = results["param1=5°"]
-        high_pitch = results["param1=45°"]
-        log.info(
-            _FMT, _CMD, "pitch comparison",
-            f"param1=5°→peak={low_pitch:.1f}°  param1=45°→peak={high_pitch:.1f}°  "
-            f"{'stack honours param1' if high_pitch > low_pitch + 5.0 else 'stack likely ignores param1 in COMMAND_INT path'}",
+    low_pitch = results.get("param1=5°", 0.0)
+    high_pitch = results.get("param1=45°", 0.0)
+    ok = high_pitch > low_pitch + PITCH_HONOURED_MARGIN_DEG
+    detail = f"param1=5°→peak={low_pitch:.1f}°  param1=45°→peak={high_pitch:.1f}°"
+    log.info(_FMT, _CMD, "pitch comparison", f"{detail}  {'honoured' if ok else 'likely ignored'}")
+    record_tier2_detail(request, detail)
+    if not ok:
+        pytest.xfail(_IGNORED_WITHOUT_NACK_REASON.format(param="param1 (Pitch)"))
+    assert ok
+
+
+async def test_pitch_sentinel(gcs_system, request):
+    """
+    NAV_TAKEOFF param1=NaN — characterisation only, no assertion.
+
+    The spec gives param1 no sentinel meaning (unlike param4's NaN). Logs whatever peak
+    pitch results — purely observational.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    try:
+        await _arm_and_send_takeoff(gcs_system, param1=None, z=TAKEOFF_ALT_M)  # None -> NaN
+        pos, peak_pitch = await _wait_for_altitude_with_peak_pitch(
+            gcs_system, AIRBORNE_THRESHOLD_M, timeout_s=AIRBORNE_TIMEOUT_S
         )
+        detail = f"altitude={pos.relative_altitude_m:.1f}m peak_|pitch|={peak_pitch:.1f}°"
+        log.info(_FMT, _CMD, "param1=NaN sentinel", detail)
+        record_tier2_detail(request, detail)
+    finally:
+        await _rtl_and_land(gcs_system)
+
+
+async def test_pitch_negative(gcs_system, request):
+    """
+    NAV_TAKEOFF param1=-10° — edge-value characterisation, safety-checked.
+
+    The spec defines no range for param1, so this never asserts a specific peak pitch —
+    only logs it. It DOES assert that the vehicle still reaches airborne altitude: an
+    edge-case value causing an outright failure to climb is a genuine safety-relevant
+    finding regardless of how pitch itself is interpreted.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    try:
+        await _arm_and_send_takeoff(gcs_system, param1=-10.0, z=TAKEOFF_ALT_M)
+        pos, peak_pitch = await _wait_for_altitude_with_peak_pitch(
+            gcs_system, AIRBORNE_THRESHOLD_M, timeout_s=AIRBORNE_TIMEOUT_S
+        )
+        detail = f"altitude={pos.relative_altitude_m:.1f}m peak_|pitch|={peak_pitch:.1f}° (param1=-10°)"
+        log.info(_FMT, _CMD, "negative pitch", detail)
+        record_tier2_detail(request, detail)
+        assert pos.relative_altitude_m >= AIRBORNE_THRESHOLD_M, (
+            f"Vehicle did not become airborne with param1=-10°. "
+            "Stack may be acting on the negative pitch value literally (nose-down)."
+        )
+    finally:
+        await _rtl_and_land(gcs_system)
+
+
+async def test_pitch_overflow(gcs_system, request):
+    """
+    NAV_TAKEOFF param1=450° — edge-value characterisation, safety-checked.
+
+    450° has no physical meaning for a pitch angle; the spec defines no wrap behaviour.
+    Same shape as test_pitch_negative — logs peak pitch, asserts only that the vehicle
+    still becomes airborne.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    try:
+        await _arm_and_send_takeoff(gcs_system, param1=450.0, z=TAKEOFF_ALT_M)
+        pos, peak_pitch = await _wait_for_altitude_with_peak_pitch(
+            gcs_system, AIRBORNE_THRESHOLD_M, timeout_s=AIRBORNE_TIMEOUT_S
+        )
+        detail = f"altitude={pos.relative_altitude_m:.1f}m peak_|pitch|={peak_pitch:.1f}° (param1=450°)"
+        log.info(_FMT, _CMD, "overflow pitch", detail)
+        record_tier2_detail(request, detail)
+        assert pos.relative_altitude_m >= AIRBORNE_THRESHOLD_M, "Vehicle did not become airborne with param1=450°."
+    finally:
+        await _rtl_and_land(gcs_system)
 
 
 # ---------------------------------------------------------------------------

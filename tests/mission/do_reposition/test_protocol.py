@@ -8,6 +8,13 @@ syntactically valid as a MISSION_ITEM_INT.  Whether a flight stack's mission
 storage code accepts it — and whether it preserves each parameter — is not
 defined by the spec and must be probed empirically.
 
+Built on tests/mission/conftest.py's Tier1MissionTestBase/MissionItemSpec —
+the shared mandatory Tier 1 tests (baseline-accepted, undefined-param
+sentinel pair, defined-param sentinel-tolerated) are inherited; this file
+only adds DO_REPOSITION's own bespoke per-parameter tests (enum/bitmask/
+range/location semantics are not auto-generated — see
+tests/mission/CLAUDE.md § MAV_CMD support testing).
+
 Why this tier emphasises "expected unsupported" + sentinel probes
 ------------------------------------------------------------------
 Uploading a value that is *expected to be valid* and seeing it round-trip is
@@ -58,31 +65,22 @@ Against a real flight stack::
     pytest tests/mission/do_reposition/test_protocol.py --drone-address=udp://:14540 -v --log-cli-level=INFO
 """
 
-import asyncio
-import json
 import logging
 import math
 
 import pytest
-import pytest_asyncio
-from mavsdk import System
-from mavsdk.mavlink_direct import MavlinkMessage
-from mavsdk.mission_raw import MissionItem, MissionRawError
+from mavsdk.mission_raw import MissionRawError
 
-from ..conftest import clear_all_mission_types
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
-from tests.mock_flight_stack import MockFlightStack
+from ..conftest import MissionItemSpec, Tier1MissionTestBase, clear_all_mission_types
+from tests.param_spec import ParamSpec
 
 log = logging.getLogger(__name__)
 
-TRANSFER_TIMEOUT_S = 30.0
 _CMD = "DO_REPOSITION"
-_CMD_ID = 192  # MAV_CMD_DO_REPOSITION
 _FMT = "%-14s | %-44s | %s"
 
 NAN = float("nan")
 INT32_MAX = 0x7FFF_FFFF
-_MAV_PROTOCOL_CAPABILITY_MISSION_INT = 4
 
 # MAV_DO_REPOSITION_FLAGS bitmask values (from common.xml)
 _FLAG_CHANGE_MODE  = 1   # bit 0
@@ -92,195 +90,46 @@ _FLAG_RELATIVE_YAW = 2   # bit 1
 _LAT_INT = 473977000
 _LON_INT = 85456000
 
-
-async def _ensure_mission_int_capability(system: System, max_attempts: int = 10) -> None:
-    """Probe AUTOPILOT_VERSION until MISSION_INT capability is confirmed.
-
-    See tests/mission/nav_takeoff/test_protocol.py for full rationale — copied
-    verbatim because it must run before the GCS system fixture yields.
-    """
-    for attempt in range(max_attempts):
-        combined: int = 0
-        first_seen = asyncio.Event()
-
-        async def _listen() -> None:
-            nonlocal combined
-            try:
-                async for msg in system.mavlink_direct.message("AUTOPILOT_VERSION"):
-                    combined |= int(json.loads(msg.fields_json).get("capabilities", 0))
-                    first_seen.set()
-            except asyncio.CancelledError:
-                pass
-
-        listen_task = asyncio.create_task(_listen())
-        await asyncio.sleep(0.2)  # let the gRPC stream register on the server
-
-        await system.mavlink_direct.send_message(MavlinkMessage(
-            message_name="COMMAND_LONG",
-            system_id=0, component_id=0,
-            target_system_id=1, target_component_id=1,
-            fields_json=json.dumps({
-                "target_system": 1, "target_component": 1,
-                "command": 512, "confirmation": 0,
-                "param1": 148.0, "param2": 0.0, "param3": 0.0,
-                "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 0.0,
-            }),
-        ))
-
-        try:
-            await asyncio.wait_for(first_seen.wait(), timeout=2.0)
-            await asyncio.sleep(0.1)  # collect any concurrent responses
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            listen_task.cancel()
-            try:
-                await listen_task
-            except asyncio.CancelledError:
-                pass
-
-        if combined & _MAV_PROTOCOL_CAPABILITY_MISSION_INT:
-            if attempt > 0:
-                log.debug("MISSION_INT capability confirmed after %d attempts", attempt + 1)
-            return
-
-        log.debug(
-            "Capability probe attempt %d/%d: bits=0x%x — retrying",
-            attempt + 1, max_attempts, combined,
-        )
-        await asyncio.sleep(0.5)
-
-    log.warning("MISSION_INT capability not confirmed after %d attempts", max_attempts)
-
-
 # ---------------------------------------------------------------------------
-# Item builder
+# Tier 1 spec
 # ---------------------------------------------------------------------------
+#
+# param4 default is **0.0, not the spec-correct NaN** ("use current
+# heading"): ArduPilot's `AP_Mission::sanity_check_params()` only permits NaN
+# in the params of commands it explicitly recognises (NAV_WAYPOINT,
+# NAV_TAKEOFF, ...).  DO_REPOSITION is not in that list, so its blanket
+# `nan_mask = 0xff` rejects NaN in *any* of params 1-4 with
+# `MAV_MISSION_INVALID_PARAM4` — before the command-id switch that would
+# otherwise report `MAV_MISSION_UNSUPPORTED`.  Using 0.0 here keeps the
+# baseline probe focused on "is DO_REPOSITION accepted at all"; the NaN
+# behaviour itself is characterised separately in test_protocol_param4_yaw_nan
+# (same workaround pattern as nav_takeoff's param2 — see
+# tests/mission/nav_takeoff/test_protocol.py::_takeoff_item).
 
-
-def _reposition_item(seq: int = 0, current: int = 1, **overrides) -> MissionItem:
-    """Return a baseline DO_REPOSITION MissionItem.  Keyword overrides replace defaults.
-
-    Defaults use spec-defined "no-op" sentinel values for params not under test
-    (param1=-1 "use default speed", param2=0 "no flags", param3=0 "ignored")
-    so that a baseline upload exercises the command without invoking any
-    optional behaviour.
-
-    param4 default is **0.0, not the spec-correct NaN** ("use current
-    heading"): ArduPilot's `AP_Mission::sanity_check_params()` only permits
-    NaN in the params of commands it explicitly recognises (NAV_WAYPOINT,
-    NAV_TAKEOFF, ...).  DO_REPOSITION is not in that list, so its blanket
-    `nan_mask = 0xff` rejects NaN in *any* of params 1-4 with
-    `MAV_MISSION_INVALID_PARAM4` — before the command-id switch that would
-    otherwise report `MAV_MISSION_UNSUPPORTED`.  Using 0.0 here keeps the
-    baseline probe focused on "is DO_REPOSITION accepted at all"; the NaN
-    behaviour itself is characterised separately in test_protocol_param4_yaw_nan
-    (same workaround pattern as nav_takeoff's param2 — see
-    tests/mission/nav_takeoff/test_protocol.py::_takeoff_item).
-    """
-    defaults = dict(
-        seq=seq,
-        frame=6,        # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
-        command=_CMD_ID,
-        current=current,
-        autocontinue=1,
-        param1=-1.0,    # Speed: -1 = use default
-        param2=0.0,     # Bitmask: no flags
-        param3=0.0,     # Radius: 0 = ignored (per spec)
-        param4=0.0,     # Yaw: 0.0 — NOT the spec-correct NaN; see docstring above
+SPEC = MissionItemSpec(
+    cmd_id=192,
+    name=_CMD,
+    mission_type=0,
+    frame=6,  # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+    baseline=dict(
+        param1=-1.0,   # Speed: -1 = use default
+        param2=0.0,    # Bitmask: no flags
+        param3=0.0,    # Radius: 0 = ignored (per spec)
+        param4=0.0,    # Yaw: 0.0 — NOT the spec-correct NaN; see note above
         x=_LAT_INT + 20000,   # ~0.002 deg north of SIH home — distinct from 0/home
         y=_LON_INT + 20000,
         z=30.0,
-        mission_type=0,
-    )
-    defaults.update(overrides)
-    return MissionItem(**defaults)
-
-
-def _items(home_item, probe: MissionItem):
-    """Return (item_list, probe_seq), prepending a home item for ArduCopter if required."""
-    if home_item is not None:
-        home = MissionItem(
-            seq=home_item.seq, frame=home_item.frame, command=home_item.command,
-            current=1, autocontinue=home_item.autocontinue,
-            param1=home_item.param1, param2=home_item.param2,
-            param3=home_item.param3, param4=home_item.param4,
-            x=home_item.x, y=home_item.y, z=home_item.z,
-            mission_type=home_item.mission_type,
-        )
-        adjusted = MissionItem(
-            seq=1, frame=probe.frame, command=probe.command,
-            current=0, autocontinue=probe.autocontinue,
-            param1=probe.param1, param2=probe.param2,
-            param3=probe.param3, param4=probe.param4,
-            x=probe.x, y=probe.y, z=probe.z,
-            mission_type=probe.mission_type,
-        )
-        return [home, adjusted], 1
-    return [probe], 0
-
-
-# ---------------------------------------------------------------------------
-# Upload / download helper
-# ---------------------------------------------------------------------------
-
-
-async def _upload_probe(system, items: list, probe_seq: int) -> MissionItem:
-    """Upload items, download, and return the probe item at probe_seq.
-
-    Raises MissionRawError if the upload is NACKed.
-    Raises AssertionError if the probe item is absent from the download.
-    """
-    async with asyncio.timeout(TRANSFER_TIMEOUT_S):
-        await system.mission_raw.upload_mission(items)
-    async with asyncio.timeout(TRANSFER_TIMEOUT_S):
-        downloaded = await system.mission_raw.download_mission()
-    dl = next((d for d in downloaded if d.seq == probe_seq), None)
-    assert dl is not None, (
-        f"probe item seq={probe_seq} not found in download "
-        f"(seqs present: {[d.seq for d in downloaded]})"
-    )
-    return dl
-
-
-# ---------------------------------------------------------------------------
-# Class-scoped fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest_asyncio.fixture(scope="class", loop_scope="class")
-async def mock_stack_cls(request):
-    """Class-scoped MockFlightStack.  No-op in standalone (--drone-address) mode."""
-    drone_address = request.config.getoption("--drone-address")
-    if drone_address is not None:
-        yield None
-        return
-
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
-
-    stack = MockFlightStack()
-    task = asyncio.create_task(stack.run(system))
-    await asyncio.sleep(0.5)
-    yield stack
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-@pytest_asyncio.fixture(scope="class", loop_scope="class")
-async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
-    timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
-    await _wait_for_connection(system, timeout_s)
-    if request.config.getoption("--drone-address") is not None:
-        await asyncio.sleep(3.0)
-    else:
-        await _ensure_mission_int_capability(system)
-    yield system
+    ),
+    params=[
+        ParamSpec(1, "Speed", defined=True),
+        ParamSpec(2, "Bitmask", defined=True),
+        ParamSpec(3, "Radius", defined=True),
+        ParamSpec(4, "Yaw", defined=True),
+        ParamSpec(5, "Latitude", defined=True),
+        ParamSpec(6, "Longitude", defined=True),
+        ParamSpec(7, "Altitude", defined=True),
+    ],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -289,80 +138,10 @@ async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
 
 
 @pytest.mark.asyncio(loop_scope="class")
-class TestDoReposition:
+class TestDoReposition(Tier1MissionTestBase):
     """Protocol-acceptance tests for MAV_CMD_DO_REPOSITION (cmd=192) as a mission item."""
 
-    # ------------------------------------------------------------------
-    # Baseline (cached for the whole class — see _skip_unsupported_param_tests)
-    # ------------------------------------------------------------------
-
-    @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def do_reposition_mission_support(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
-        """Probe once whether DO_REPOSITION is accepted as a mission item at all.
-
-        `MAV_MISSION_RESULT_UNSUPPORTED` (the result PX4 returns — see
-        test_protocol_command_accepted) applies to the *whole item*, not a
-        specific parameter: every subsequent param-level probe would receive
-        an identical NACK.  Caching the baseline outcome here lets
-        `_skip_unsupported_param_tests` skip the rest of the class with one
-        clear reason instead of 21 near-identical "NACKed: UNSUPPORTED" log
-        lines and false-looking assertion failures.
-
-        Returns (supported: bool, reason: str | None).
-        """
-        probe = _reposition_item()
-        items, probe_seq = _items(home_item_for_mission, probe)
-        try:
-            await _upload_probe(gcs_system_cls, items, probe_seq)
-            return True, None
-        except MissionRawError as exc:
-            return False, str(exc).split(":")[0].strip()
-        finally:
-            await clear_all_mission_types(gcs_system_cls)
-
-    @pytest.fixture(autouse=True)
-    def _skip_unsupported_param_tests(self, request, do_reposition_mission_support):
-        """Skip every param-level test in this class once the baseline is rejected outright.
-
-        `test_protocol_command_accepted` itself is exempt — it is the one test
-        that records the baseline finding (PASS=accepted / observational
-        NACK=not usable in missions on this stack).
-        """
-        if request.node.name == "test_protocol_command_accepted":
-            return
-        supported, reason = do_reposition_mission_support
-        if not supported:
-            pytest.skip(
-                f"DO_REPOSITION rejected outright as a mission item ({reason}); "
-                "param-level probing is moot — see test_protocol_command_accepted"
-            )
-
-    async def test_protocol_command_accepted(self, do_reposition_mission_support):
-        """Baseline: is DO_REPOSITION accepted as a mission item at all?
-
-        Observational — no assertion either way.  The spec explicitly steers
-        GCSs away from using DO_REPOSITION in missions ("for missions use
-        MAV_CMD_NAV_WAYPOINT instead"), so a NACK here is itself a
-        *documented*, spec-aligned outcome rather than a test failure: it
-        means this stack's mission storage only accepts NAV_* destination
-        commands and DO_REPOSITION must be sent as a guided COMMAND_INT
-        instead (see tests/command/do_reposition/).  Acceptance does not by
-        itself prove the item is acted on at execution time — see
-        test_flight.py for execution evidence.  When the baseline is
-        rejected, every remaining param-level test in this class is skipped
-        (see _skip_unsupported_param_tests) — testing individual parameter
-        values is moot once the whole item is UNSUPPORTED.
-        """
-        supported, reason = do_reposition_mission_support
-        if supported:
-            log.info(_FMT, _CMD, "command", "ACCEPTED as mission item")
-        else:
-            log.info(
-                _FMT, _CMD, "command",
-                f"NACKed: {reason} — not usable as a mission item on this stack "
-                "(spec-aligned: 'for missions use MAV_CMD_NAV_WAYPOINT instead'); "
-                "remaining param-level tests in this class will be SKIPPED",
-            )
+    SPEC = SPEC
 
     # ------------------------------------------------------------------
     # param1 (Speed; minValue=-1; <0/-1 = "use default")
@@ -370,10 +149,8 @@ class TestDoReposition:
 
     async def test_protocol_param1_speed_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Speed) = 8.0 m/s: a valid in-range value round-trips correctly."""
-        probe = _reposition_item(param1=8.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=8.0)
             if abs(dl.param1 - 8.0) < 1e-4:
                 log.info(_FMT, _CMD, "param1 (Speed) 8.0", f"PRESERVED ({dl.param1:.4f}) — probably supported")
             else:
@@ -387,10 +164,8 @@ class TestDoReposition:
 
     async def test_protocol_param1_speed_default_sentinel(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Speed) = -1.0: spec-documented "use default" sentinel; must be accepted."""
-        probe = _reposition_item(param1=-1.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=-1.0)
             assert abs(dl.param1 - (-1.0)) < 1e-4, (
                 f"param1=-1.0 ('use default speed') not preserved: got {dl.param1}. "
                 "This is a spec-defined sentinel and must round-trip faithfully."
@@ -408,10 +183,8 @@ class TestDoReposition:
         The spec defines -1 (not NaN) as "use default" for this param.  Whether NaN is
         also accepted (and how it is stored) is observational; no hard assertion.
         """
-        probe = _reposition_item(param1=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=NAN)
             if math.isnan(dl.param1):
                 outcome = "PRESERVED — NaN accepted and stored as NaN"
             elif abs(dl.param1 - (-1.0)) < 1e-4:
@@ -437,10 +210,8 @@ class TestDoReposition:
         execution time — Tier 2 cannot probe this for a DO_ command without a
         running mission, so the outcome here is the only protocol-level evidence).
         """
-        probe = _reposition_item(param1=-5.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=-5.0)
             if abs(dl.param1 - (-5.0)) < 1e-3:
                 log.warning(_FMT, _CMD, "param1 (Speed) -5 (< minValue=-1)",
                             "NOTE: out-of-range value silently accepted and preserved raw — should be NACKed/clamped")
@@ -463,10 +234,8 @@ class TestDoReposition:
 
     async def test_protocol_param2_bitmask_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 0: no flags set — must always be accepted and round-trip as 0."""
-        probe = _reposition_item(param2=0.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=0.0)
             assert abs(dl.param2) < 1e-4, (
                 f"param2=0 (no flags) not preserved: got {dl.param2}. "
                 "value=0 must always round-trip as 0."
@@ -487,10 +256,8 @@ class TestDoReposition:
         item runs).  Whether the bit is preserved on storage is observational;
         Tier 2 cannot meaningfully probe its *execution* semantics in a mission.
         """
-        probe = _reposition_item(param2=float(_FLAG_CHANGE_MODE))
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=float(_FLAG_CHANGE_MODE))
             if abs(dl.param2 - _FLAG_CHANGE_MODE) < 1e-4:
                 log.info(_FMT, _CMD, "param2 (Bitmask) bit0 CHANGE_MODE", "PRESERVED (1.0)")
             else:
@@ -504,10 +271,8 @@ class TestDoReposition:
 
     async def test_protocol_param2_bitmask_relative_yaw(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 2: bit 1 (RELATIVE_YAW) round-trips."""
-        probe = _reposition_item(param2=float(_FLAG_RELATIVE_YAW))
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=float(_FLAG_RELATIVE_YAW))
             if abs(dl.param2 - _FLAG_RELATIVE_YAW) < 1e-4:
                 log.info(_FMT, _CMD, "param2 (Bitmask) bit1 RELATIVE_YAW", "PRESERVED (2.0)")
             else:
@@ -522,10 +287,8 @@ class TestDoReposition:
     async def test_protocol_param2_bitmask_all_flags(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 3: both defined bits combined round-trip."""
         combined = float(_FLAG_CHANGE_MODE | _FLAG_RELATIVE_YAW)
-        probe = _reposition_item(param2=combined)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=combined)
             if abs(dl.param2 - combined) < 1e-4:
                 log.info(_FMT, _CMD, "param2 (Bitmask) bits 0+1 (3)", "PRESERVED (3.0)")
             else:
@@ -545,10 +308,8 @@ class TestDoReposition:
         A NACK is the sharp signal that the stack validates the bitmask; silent
         acceptance/alteration is logged as a NOTE (minor spec violation, common).
         """
-        probe = _reposition_item(param2=252.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=252.0)
             if abs(dl.param2 - 252.0) < 1e-4:
                 log.warning(_FMT, _CMD, "param2 (Bitmask) undefined bits (252)",
                             "NOTE: undefined bits silently accepted and preserved — NACK preferred")
@@ -568,10 +329,8 @@ class TestDoReposition:
 
     async def test_protocol_param3_radius_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Radius) = 0.0: spec sentinel "ignored"; must be accepted and round-trip as 0."""
-        probe = _reposition_item(param3=0.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=0.0)
             assert abs(dl.param3) < 1e-4, (
                 f"param3=0 ('ignored') not preserved: got {dl.param3}. "
                 "value=0 must always round-trip as 0."
@@ -591,10 +350,8 @@ class TestDoReposition:
         where NaN is merely spec-permitted).  Accepted-as-NaN and
         accepted-aliased-to-0 are both spec-compliant; only a NACK is a violation.
         """
-        probe = _reposition_item(param3=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=NAN)
             if math.isnan(dl.param3):
                 log.info(_FMT, _CMD, "param3 (Radius) NaN sentinel",
                          "PRESERVED (NaN) — 'ignored', spec-compliant")
@@ -617,10 +374,8 @@ class TestDoReposition:
 
     async def test_protocol_param3_radius_positive(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Radius) = 80.0 m: a valid in-range (positive) value round-trips."""
-        probe = _reposition_item(param3=80.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=80.0)
             if abs(dl.param3 - 80.0) < 1e-4:
                 log.info(_FMT, _CMD, "param3 (Radius) 80.0 (positive)",
                          f"PRESERVED ({dl.param3:.4f}) — probably supported")
@@ -640,10 +395,8 @@ class TestDoReposition:
         the Yaw param, not the sign of Radius).  A NACK is the sharp signal that
         the stack validates the sign; silent acceptance/aliasing is logged.
         """
-        probe = _reposition_item(param3=-80.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=-80.0)
             if abs(dl.param3 - (-80.0)) < 1e-3:
                 log.warning(_FMT, _CMD, "param3 (Radius) -80 (positive only)",
                             "NOTE: negative radius silently accepted and preserved raw — spec says 'positive values only'")
@@ -669,10 +422,8 @@ class TestDoReposition:
 
     async def test_protocol_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = NaN: spec sentinel "use current system yaw heading mode"; must round-trip as NaN."""
-        probe = _reposition_item(param4=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=NAN)
             assert math.isnan(dl.param4), (
                 f"param4 (Yaw) NaN not preserved: downloaded {dl.param4}. "
                 "Spec documents NaN as 'use current heading mode'; it should be stored as NaN."
@@ -703,10 +454,8 @@ class TestDoReposition:
         spec text is confirmed ambiguous.
         """
         target = math.pi / 2  # ~1.5708 rad (~90 deg)
-        probe = _reposition_item(param4=target)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=target)
             if abs(dl.param4 - target) < 1e-3:
                 log.info(_FMT, _CMD, "param4 (Yaw) pi/2 rad",
                          f"PRESERVED ({dl.param4:.4f} rad) — probably supported")
@@ -731,10 +480,8 @@ class TestDoReposition:
         Note: a stack that does NOT store param4 at all will also return 0.0,
         causing this test to PASS vacuously.
         """
-        probe = _reposition_item(param4=0.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=0.0)
             if math.isnan(dl.param4):
                 log.warning(_FMT, _CMD, "param4 (Yaw) 0 rad",
                             "ALIASED to NaN — spec violation: 0 (north/CW) must be distinct from NaN (auto-heading)")
@@ -764,10 +511,8 @@ class TestDoReposition:
         single outcome is a protocol violation (the spec gives no explicit
         bounds), so this is observational.
         """
-        probe = _reposition_item(param4=10.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=10.0)
             two_pi = 2 * math.pi
             if abs(dl.param4 - 10.0) < 1e-3:
                 outcome = "PRESERVED raw (10.0 rad) — no range enforcement on storage"
@@ -796,10 +541,8 @@ class TestDoReposition:
         lat_int = _LAT_INT + 50000   # ~0.005 deg north
         lon_int = _LON_INT + 50000   # ~0.005 deg east
         alt = 65.0
-        probe = _reposition_item(x=lat_int, y=lon_int, z=alt)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, x=lat_int, y=lon_int, z=alt)
             assert dl.x == lat_int, f"Latitude (x) not preserved: {dl.x} != {lat_int}"
             assert dl.y == lon_int, f"Longitude (y) not preserved: {dl.y} != {lon_int}"
             assert abs(dl.z - alt) < 1e-4, f"Altitude (z) not preserved: {dl.z} != {alt}"
@@ -821,12 +564,14 @@ class TestDoReposition:
         Whether this is honoured is the same spec-level question already probed
         for NAV_TAKEOFF (test_protocol_location_current_position); for a
         guided-style command like DO_REPOSITION the sentinel is, if anything,
-        more semantically natural.
+        more semantically natural.  (Both x AND y must be set to INT32_MAX
+        together — the generic per-slot "defined param sentinel tolerated"
+        test inherited from Tier1MissionTestBase probes each independently,
+        which is not a meaningful "use current position" combination on its
+        own; this bespoke test is the sharp, correct probe.)
         """
-        probe = _reposition_item(x=INT32_MAX, y=INT32_MAX, z=30.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, x=INT32_MAX, y=INT32_MAX, z=30.0)
             x_ok = dl.x == INT32_MAX
             y_ok = dl.y == INT32_MAX
             if x_ok and y_ok:
@@ -857,10 +602,8 @@ class TestDoReposition:
         """
         lat_int = int(91.0 * 1e7)
         lon_int = int(181.0 * 1e7)
-        probe = _reposition_item(x=lat_int, y=lon_int, z=30.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, x=lat_int, y=lon_int, z=30.0)
             if dl.x == lat_int and dl.y == lon_int:
                 log.warning(_FMT, _CMD, "params 5/6 out-of-range lat/lon",
                             "NOTE: out-of-range coordinates silently accepted and preserved raw — spec gap (should DENY)")
@@ -883,10 +626,8 @@ class TestDoReposition:
         position' sentinel for lat/lon.  Outcome is observed and logged; no
         hard assertion (the spec does not define this combination explicitly).
         """
-        probe = _reposition_item(z=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, z=NAN)
             if math.isnan(dl.z):
                 log.info(_FMT, _CMD, "param7 (Alt) NaN",
                          "PRESERVED — NaN altitude accepted ('use current/default')")

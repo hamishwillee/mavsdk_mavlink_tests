@@ -106,6 +106,25 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--sitl-instance",
+        action="store",
+        default=0,
+        type=int,
+        metavar="N",
+        help=(
+            "SITL instance number [0..N], for running multiple concurrent PX4/ArduPilot "
+            "SITL processes (each pytest invocation targets one instance). Passed through "
+            "as PX4's `-i N` / ArduPilot's `-I N`, which each stack uses to derive a "
+            "disjoint port set and isolated runtime-state directory. Also offsets this "
+            "harness's own local gRPC ports (mavsdk_server) by instance so concurrent "
+            "pytest processes don't collide. --drone-address must be set to match "
+            "instance N's resulting port yourself (PX4: 14540+N; ArduPilot: 5760+10N) — "
+            "see root CLAUDE.md's CI section for worked examples and the full formula "
+            "table. Default: 0 (single-instance, byte-identical to pre-multi-instance "
+            "behaviour — log/working-dir paths are unchanged at N=0)."
+        ),
+    )
+    parser.addoption(
         "--mavlink-definitions-dir",
         action="store",
         default="mavlink/message_definitions/v1.0",

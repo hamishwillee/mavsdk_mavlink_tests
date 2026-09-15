@@ -32,8 +32,14 @@ pytest tests/
 ```
 
 Starts two local `mavsdk_server` processes over loopback UDP and runs `MockFlightStack` as the drone-side handler.
-All 242 tests run without any external simulator.
-Expected result: **176 passed, 52 skipped, 14 xfailed** (the skips are Tier 2 execution tests and stack-specific probes that require a real flight stack).
+All tests run without any external simulator (the skips are Tier 2 execution tests and stack-specific probes that require a real flight stack).
+
+**Known scaling limitation**: at the current test count (~345, up from 242 tests when this suite was smaller), a single `pytest tests/` session accumulates enough function-scoped `System`/gRPC channels over its ~13-minute run that connections in the last few files reliably start erroring out (confirmed: the exact same tests pass cleanly when their file/subtree is run on its own — this is a resource-accumulation artifact of one very long combined session, not a code defect). Root `CLAUDE.md`'s design decision #3 already documents the same class of issue for `test_frame_types.py`'s 65 tests alone. Until the client-test fixtures are revisited for this scale (tracked as future work, not yet done), verify cleanly by running the two top-level subtrees separately:
+
+```bash
+pytest tests/command/   # expect 110 passed, 58 skipped, 22 xfailed (verified 2026-09-14 — nav_takeoff Tier 2 grew 5 new characterisation/honoured tests; occasional single-test flakiness in do_set_global_origin's GPS_GLOBAL_ORIGIN dedup check — unrelated, pre-existing, a genuinely intermittent timing race, not a regression; re-run in isolation if seen)
+pytest tests/mission/   # expect 153 passed, 16 skipped, 3 xfailed (verified 2026-09-14 — nav_takeoff Tier 2 grew 4 new characterisation tests)
+```
 
 ### Against a real drone or simulator
 
@@ -82,6 +88,10 @@ pytest tests/mission/nav_takeoff/ --drone-address=udp://:14540 -v --log-cli-leve
 
 # DO_REPOSITION tests only (Tier 1 — rejected as a mission item on every stack; see tests/mission/do_reposition/README.md)
 pytest tests/mission/do_reposition/ -v --log-cli-level=INFO
+
+# CONDITION_GATE tests only (Tier 1 + Tier 2 — <wip/> command needing the raw mavlink_direct
+# transport; see tests/mission/condition_gate/README.md)
+pytest tests/mission/condition_gate/ -v --log-cli-level=INFO
 ```
 
 ### Verbose output with protocol logging
@@ -143,10 +153,13 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
         ├── test_frame_types.py    # MAV_FRAME support matrix (21 frames × 3 mission types)
         ├── test_protocol_conformance.py  # Normative spec-conformance tests
         ├── nav_takeoff/
-        │   ├── test_protocol.py           # NAV_TAKEOFF param acceptance (Tier 1)
+        │   ├── test_protocol.py           # NAV_TAKEOFF param acceptance (Tier 1, Tier1MissionTestBase)
         │   └── test_flight.py             # NAV_TAKEOFF execution tests (Tier 2, requires real stack)
-        └── do_reposition/
-            └── test_protocol.py           # DO_REPOSITION mission-item acceptance (Tier 1 — UNSUPPORTED everywhere; no Tier 2, see README)
+        ├── do_reposition/
+        │   └── test_protocol.py           # DO_REPOSITION mission-item acceptance (Tier 1, Tier1MissionTestBase — UNSUPPORTED everywhere; no Tier 2, see README)
+        └── condition_gate/
+            ├── test_protocol.py           # CONDITION_GATE mission-item acceptance (Tier 1 — raw transport, <wip/> command)
+            └── test_flight.py             # CONDITION_GATE execution tests (Tier 2, PX4 only, requires real stack)
 ```
 
 ## Adding new tests
@@ -208,49 +221,16 @@ The test suite auto-detects this and prepends a home item (using `--home-lat`/`-
 
 Round-trip evidence is asymmetric: a param that **is** preserved on download was stored correctly for that specific test value, but does not confirm the autopilot acts on it during execution.
 A param that is **not** preserved was silently altered; the stack should have NACKed instead.
+Full per-param tables, source verification, and Tier 2 results live in each command's own `README.md`/`CLAUDE.md` — this is a bottom-line index only.
 
-#### MAV_CMD_NAV_TAKEOFF (cmd=22)
+| Command | PX4 | ArduCopter/ArduPlane | Details |
+|---------|-----|----------------------|---------|
+| `MAV_CMD_NAV_TAKEOFF` (22) | Stores Yaw + location; never stores Pitch/Flags (v1.17.0, confirmed 2026-09-14) — a newer 1.18.0-beta dev build (2026-09-13) instead actively rejects non-default Pitch/Flags/unused values, so this appears to be a version-dependent validation change, not settled behaviour. MC takes off correctly via mission upload (v1.17.0); **fixed-wing does not** — accepts the mission but never climbs within 90 s, a genuine spec-compliance FAIL, not yet root-caused (v1.17.0, 2026-09-14). VTOL untested — blocked by a sandbox resource issue, see root `CLAUDE.md` item #10 | Stores Pitch + location only; rejects NaN in any param but Yaw and rejects the `INT32_MAX` location sentinel (spec violations) | [`nav_takeoff/README.md`](tests/mission/nav_takeoff/README.md) |
+| `MAV_CMD_DO_REPOSITION` (192) | `UNSUPPORTED` — rejected outright as a mission item, on every vehicle type | Same | [`do_reposition/README.md`](tests/mission/do_reposition/README.md) |
+| `MAV_CMD_CONDITION_GATE` (4501) | Accepted (`<wip/>` tag needs the raw `mavlink_direct` transport — `mission_raw` blocks it client-side); never stores Geometry/UseAltitude; Tier 2 confirms mavlink-devguide PR #761's crossing-point claims | `UNSUPPORTED` — not implemented ([ardupilot#13778](https://github.com/ArduPilot/ardupilot/issues/13778)) | [`condition_gate/README.md`](tests/mission/condition_gate/README.md) |
 
-Results confirmed across all tested vehicle types.
-Within each firmware family the result is identical regardless of vehicle type (multicopter / fixed-wing / VTOL).
-
-| Param | Label | PX4 (all vehicle types) | ArduCopter | ArduPlane / QuadPlane | Mock |
-|-------|-------|-------------------------|------------|-----------------------|------|
-| command accepted | — | PASS | PASS | PASS | PASS |
-| param1 | Pitch | **zeroed** (not stored) | PRESERVED | PRESERVED | PRESERVED |
-| param2 | unused/empty (NaN) | ACCEPTED | **FAIL: NaN rejected** (spec violation) | **FAIL: NaN rejected** (spec violation) | ACCEPTED |
-| param3 | Flags (NAV_TAKEOFF_FLAGS) | **zeroed** (not stored) | **zeroed** (not stored) | **zeroed** (not stored) | PRESERVED |
-| param4 | Yaw (specific) | PRESERVED | **zeroed** (not stored) | **zeroed** (not stored) | PRESERVED |
-| param4 | Yaw (NaN = current heading) | PRESERVED | **zeroed** (not stored) | **zeroed** (not stored) | PRESERVED |
-| params 5/6/7 | Lat/Lon/Alt | PRESERVED | PRESERVED | PRESERVED | PRESERVED |
-| params 5/6 | Lat/Lon = INT32_MAX ("use current pos") | PRESERVED | **FAIL: NACKed** (spec violation) | **FAIL: NACKed** (spec violation) | PRESERVED |
-
-**PX4 (multicopter, fixed-wing, VTOL — all identical):** Stores param4 (Yaw) and location; silently zeroes param1 (Pitch) and param3 (Flags).
-Non-NaN values uploaded in param2 are also silently zeroed.
-Correct behaviour: NACK if defined params cannot be stored faithfully.
-
-**ArduCopter:** `AP_Mission::mavlink_int_to_mission_cmd` stores only `param1` for NAV_TAKEOFF; params 3 and 4 are discarded.
-`sanity_check_params` disallows NaN for params 1–3 (`nan_mask = ~(1<<3)`), so param2=NaN is rejected with `MAV_MISSION_INVALID_PARAM2` despite being unused.
-Workaround: use 0.0 for param2 in all other tests.
-Home item at seq=0 required (see protocol conformance).
-
-**ArduPlane / QuadPlane:** Identical storage behaviour to ArduCopter for NAV_TAKEOFF: stores param1, zeroes params 3 and 4, rejects NaN for param2.
-No home-item requirement (ArduPlane does not reserve seq=0).
-
-#### MAV_CMD_DO_REPOSITION (cmd=192)
-
-Unlike NAV_TAKEOFF, this command is **rejected outright as a mission item** — `MAV_MISSION_UNSUPPORTED` → MAVSDK `UNSUPPORTED` — on **every** stack and vehicle/frame type tested.
-This is **spec-aligned, not a violation**: the spec says outright "This command is intended for guided commands (for missions use MAV_CMD_NAV_WAYPOINT instead)".
-Both stacks' source confirms the command is simply absent from their mission-item recognition switch (`mavlink_mission.cpp` for PX4, `AP_Mission::mavlink_int_to_mission_cmd()` for ArduPilot — see `tests/mission/do_reposition/README.md` for the full source-verification writeup).
-
-| | PX4 (MC/FW/VTOL) | ArduCopter | ArduPlane FW / QuadPlane | Mock |
-|---|------------------|------------|---------------------------|------|
-| `test_protocol_command_accepted` (baseline) | NACKed: **UNSUPPORTED** | NACKed: **UNSUPPORTED** | NACKed: **UNSUPPORTED** | ACCEPTED |
-| 21 param-level tests | all **SKIPPED** (command rejected — probing is moot) | all **SKIPPED** | all **SKIPPED** | all PASS |
-
-Because the upload itself is rejected everywhere, *zero* params "passed" Tier 1 and **no Tier 2 flight test is possible or exists** — there is no mission containing a DO_REPOSITION item to fly.
-The command's actual execution semantics (does the vehicle reposition at the commanded speed/location/yaw, does `CHANGE_MODE` switch to guided/hold mode, mode-dependent ACK behaviour, …) are properly exercised via **COMMAND_INT** in `tests/command/do_reposition/` — see that directory's README for results.
-Result is identical and frame-independent across PX4 MC/FW/VTOL and across ArduCopter/ArduPlane FW/QuadPlane (neither stack's mission-command switch branches on vehicle type).
+DO_REPOSITION's rejection is spec-aligned (the spec directs guided-only commands like it to COMMAND_INT, not missions — see `tests/command/do_reposition/`), so it has no Tier 2 mission-flight test.
+Both PX4 and ArduPilot's mission-command recognition switches are frame/vehicle-type independent — results generalise across multicopter/fixed-wing/VTOL within each firmware family unless a table says otherwise.
 
 ### ArduPlane / QuadPlane (V4.8.0-dev, SITL)
 
@@ -266,40 +246,8 @@ NAV_TAKEOFF storage behaviour mirrors ArduCopter: param1 (Pitch) preserved; para
 
 ### Mock (MockFlightStack, no external drone)
 
-161 of 214 tests pass in mock mode (50 skip — Tier 2/stack-specific probes that require a real flight stack; 3 xfail).
-The mock accepts every command and frame, stores items exactly as received, and serves them unchanged on download.
-Use it to verify protocol-level interactions without a real autopilot.
+The mock accepts every command and frame, stores items exactly as received, and serves them unchanged on download — use it to verify protocol-level interactions without a real autopilot. See "Known scaling limitation" above for current pass/skip/xfail counts (skips are Tier 2/stack-specific probes needing a real flight stack).
 
-## Spec violation summary
+## Spec violations
 
-These are confirmed deviations from the MAVLink mission protocol specification, identified by hard FAIL tests.
-Each entry names the failing test and the spec clause violated.
-
-### PX4
-
-| Violation | Failing test | Notes |
-|-----------|-------------|-------|
-| Geofence items uploaded with `MAV_FRAME_GLOBAL_RELATIVE_ALT` or `MAV_FRAME_GLOBAL_RELATIVE_ALT_INT` are stored as `MAV_FRAME_GLOBAL_INT`, changing the altitude reference without adjusting `z` | `TestGeofenceFrames::test_frame[3-global-rel-alt]`, `test_frame[6-global-rel-alt-int]` | PX4 bug: `altitude_is_relative` not stored in `mission_fence_point_s`; always re-encoded as absolute on download.  Flight and rally are unaffected. |
-| `MAV_CMD_NAV_TAKEOFF`: `param1` (Pitch) silently zeroed on download | `TestNavTakeoff::test_protocol_param1_pitch_preserved` | PX4 does not store the Pitch angle for NAV_TAKEOFF; it should NACK if a defined param cannot be stored faithfully. |
-| `MAV_CMD_NAV_TAKEOFF`: `param3` (Flags / `NAV_TAKEOFF_FLAGS`) silently zeroed on download | `TestNavTakeoff::test_protocol_param3_flags_preserved` | PX4 does not store the flags bitmask for NAV_TAKEOFF; same issue as param1. |
-
-### ArduCopter
-
-| Violation | Failing test | Notes |
-|-----------|-------------|-------|
-| Flight mission upload with items starting at seq=0 (no home item) is rejected | `TestMissionSlotSemantics::test_seq0_item_accepted_without_home` | The MAVLink mission protocol does not require a home item at seq=0.  ArduCopter treats seq=0 as reserved for the home position and returns `TOO_MANY_MISSION_ITEMS`. |
-| `clear_mission()` does not produce an empty mission — home waypoint at seq=0 is retained | `TestFlightMission::test_clear_flight_mission` | After `MISSION_CLEAR_ALL`, ArduCopter returns a 1-item list containing the home waypoint.  The spec requires an empty list. |
-| Flight mission items uploaded with `MAV_FRAME_GLOBAL_RELATIVE_ALT`, `MAV_FRAME_GLOBAL_RELATIVE_ALT_INT`, `MAV_FRAME_GLOBAL_TERRAIN_ALT`, or `MAV_FRAME_GLOBAL_TERRAIN_ALT_INT` are stored as `MAV_FRAME_GLOBAL`, changing altitude reference without adjusting `z` | `TestFlightMissionFrames::test_frame[3-global-rel-alt]`, `test_frame[6-global-rel-alt-int]`, `test_frame[10-terrain-alt]`, `test_frame[11-terrain-alt-int]` | ArduCopter normalises all flight mission items to `MAV_FRAME_GLOBAL` on storage.  Only INT-encoding changes within the same altitude category are permitted. |
-| Geofence items uploaded with `MAV_FRAME_GLOBAL_RELATIVE_ALT`, `MAV_FRAME_GLOBAL_RELATIVE_ALT_INT`, `MAV_FRAME_GLOBAL_TERRAIN_ALT`, or `MAV_FRAME_GLOBAL_TERRAIN_ALT_INT` are stored as `MAV_FRAME_GLOBAL`, changing altitude reference without adjusting `z` | `TestGeofenceFrames::test_frame[3-global-rel-alt]`, `test_frame[6-global-rel-alt-int]`, `test_frame[10-terrain-alt]`, `test_frame[11-terrain-alt-int]` | Same normalisation as flight missions.  `MAV_FRAME_GLOBAL` and `MAV_FRAME_GLOBAL_INT` are unaffected (same altitude category). |
-
-#### MAV_CMD specific issues
-
-| Violation | Failing test | Notes |
-|-----------|-------------|-------|
-| `MAV_CMD_DO_CHANGE_SPEED` with `MAV_FRAME_MISSION`: `param1` (Speed Type) is silently zeroed on storage instead of NACKing | `TestMissionFrame::test_mission_frame_with_do_command` | ArduCopter accepts the upload but corrupts `param1` (Speed Type).  The correct behaviour is to NACK with a mission error if the command cannot be stored faithfully.  PX4 preserves the value correctly. |
-| `MAV_CMD_NAV_TAKEOFF`: `param2` (unused/empty) rejects `NaN` with `MAV_MISSION_INVALID_PARAM2` | `TestNavTakeoff::test_protocol_param2_unused` | The MAVLink spec marks param2 as "empty"; unused float params must accept NaN.  ArduCopter's `sanity_check_params` applies `nan_mask = ~(1<<3)`, forbidding NaN for params 1–3.  Workaround: use `0.0` for param2. |
-| `MAV_CMD_NAV_TAKEOFF`: params 3, 4 silently zeroed on download (not stored) — ArduCopter | `TestNavTakeoff::test_protocol_param3_flags_preserved`, `test_protocol_param4_yaw_specific`, `test_protocol_param4_yaw_nan` | `AP_Mission::mavlink_int_to_mission_cmd` stores only `param1`; correct behaviour is to NACK if defined params cannot be stored faithfully. |
-| `MAV_CMD_NAV_TAKEOFF`: `INT32_MAX` lat/lon ("use current position" sentinel) NACKed — ArduCopter | `TestNavTakeoff::test_protocol_location_current_position` | The MAVLink spec requires `hasLocation` commands to accept `INT32_MAX` as "use current position".  ArduCopter rejects the upload with `MAV_MISSION_INVALID_PARAM5_6`. |
-| `MAV_CMD_NAV_TAKEOFF`: `param2` (unused/empty) rejects `NaN` — ArduPlane / QuadPlane | `TestNavTakeoff::test_protocol_param2_unused` | Same `sanity_check_params` rejection as ArduCopter; applies to both plane and quadplane vehicle types. |
-| `MAV_CMD_NAV_TAKEOFF`: params 3, 4 silently zeroed on download (not stored) — ArduPlane / QuadPlane | `TestNavTakeoff::test_protocol_param3_flags_preserved`, `test_protocol_param4_yaw_specific`, `test_protocol_param4_yaw_nan` | Same storage pattern as ArduCopter: only `param1` stored; yaw and flags discarded. |
-| `MAV_CMD_NAV_TAKEOFF`: `INT32_MAX` lat/lon ("use current position" sentinel) NACKed — ArduPlane / QuadPlane | `TestNavTakeoff::test_protocol_location_current_position` | Same rejection as ArduCopter; applies to both plane and quadplane vehicle types. |
+Confirmed deviations from the MAVLink mission protocol spec are flagged inline (bold or an explicit FAIL/✗ marker) in the frame tables above and in each command's own results table — see `tests/mission/README.md`'s frame tables and each `tests/mission/<command>/README.md` for the full list with the failing test names. Highlights: PX4's geofence altitude-reference bug (frames 3/6 → `GLOBAL_INT`, losing relative-alt); ArduCopter's home-slot requirement, non-empty `clear_mission()`, and altitude-reference loss on frames 3/6/10/11; both stacks' NAV_TAKEOFF param-storage/NaN/`INT32_MAX` gaps (see the table above).

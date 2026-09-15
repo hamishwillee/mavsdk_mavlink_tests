@@ -12,11 +12,30 @@ Round-trip evidence is asymmetric
 - A param whose value IS preserved → stored correctly for this specific test value;
   does not confirm the autopilot acts on the param during execution.
 
+Built on tests/mission/conftest.py's Tier1MissionTestBase/MissionItemSpec —
+the shared mandatory Tier 1 tests (baseline-accepted, undefined-param
+sentinel pair, defined-param sentinel-tolerated) are inherited; this file
+only adds NAV_TAKEOFF's own bespoke per-parameter tests (round-trip of a
+specific value, bitmask/location semantics, edge-case observational probes
+— see tests/mission/CLAUDE.md § MAV_CMD support testing).
+
+Unlike do_reposition/condition_gate (rejected outright, so every param-level
+test — generic and bespoke alike — is skipped via `_skip_if_unsupported`),
+NAV_TAKEOFF is genuinely supported everywhere, so the generic
+`test_defined_param_sentinel_tolerated` test actually exercises real
+per-stack quirks: ArduPilot's `sanity_check_params` rejects NaN in any
+float param but param4 (see `ParamSpec.sentinel_xfail_reason` on params
+1/3/7 below).  Per tests/mission/CLAUDE.md's documented convention, a
+defined param's NaN sentinel is NOT itself spec-mandated (unlike an
+undefined param's, or a hasLocation param's INT32_MAX) — a real-stack
+rejection here is a known, xfailed limitation, not a hard failure.
+
 MAV_CMD_NAV_TAKEOFF parameter table (common.xml)
 ------------------------------------------------
   param1  Pitch (deg)            Defined
   param2  —                      Unused (empty) — spec: NaN; baseline uses 0.0 (ArduCopter
-                                 rejects NaN for param2 — spec violation; see test_param2_unused)
+                                 rejects NaN for param2 — spec violation; see the generic
+                                 test_undefined_param_sentinel_accepted[param2])
   param3  Flags (NAV_TAKEOFF_FLAGS bitmask)  Defined
   param4  Yaw (deg); NaN = use current heading  Defined
   param5  Latitude  (x field, int × 1e7)   Location
@@ -40,219 +59,72 @@ Against a real flight stack::
     pytest tests/mission/nav_takeoff/test_protocol.py --drone-address=udp://:14540 -v --log-cli-level=INFO
 """
 
-import asyncio
-import json
 import logging
 import math
 
 import pytest
-import pytest_asyncio
-from mavsdk import System
-from mavsdk.mavlink_direct import MavlinkMessage
-from mavsdk.mission_raw import MissionItem, MissionRawError
+from mavsdk.mission_raw import MissionRawError
 
-from ..conftest import clear_all_mission_types
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
-from tests.mock_flight_stack import MockFlightStack
+from ..conftest import MissionItemSpec, Tier1MissionTestBase, clear_all_mission_types
+from tests.param_spec import ParamSpec
 
 log = logging.getLogger(__name__)
 
-TRANSFER_TIMEOUT_S = 30.0
 _CMD = "NAV_TAKEOFF"
 _FMT = "%-14s | %-44s | %s"
 
 NAN = float("nan")
 INT32_MAX = 0x7FFF_FFFF
-_MAV_PROTOCOL_CAPABILITY_MISSION_INT = 4
-
-
-async def _ensure_mission_int_capability(system: System, max_attempts: int = 10) -> None:
-    """
-    Probe AUTOPILOT_VERSION until MISSION_INT capability is confirmed.
-
-    After high-churn command test classes (TestCommandSurvey runs 168 gRPC
-    subscribe/cancel cycles on the GCS mavsdk_server), the server needs time
-    to drain pending work before new subscriptions register reliably.  A fixed
-    sleep is not sufficient; this probe retries until the capability is seen
-    or the attempt limit is reached.
-
-    Receiving AUTOPILOT_VERSION also primes MAVSDK's internal capability cache,
-    so the first upload_mission() call does not need to re-query.
-    """
-    for attempt in range(max_attempts):
-        combined: int = 0
-        first_seen = asyncio.Event()
-
-        async def _listen() -> None:
-            nonlocal combined
-            try:
-                async for msg in system.mavlink_direct.message("AUTOPILOT_VERSION"):
-                    combined |= int(json.loads(msg.fields_json).get("capabilities", 0))
-                    first_seen.set()
-            except asyncio.CancelledError:
-                pass
-
-        listen_task = asyncio.create_task(_listen())
-        await asyncio.sleep(0.2)  # let the gRPC stream register on the server
-
-        await system.mavlink_direct.send_message(MavlinkMessage(
-            message_name="COMMAND_LONG",
-            system_id=0, component_id=0,
-            target_system_id=1, target_component_id=1,
-            fields_json=json.dumps({
-                "target_system": 1, "target_component": 1,
-                "command": 512, "confirmation": 0,
-                "param1": 148.0, "param2": 0.0, "param3": 0.0,
-                "param4": 0.0, "param5": 0.0, "param6": 0.0, "param7": 0.0,
-            }),
-        ))
-
-        try:
-            await asyncio.wait_for(first_seen.wait(), timeout=2.0)
-            await asyncio.sleep(0.1)  # collect any concurrent responses
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            listen_task.cancel()
-            try:
-                await listen_task
-            except asyncio.CancelledError:
-                pass
-
-        if combined & _MAV_PROTOCOL_CAPABILITY_MISSION_INT:
-            if attempt > 0:
-                log.debug("MISSION_INT capability confirmed after %d attempts", attempt + 1)
-            return
-
-        log.debug(
-            "Capability probe attempt %d/%d: bits=0x%x — retrying",
-            attempt + 1, max_attempts, combined,
-        )
-        await asyncio.sleep(0.5)
-
-    log.warning("MISSION_INT capability not confirmed after %d attempts", max_attempts)
 
 # SIH simulator home coordinates (47.3977°N, 8.5456°E)
 _LAT_INT = 473977000
 _LON_INT = 85456000
 
+# ArduPilot's sanity_check_params() nan_mask for NAV_TAKEOFF permits NaN only
+# in param4 (Yaw, which has a documented "use current heading" sentinel
+# meaning); params 1-3 must be a concrete non-NaN value or the upload is
+# rejected with MAV_MISSION_INVALID_PARAM<n> — a per-stack strictness on a
+# NaN sentinel that isn't itself spec-mandated for these params (Pitch/Flags
+# have no documented NaN meaning), matching tests/mission/CLAUDE.md's
+# "defined float param NaN: no hard assertion" convention. z/Altitude is
+# rejected via a separate, stack-specific altitude sanity check.
+_ARDUPILOT_NAN_MASK_REASON = (
+    "ArduPilot's sanity_check_params() nan_mask permits NaN only in param4 (Yaw) for "
+    "NAV_TAKEOFF; this param's NaN sentinel is not itself spec-mandated (see CLAUDE.md)"
+)
+_ARDUPILOT_ALTITUDE_NAN_REASON = (
+    "ArduPilot rejects NaN altitude via its own sanity check; NaN altitude is "
+    "documented as observational, not spec-mandated, for a takeoff command (see CLAUDE.md)"
+)
+
 # ---------------------------------------------------------------------------
-# Item builder
+# Tier 1 spec
 # ---------------------------------------------------------------------------
 
-
-def _takeoff_item(seq: int = 0, current: int = 1, **overrides) -> MissionItem:
-    """Return a valid NAV_TAKEOFF MissionItem.  Keyword overrides replace defaults."""
-    defaults = dict(
-        seq=seq,
-        frame=5,        # MAV_FRAME_GLOBAL_INT
-        command=22,     # MAV_CMD_NAV_TAKEOFF
-        current=current,
-        autocontinue=1,
-        param1=15.0,    # Pitch: 15 deg
-        param2=0.0,     # unused — 0.0 (ArduCopter rejects NaN for this param despite it being unused)
-        param3=0.0,     # Flags: none
-        param4=NAN,     # Yaw: NaN = use current heading
+SPEC = MissionItemSpec(
+    cmd_id=22,
+    name=_CMD,
+    mission_type=0,
+    frame=5,  # MAV_FRAME_GLOBAL_INT
+    baseline=dict(
+        param1=15.0,   # Pitch: 15 deg
+        param2=0.0,    # unused — 0.0 (ArduCopter rejects NaN for this param despite it being unused)
+        param3=0.0,    # Flags: none
+        param4=NAN,    # Yaw: NaN = use current heading
         x=_LAT_INT,
         y=_LON_INT,
-        z=50.0,         # Altitude: 50 m AMSL
-        mission_type=0,
-    )
-    defaults.update(overrides)
-    return MissionItem(**defaults)
-
-
-def _items(home_item, probe: MissionItem):
-    """Return (item_list, probe_seq), prepending a home item for ArduCopter if required."""
-    if home_item is not None:
-        home = MissionItem(
-            seq=home_item.seq, frame=home_item.frame, command=home_item.command,
-            current=1, autocontinue=home_item.autocontinue,
-            param1=home_item.param1, param2=home_item.param2,
-            param3=home_item.param3, param4=home_item.param4,
-            x=home_item.x, y=home_item.y, z=home_item.z,
-            mission_type=home_item.mission_type,
-        )
-        adjusted = MissionItem(
-            seq=1, frame=probe.frame, command=probe.command,
-            current=0, autocontinue=probe.autocontinue,
-            param1=probe.param1, param2=probe.param2,
-            param3=probe.param3, param4=probe.param4,
-            x=probe.x, y=probe.y, z=probe.z,
-            mission_type=probe.mission_type,
-        )
-        return [home, adjusted], 1
-    return [probe], 0
-
-
-# ---------------------------------------------------------------------------
-# Upload / download helper
-# ---------------------------------------------------------------------------
-
-
-async def _upload_probe(system, items: list, probe_seq: int) -> MissionItem:
-    """Upload items, download, and return the probe item at probe_seq.
-
-    Raises MissionRawError if the upload is NACKed.
-    Raises AssertionError if the probe item is absent from the download.
-    """
-    async with asyncio.timeout(TRANSFER_TIMEOUT_S):
-        await system.mission_raw.upload_mission(items)
-    async with asyncio.timeout(TRANSFER_TIMEOUT_S):
-        downloaded = await system.mission_raw.download_mission()
-    dl = next((d for d in downloaded if d.seq == probe_seq), None)
-    assert dl is not None, (
-        f"probe item seq={probe_seq} not found in download "
-        f"(seqs present: {[d.seq for d in downloaded]})"
-    )
-    return dl
-
-
-# ---------------------------------------------------------------------------
-# Class-scoped fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest_asyncio.fixture(scope="class", loop_scope="class")
-async def mock_stack_cls(request):
-    """Class-scoped MockFlightStack.  No-op in standalone (--drone-address) mode."""
-    drone_address = request.config.getoption("--drone-address")
-    if drone_address is not None:
-        yield None
-        return
-
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
-
-    stack = MockFlightStack()
-    task = asyncio.create_task(stack.run(system))
-    await asyncio.sleep(0.5)
-    yield stack
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-@pytest_asyncio.fixture(scope="class", loop_scope="class")
-async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
-    timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
-    await _wait_for_connection(system, timeout_s)
-    # ArduCopter initialises its mission storage asynchronously after heartbeat.
-    # Without this pause the very first upload can fail with NO_SPACE (max_items=0).
-    if request.config.getoption("--drone-address") is not None:
-        await asyncio.sleep(3.0)
-    else:
-        # Explicitly verify MISSION_INT capability before tests.  After high-churn
-        # command test classes (TestCommandSurvey does 168 gRPC subscribe/cancel
-        # cycles), the GCS mavsdk_server needs time to drain before new subscriptions
-        # register reliably.  _ensure_mission_int_capability retries the probe until
-        # the MISSION_INT bit is confirmed, also priming MAVSDK's capability cache.
-        await _ensure_mission_int_capability(system)
-    yield system
+        z=50.0,        # Altitude: 50 m AMSL
+    ),
+    params=[
+        ParamSpec(1, "Pitch", defined=True, sentinel_xfail_reason=_ARDUPILOT_NAN_MASK_REASON),
+        ParamSpec(2, "Empty", defined=False),
+        ParamSpec(3, "Flags", defined=True, sentinel_xfail_reason=_ARDUPILOT_NAN_MASK_REASON),
+        ParamSpec(4, "Yaw", defined=True),  # NaN sentinel IS spec-mandated here — no xfail
+        ParamSpec(5, "Latitude", defined=True),  # INT32_MAX sentinel IS spec-mandated — no xfail
+        ParamSpec(6, "Longitude", defined=True),
+        ParamSpec(7, "Altitude", defined=True, sentinel_xfail_reason=_ARDUPILOT_ALTITUDE_NAN_REASON),
+    ],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -261,37 +133,30 @@ async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
 
 
 @pytest.mark.asyncio(loop_scope="class")
-class TestNavTakeoff:
-    """Protocol-acceptance tests for MAV_CMD_NAV_TAKEOFF (cmd=22)."""
+class TestNavTakeoff(Tier1MissionTestBase):
+    """Protocol-acceptance tests for MAV_CMD_NAV_TAKEOFF (cmd=22) as a mission item."""
 
-    async def test_protocol_command_accepted(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
-        """Baseline: is NAV_TAKEOFF accepted at all?"""
-        probe = _takeoff_item()
-        items, probe_seq = _items(home_item_for_mission, probe)
-        try:
-            async with asyncio.timeout(TRANSFER_TIMEOUT_S):
-                await gcs_system_cls.mission_raw.upload_mission(items)
-            log.info(_FMT, _CMD, "command", "ACCEPTED")
-        except MissionRawError as exc:
-            reason = str(exc).split(":")[0].strip()
-            pytest.fail(
-                f"NAV_TAKEOFF upload rejected: {reason}. "
-                "Command is not accepted by this flight stack."
-            )
-        finally:
-            await clear_all_mission_types(gcs_system_cls)
+    SPEC = SPEC
 
     async def test_protocol_param1_pitch_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
-        """param1 (Pitch): specific value round-trips correctly."""
-        probe = _takeoff_item(param1=15.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
+        """param1 (Pitch): specific value round-trips correctly.
+
+        Per root CLAUDE.md's "General testing philosophy" rule 4: a defined param
+        that's accepted (not NACKed) but not preserved is a general, cross-stack spec
+        violation, tracked as xfail rather than a hard failure — both PX4 (this test)
+        and ArduCopter/ArduPlane (see nav_takeoff/CLAUDE.md's storage table) silently
+        zero param1 instead of NACKing a value they don't store.
+        """
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
-            assert abs(dl.param1 - 15.0) < 1e-4, (
-                f"param1 (Pitch) not preserved: uploaded 15.0, downloaded {dl.param1}. "
-                "Stack should have NACKed if this value is unsupported."
-            )
-            log.info(_FMT, _CMD, "param1 (Pitch)", f"PRESERVED ({dl.param1:.4f})")
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=15.0)
+            ok = abs(dl.param1 - 15.0) < 1e-4
+            log.info(_FMT, _CMD, "param1 (Pitch)", f"PRESERVED ({dl.param1:.4f})" if ok else f"NOT preserved (downloaded {dl.param1})")
+            if not ok:
+                pytest.xfail(
+                    f"param1 (Pitch) not preserved: uploaded 15.0, downloaded {dl.param1} — "
+                    "accepted but silently zeroed instead of NACKed (cross-stack gap, see module docstring)"
+                )
+            assert ok
         except MissionRawError as exc:
             reason = str(exc).split(":")[0].strip()
             log.info(_FMT, _CMD, "param1 (Pitch)", f"NACKed: {reason}")
@@ -299,80 +164,21 @@ class TestNavTakeoff:
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param2_unused(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
-        """param2 (unused/empty): NaN is the spec-correct value for unused float params.
-
-        If NaN is rejected, that is a spec violation; a 0.0 retry shows whether the command
-        is otherwise accepted.  A non-zero non-NaN probe (1.0) checks NACKing of invalid values.
-        """
-        nan_rejected = False
-
-        # --- NaN: spec-correct for an unused param ---
-        probe = _takeoff_item(param2=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
-        try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
-            log.info(_FMT, _CMD, "param2 (unused) NaN",
-                     "ACCEPTED — NaN preserved as spec requires")
-        except MissionRawError as exc:
-            nan_rejected = True
-            reason = str(exc).split(":")[0].strip()
-            log.warning(
-                _FMT, _CMD, "param2 (unused) NaN",
-                f"FAIL: NaN rejected ({reason}) — spec violation: unused params must accept NaN",
-            )
-        finally:
-            await clear_all_mission_types(gcs_system_cls)
-
-        # --- 0.0 retry: diagnostic when NaN is rejected ---
-        if nan_rejected:
-            probe = _takeoff_item(param2=0.0)
-            items, probe_seq = _items(home_item_for_mission, probe)
-            try:
-                dl = await _upload_probe(gcs_system_cls, items, probe_seq)
-                log.info(_FMT, _CMD, "param2 (unused) 0.0 retry",
-                         f"ACCEPTED with 0.0 (workaround); stored as {dl.param2}")
-            except MissionRawError as exc:
-                reason = str(exc).split(":")[0].strip()
-                log.warning(_FMT, _CMD, "param2 (unused) 0.0 retry",
-                            f"REJECTED: {reason}")
-            finally:
-                await clear_all_mission_types(gcs_system_cls)
-
-        # --- 1.0: non-zero non-NaN — should ideally be NACKed ---
-        probe = _takeoff_item(param2=1.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
-        try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
-            if abs(dl.param2 - 1.0) < 1e-4:
-                log.warning(_FMT, _CMD, "param2 (unused) 1.0",
-                            "NOTE: non-NaN value silently accepted and preserved — should be NACKed")
-            else:
-                log.warning(_FMT, _CMD, "param2 (unused) 1.0",
-                            f"NOTE: non-NaN value silently altered to {dl.param2} — should be NACKed")
-        except MissionRawError as exc:
-            reason = str(exc).split(":")[0].strip()
-            log.info(_FMT, _CMD, "param2 (unused) 1.0", f"correctly NACKed: {reason}")
-        finally:
-            await clear_all_mission_types(gcs_system_cls)
-
-        if nan_rejected:
-            pytest.fail(
-                "param2 (unused) NaN rejected — spec violation. "
-                "Unused params must accept NaN per the MAVLink MISSION_ITEM_INT spec."
-            )
-
     async def test_protocol_param3_flags_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
-        """param3 (Flags / NAV_TAKEOFF_FLAGS): bit 0 (HORIZONTAL_POSITION_NOT_REQUIRED) round-trips."""
-        probe = _takeoff_item(param3=1.0)  # NAV_TAKEOFF_FLAGS_HORIZONTAL_POSITION_NOT_REQUIRED
-        items, probe_seq = _items(home_item_for_mission, probe)
+        """param3 (Flags / NAV_TAKEOFF_FLAGS): bit 0 (HORIZONTAL_POSITION_NOT_REQUIRED) round-trips.
+
+        Same xfail reasoning as test_protocol_param1_pitch_preserved — see its docstring.
+        """
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
-            assert abs(dl.param3 - 1.0) < 1e-4, (
-                f"param3 (Flags) not preserved: uploaded 1.0, downloaded {dl.param3}. "
-                "Stack should have NACKed if this flag value is unsupported."
-            )
-            log.info(_FMT, _CMD, "param3 (Flags)", f"PRESERVED ({dl.param3:.4f})")
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=1.0)
+            ok = abs(dl.param3 - 1.0) < 1e-4
+            log.info(_FMT, _CMD, "param3 (Flags)", f"PRESERVED ({dl.param3:.4f})" if ok else f"NOT preserved (downloaded {dl.param3})")
+            if not ok:
+                pytest.xfail(
+                    f"param3 (Flags) not preserved: uploaded 1.0, downloaded {dl.param3} — "
+                    "accepted but silently zeroed instead of NACKed (cross-stack gap, see module docstring)"
+                )
+            assert ok
         except MissionRawError as exc:
             reason = str(exc).split(":")[0].strip()
             log.info(_FMT, _CMD, "param3 (Flags)", f"NACKed: {reason}")
@@ -382,10 +188,8 @@ class TestNavTakeoff:
 
     async def test_protocol_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw): specific degree value round-trips correctly."""
-        probe = _takeoff_item(param4=90.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=90.0)
             assert abs(dl.param4 - 90.0) < 1e-4, (
                 f"param4 (Yaw) not preserved: uploaded 90.0, downloaded {dl.param4}. "
                 "Stack should have NACKed if this value is unsupported."
@@ -399,11 +203,15 @@ class TestNavTakeoff:
             await clear_all_mission_types(gcs_system_cls)
 
     async def test_protocol_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
-        """param4 (Yaw): NaN (use current heading) is accepted and returned as NaN."""
-        probe = _takeoff_item(param4=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
+        """param4 (Yaw): NaN (use current heading) is accepted and returned as NaN.
+
+        Unlike the generic test_defined_param_sentinel_tolerated[param4] (which
+        only checks accept/reject), this hard-asserts the *value* is preserved
+        as NaN — param4's NaN sentinel has a documented spec meaning, so this
+        is a real compliance check, not observational.
+        """
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=NAN)
             assert math.isnan(dl.param4), (
                 f"param4 (Yaw) NaN not preserved: downloaded {dl.param4}. "
                 "Spec documents NaN as 'use current heading'; it should be stored as NaN."
@@ -422,10 +230,8 @@ class TestNavTakeoff:
         lat_int = _LAT_INT + 10000   # ~0.001 deg north
         lon_int = _LON_INT + 10000   # ~0.001 deg east
         alt = 75.0
-        probe = _takeoff_item(x=lat_int, y=lon_int, z=alt)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, x=lat_int, y=lon_int, z=alt)
             assert dl.x == lat_int, f"Latitude (x) not preserved: {dl.x} != {lat_int}"
             assert dl.y == lon_int, f"Longitude (y) not preserved: {dl.y} != {lon_int}"
             assert abs(dl.z - alt) < 1e-4, f"Altitude (z) not preserved: {dl.z} != {alt}"
@@ -447,11 +253,15 @@ class TestNavTakeoff:
         INT32_MAX (0x7FFF_FFFF) is the MISSION_ITEM_INT sentinel meaning "use current
         position" for integer lat/lon fields.  This is the canonical way to say "take
         off from wherever the vehicle currently is" without specifying coordinates.
+
+        Both x AND y are set to INT32_MAX together — a meaningful "use current
+        position" combination, unlike the generic per-slot
+        test_defined_param_sentinel_tolerated[param5]/[param6], which probes
+        each independently (same rationale as do_reposition's analogous
+        bespoke location-sentinel test).
         """
-        probe = _takeoff_item(x=INT32_MAX, y=INT32_MAX, z=50.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, x=INT32_MAX, y=INT32_MAX, z=50.0)
             x_ok = dl.x == INT32_MAX
             y_ok = dl.y == INT32_MAX
             if x_ok and y_ok:
@@ -476,12 +286,13 @@ class TestNavTakeoff:
 
         NaN is the float sentinel for "use default / unspecified" per MISSION_ITEM_INT.
         For a takeoff altitude this is unusual (no explicit target height), so stacks
-        may legitimately NACK it.  Outcome is observed and logged; no hard assertion.
+        may legitimately NACK it.  Outcome is observed and logged; no hard assertion
+        (same ground the generic test_defined_param_sentinel_tolerated[param7] covers
+        with a hard xfail-on-reject instead — this bespoke test keeps the original,
+        richer PRESERVED/ALTERED/NACKed logging).
         """
-        probe = _takeoff_item(z=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, z=NAN)
             if math.isnan(dl.z):
                 log.info(_FMT, _CMD, "param7 (Alt) NaN",
                          "PRESERVED — NaN altitude accepted ('use default')")
@@ -505,10 +316,8 @@ class TestNavTakeoff:
         value=0 means no special flags are requested.  This must always be accepted
         and must round-trip as 0.0.
         """
-        probe = _takeoff_item(param3=0.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=0.0)
             assert abs(dl.param3) < 1e-4, (
                 f"param3=0.0 (no flags) not preserved: got {dl.param3}. "
                 "value=0 must always round-trip as 0."
@@ -527,10 +336,8 @@ class TestNavTakeoff:
         should ideally be NACKed; silently accepting it is a minor spec violation.
         Outcome is observed and logged; no hard assertion.
         """
-        probe = _takeoff_item(param3=2.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=2.0)
             if abs(dl.param3 - 2.0) < 1e-4:
                 log.warning(_FMT, _CMD, "param3 (Flags) undefined bit (2)",
                             "NOTE: undefined bit silently accepted and preserved — NACK preferred")
@@ -554,12 +361,12 @@ class TestNavTakeoff:
         NaN for a defined param means "use default / no constraint".  For param1 this
         would mean "autopilot chooses the takeoff pitch".  Some stacks (ArduPilot)
         reject NaN in any defined param via sanity_check_params.  Outcome is observed
-        and logged; no hard assertion (NaN for a defined param is ambiguous in the spec).
+        and logged; no hard assertion (same ground the generic
+        test_defined_param_sentinel_tolerated[param1] covers with a hard xfail-on-reject
+        instead — this bespoke test keeps the original, richer PRESERVED/ALTERED logging).
         """
-        probe = _takeoff_item(param1=NAN)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=NAN)
             if math.isnan(dl.param1):
                 log.info(_FMT, _CMD, "param1 (Pitch) NaN",
                          "PRESERVED — NaN accepted as 'no minimum pitch'")
@@ -584,10 +391,8 @@ class TestNavTakeoff:
         No assertion: any outcome is valid at the protocol level.  The goal is to
         characterise whether the stack enforces a pitch ceiling.
         """
-        probe = _takeoff_item(param1=180.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=180.0)
             if abs(dl.param1 - 180.0) < 1e-3:
                 outcome = "PRESERVED raw (180.0°) — no upper-bound enforcement"
             elif abs(dl.param1) < 1e-3:
@@ -622,10 +427,8 @@ class TestNavTakeoff:
         Tier 2 pattern — flying the vehicle only when the raw value was stored, to verify
         whether execution correctly normalises it.
         """
-        probe = _takeoff_item(param4=-90.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=-90.0)
             normalised = -90.0 % 360  # 270.0
             if abs(dl.param4 - (-90.0)) < 1e-3:
                 outcome = "PRESERVED raw (-90.0°) — execution normalisation unknown; Tier 2 needed"
@@ -654,10 +457,8 @@ class TestNavTakeoff:
         No assertion: either outcome is valid at the protocol level.  See
         test_flight.py::test_takeoff_with_overflow_yaw for the conditional Tier 2 test.
         """
-        probe = _takeoff_item(param4=450.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=450.0)
             normalised = 450.0 % 360  # 90.0
             if abs(dl.param4 - 450.0) < 1e-3:
                 outcome = "PRESERVED raw (450.0°) — execution normalisation unknown; Tier 2 needed"
@@ -690,10 +491,8 @@ class TestNavTakeoff:
         not explicitly store 0.0°; it just happens to return the zero-initialised
         value.  The test only catches the specific spec violation of aliasing 0.0 → NaN.
         """
-        probe = _takeoff_item(param4=0.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=0.0)
             if math.isnan(dl.param4):
                 log.warning(_FMT, _CMD, "param4 (Yaw) 0°",
                             "ALIASED to NaN — spec violation: 0° (north) must be distinct from NaN (auto-heading)")
@@ -731,10 +530,8 @@ class TestNavTakeoff:
         test_flight.py::test_takeoff_with_large_pitch verifies execution succeeds when
         the raw value is stored.
         """
-        probe = _takeoff_item(param1=89.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=89.0)
             if abs(dl.param1 - 89.0) < 1e-3:
                 outcome = "PRESERVED raw (89.0°)"
             elif abs(dl.param1) < 1e-3:
@@ -763,10 +560,8 @@ class TestNavTakeoff:
         when the raw value (-10.0) is stored, to verify whether the vehicle still
         achieves a successful takeoff.
         """
-        probe = _takeoff_item(param1=-10.0)
-        items, probe_seq = _items(home_item_for_mission, probe)
         try:
-            dl = await _upload_probe(gcs_system_cls, items, probe_seq)
+            dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=-10.0)
             if abs(dl.param1 - (-10.0)) < 1e-3:
                 outcome = "PRESERVED raw (-10.0°) — execution semantics unknown; Tier 2 needed"
             elif abs(dl.param1 - 10.0) < 1e-3:
