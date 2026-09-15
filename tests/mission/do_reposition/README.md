@@ -77,8 +77,8 @@ Logs:
 
 ### test_protocol_command_accepted (baseline)
 
-Upload a baseline DO*REPOSITION item (`param1=-1` "use default speed", `param2=0` "no flags", `param3=0` "ignored", `param4=0.0`¹, distinct lat/lon, `z=30.0`); observe whether the upload is accepted or NACKed.
-**Observational — passes either way**; the result \_is* the finding.
+Upload a baseline DO_REPOSITION item (`param1=-1` "use default speed", `param2=0` "no flags", `param3=0` "ignored", `param4=0.0`¹, distinct lat/lon, `z=30.0`); observe whether the upload is accepted or NACKed.
+**Observational — passes either way**; the result *is* the finding.
 
 | PX4 MC                  | PX4 FW                  | PX4 VTOL                | ArduCopter              | ArduPlane FW            | QuadPlane               | Mock     |
 | ----------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | -------- |
@@ -95,18 +95,9 @@ Upload a baseline DO*REPOSITION item (`param1=-1` "use default speed", `param2=0
 Skip reason (identical on every real stack/frame): _"DO_REPOSITION rejected outright as a mission item (UNSUPPORTED); param-level probing is moot — see test_protocol_command_accepted"_.
 A class-scoped, cached `do_reposition_mission_support` fixture probes the baseline exactly once per stack run; an `autouse` skip-fixture (`_skip_unsupported_param_tests`) then skips every other test in the class with that single shared message — far clearer than 21 redundant "command rejected" failures.
 
-### Baseline param4 note — an ArduCopter-specific pitfall this test avoids
+### Baseline param4 note
 
-The spec-correct sentinel for "use current heading" is `param4=NaN`.
-An early version of this test's baseline used that value and observed ArduCopter returning a _different_ NACK reason — `MAV_MISSION_INVALID_PARAM4` (MAVSDK `INVALID_ARGUMENT`) — instead of PX4's `UNSUPPORTED`.
-At first glance this looked like a genuine difference in how the two stacks handle DO_REPOSITION.
-
-Source analysis of `AP_Mission::sanity_check_params()` (see "Source verification" below) showed otherwise: ArduPilot only permits NaN in the params of commands it explicitly special-cases (NAV*WAYPOINT, NAV_LOITER_UNLIM, NAV_LAND, NAV_TAKEOFF, NAV_ARC_WAYPOINT, NAV_VTOL_TAKEOFF, NAV_VTOL_LAND).
-DO_REPOSITION is **absent** from that list, so its blanket `nan_mask = 0xff` rejects NaN in \_any* of params 1–4 — tripping `sanity_check_params()` and returning `MAV_MISSION_INVALID_PARAM4` _before_ the command-recognition switch (whose `default:` would otherwise report `UNSUPPORTED`, exactly like PX4) is ever reached.
-
-Re-probing with `param4=0.0` confirmed the hypothesis: ArduCopter then also returns `UNSUPPORTED`, identical to PX4.
-**The `INVALID_ARGUMENT` vs `UNSUPPORTED` discrepancy was an artifact of the probe's sentinel choice — not a real difference in command support.** The baseline now uses `param4=0.0` (matching the established NAV_TAKEOFF param2 workaround pattern) so the "is the command supported?" question is answered cleanly on both stacks.
-The NaN-rejection behaviour itself is captured by the dedicated `test_protocol_param4_yaw_nan` test — which is, like every other param-level test, skipped once the baseline shows the command is unsupported.
+The baseline deliberately uses `param4=0.0`, not the spec-correct `NaN` — a NaN baseline trips ArduPilot's blanket `sanity_check_params()` (which doesn't special-case this unrecognised command) and returns a misleading `INVALID_PARAM4` instead of the real `UNSUPPORTED` finding, before the command-recognition switch is even reached. Same pitfall as `nav_takeoff`'s param2 workaround; full detail in `CLAUDE.md`.
 
 ---
 
@@ -114,16 +105,16 @@ The NaN-rejection behaviour itself is captured by the dedicated `test_protocol_p
 
 **Yes, on both stacks.** `UNSUPPORTED` is the _intended_, by-design result — not a bug, omission, or inconsistency between PX4 and ArduPilot.
 
-**PX4** — `src/modules/mavlink/mavlink_mission.cpp`, the `mavlink_mission_item->command` switch (~line 1488) lists every mission command PX4 recognises (NAV*WAYPOINT, NAV_LOITER*_, NAV_LAND, NAV_TAKEOFF, NAV_LOITER_TO_ALT, NAV_ROI, DO_SET_ROI_, NAV_VTOL_TAKEOFF/LAND, CONDITION_GATE, fence/rally items, COMPONENT_ARM_DISARM, DO_AUTOTUNE_ENABLE, …).
+**PX4** — `src/modules/mavlink/mavlink_mission.cpp`, the `mavlink_mission_item->command` switch (~line 1488) lists every mission command PX4 recognises (NAV_WAYPOINT, NAV_LOITER_*, NAV_LAND, NAV_TAKEOFF, NAV_LOITER_TO_ALT, NAV_ROI, DO_SET_ROI_*, NAV_VTOL_TAKEOFF/LAND, CONDITION_GATE, fence/rally items, COMPONENT_ARM_DISARM, DO_AUTOTUNE_ENABLE, …).
 `MAV_CMD_DO_REPOSITION` (192) is **absent**; execution falls through to `default: return MAV_MISSION_UNSUPPORTED;` (~line 1605).
 The switch has no vehicle-type branching, so the result is identical across multicopter, fixed-wing, and VTOL — exactly as observed.
 
 **ArduPilot** — `libraries/AP_Mission/AP_Mission.cpp`, `mavlink_int_to_mission_cmd()` first runs `sanity_check_params()` (the generic NaN/Inf check described in the baseline note above), then switches on `cmd.id` (~line 1064).
-The switch lists NAV*WAYPOINT, NAV_LOITER*\*, NAV_LAND, NAV_TAKEOFF, NAV_LOITER_TO_ALT, NAV_ROI, DO_SET_ROI, NAV_VTOL_TAKEOFF/LAND, CONDITION_GATE, fence/rally points, COMPONENT_ARM_DISARM, DO_AUTOTUNE_ENABLE, … `MAV_CMD_DO_REPOSITION` (192) is **absent**; the `default:` case (~line 1472) returns `MAV_MISSION_UNSUPPORTED`.
+The switch lists NAV_WAYPOINT, NAV_LOITER_*, NAV_LAND, NAV_TAKEOFF, NAV_LOITER_TO_ALT, NAV_ROI, DO_SET_ROI, NAV_VTOL_TAKEOFF/LAND, CONDITION_GATE, fence/rally points, COMPONENT_ARM_DISARM, DO_AUTOTUNE_ENABLE, … `MAV_CMD_DO_REPOSITION` (192) is **absent**; the `default:` case (~line 1472) returns `MAV_MISSION_UNSUPPORTED`.
 This switch is shared by all ArduPilot vehicle types (Copter/Plane/QuadPlane), confirming the frame-independence observed.
 
 A grep for `DO_REPOSITION` across `AP_Mission`/`GCS_MAVLink` finds exactly **one** other hit: `GCS_Common.cpp:5312`, inside `command_long_stores_location()` — which governs the **COMMAND_INT/COMMAND_LONG path** (direct guided-mode execution, tested in `tests/command/do_reposition/`), not the mission-item path.
-This is the spec's "intended for guided commands" surface working exactly as designed: DO*REPOSITION is recognised by both stacks' \_command* handling and absent from both stacks' _mission-item_ handling.
+This is the spec's "intended for guided commands" surface working exactly as designed: DO_REPOSITION is recognised by both stacks' *command* handling and absent from both stacks' *mission-item* handling.
 
 ---
 
@@ -134,7 +125,7 @@ The task brief asked for Tier 2 to "construct a mission using the params that pa
 **This is not possible for DO_REPOSITION, on any tested stack or frame type**: the baseline upload itself is rejected with `UNSUPPORTED` everywhere, so _zero_ params "passed" Tier 1 — there is no mission containing a DO_REPOSITION item that can even be uploaded, let alone flown.
 No `test_flight.py` exists in this directory; writing one would have nothing to exercise.
 
-This is the expected, spec-aligned outcome (see Finding, above): DO*REPOSITION is a \_guided* command, not a mission command.
+This is the expected, spec-aligned outcome (see Finding, above): DO_REPOSITION is a *guided* command, not a mission command.
 Its actual execution semantics — does the vehicle reposition at the commanded speed/location/yaw, does the `CHANGE_MODE` flag switch to guided/hold mode, how do mode-dependent ACKs behave, etc. — are properly exercised via the **COMMAND_INT** path in `tests/command/do_reposition/` (`test_command.py` Tier 1, `test_flight.py` Tier 2), which is the spec-correct surface for this command.
 See `tests/command/do_reposition/README.md`.
 

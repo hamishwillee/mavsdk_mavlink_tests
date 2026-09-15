@@ -121,6 +121,32 @@ Two complementary signals:
 
 Results per (autopilot, vehicle type): **Supported (fully)** or **Supported (partially)**.
 
+### Shared Tier 1 infrastructure (`Tier1MissionTestBase`, `conftest.py`)
+
+Mirrors `tests/command/CLAUDE.md`'s `Tier1CommandTestBase` — the three mandatory checks below are implemented once in `tests/mission/conftest.py`, not copy-pasted per command:
+
+- **`MissionItemSpec`** declares a command: `cmd_id`, `name`, `baseline` (valid `MissionItem` kwargs — the fixed fields like `seq`/`current`/`frame`/`mission_type` are supplied by the base class), `params` (one `ParamSpec` per slot 1-7 — same dataclass as the command side, imported from `tests/param_spec.py`; see "ParamSpec is shared across protocols" below), `mission_type` (default 0), and `transport` (`"mission_raw"`, the default, or `"raw"` for a command MAVSDK's `mission_raw` plugin blocks client-side — see below).
+- **`Tier1MissionTestBase`** provides: `test_command_supported` (baseline, purely observational — many commands are legitimately rejected by design, e.g. guided-only or unimplemented commands, so this never hard-fails), `test_undefined_param_sentinel_accepted`/`test_undefined_param_nonsentinel_rejected` (parametrized per `SPEC.undefined_params`), `test_defined_param_sentinel_tolerated` (parametrized per `SPEC.defined_params`) — via the same `pytest_generate_tests` hook pattern as the command side. A mission-item test file needs only `SPEC = MissionItemSpec(...)`, `class TestXxx(Tier1MissionTestBase): SPEC = SPEC`, and its own bespoke per-parameter tests (enum/bitmask/range/location semantics stay bespoke — this scope is deliberately narrow, matching the command side's own scope).
+- The baseline probe is cached per class via a `_mission_support` fixture + an autouse `_skip_if_unsupported` fixture, so once a command is rejected outright, every param-level test in the class is skipped with one clear reason instead of N near-identical NACK failures — generalised from `do_reposition`'s original hand-rolled version of this pattern.
+- `__init_subclass__` gives each subclass fresh `_RESULTS`/`_DETAILS` — never move these onto the base class.
+- `home_item_for_mission` (session-scoped, already existed) and `mock_stack_cls`/`gcs_system_cls` (class-scoped, hoisted from what `test_frame_types.py`/`nav_takeoff`/`do_reposition` each defined locally) are available to any mission test file without redefinition.
+
+**ParamSpec is shared across protocols** (`tests/param_spec.py`, not `tests/mission/conftest.py` or `tests/command/conftest.py`): COMMAND_INT/LONG and MISSION_ITEM_INT carry the same param1-4 (float)/x,y (int32)/z (float) wire layout slot-for-slot, so what a slot *means* (defined vs. "Empty", sentinel value, sentinel policy) is identical between the two protocols. What differs — COMMAND_INT+COMMAND_LONG's dual-send vs. one MISSION_ITEM_INT, and a `COMMAND_ACK` result code vs. an upload NACK/downloaded value — is entirely how each protocol's own `Tier1*TestBase` interprets a probe's outcome, not what `ParamSpec` describes.
+
+**Raw transport for MAVSDK-blocklisted commands**: `mission_raw`'s underlying `mavsdk_server` process keeps its own internal table of commands it recognises, separate from what the flight stack supports — a command tagged `<wip/>` in `common.xml` (e.g. `CONDITION_GATE`, cmd=4501) isn't in that table and gets rejected with `INVALID_ARGUMENT` before anything reaches the wire, on every target including the mock. `raw_upload_mission_items()`/`raw_download_mission_items()` in `tests/mission/conftest.py` implement the `MISSION_COUNT`/`MISSION_REQUEST_INT`/`MISSION_ITEM_INT`/`MISSION_ACK` handshake directly via `mavlink_direct`, selected with `MissionItemSpec(transport="raw")`. They also serve the *deprecated* `MISSION_REQUEST` (ArduCopter uses this, not `MISSION_REQUEST_INT`, for at least some uploads — see `tests/mission/condition_gate/CLAUDE.md` for how this was found: the first version only handled the modern message and every ArduCopter upload timed out with `OPERATION_CANCELLED`). NaN floats are encoded as JSON `null` on the wire (mirroring `tests/command/conftest.py`'s `send_command_int`/`send_command_long` convention) since `mavlink_direct`'s `fields_json` bridge has no native NaN support, unlike `mission_raw.MissionItem`'s real Python floats.
+
+**Migration status**: `do_reposition` and `nav_takeoff` are migrated onto `Tier1MissionTestBase`/`MissionItemSpec`; `condition_gate` was built directly on it (raw transport). All three mission-item command directories now use the shared framework — no bespoke baseline/sentinel/capability-probe logic remains outside it.
+
+### Recipe: adding a new MAV_CMD mission-item test
+
+Follow `condition_gate/` as the template (the most complete example — raw transport, mixed defined/undefined params, Tier 1 + Tier 2, source cross-check). In order:
+
+1. **Directory + `SPEC`**: `tests/mission/<name>/test_protocol.py` with `SPEC = MissionItemSpec(cmd_id=..., name=..., baseline={...}, params=[ParamSpec(...) × 7])`; `transport="raw"` only if MAVSDK's `mission_raw` client-side blocks the command (confirmed by an `INVALID_ARGUMENT` on every target including mock — see "Raw transport" above). Baseline floats for any ArduPilot-unrecognised command must be `0.0`, never the spec-correct `NaN` (see "Home-slot prepend"/baseline-probe pitfall, documented identically in `do_reposition`, `condition_gate`, and `nav_takeoff`'s own CLAUDE.md files) — otherwise ArduPilot's blanket `sanity_check_params()` masks the real `UNSUPPORTED` finding behind a misleading `INVALID_PARAM<n>`.
+2. **`ParamSpec` xfail fields**: set `reject_xfail_reason` when a stack *does* validate an undefined param (default fallback message assumes none do); set `sentinel_xfail_reason` when a stack legitimately rejects a *defined* param's NaN sentinel that isn't itself spec-mandated (ArduPilot's per-command NaN mask) — leave both `None` (hard fail) when the sentinel behaviour is spec-mandated and a rejection is a genuine compliance gap worth surfacing, not hiding.
+3. **Bespoke tests**: only for what the three generic tests don't cover — enum/bitmask/range values, location-sentinel combinations (INT32_MAX on x *and* y together, not per-slot), and any storage/drop finding worth a dedicated round-trip probe with distinguishable non-zero-non-default values (0.0 is often also the zero-initialised default — a vacuous PASS).
+4. **Blind source review**: before comparing to results, read PX4/ArduPilot source and write down the expected mechanism first — do this the first time the test is added and the first time it runs against a new stack (see root `CLAUDE.md`'s Tier 2 design pattern #5).
+5. **Docs, one combined table each**: `README.md` gets Command-parameters table, Test-files table, Running block, then **one** results table (test × stack columns, `✓`/`✗`/`~`/`→` symbols) with footnotes for anything non-obvious — not a prose paragraph per test (the pre-migration `nav_takeoff/README.md` did this and needed a full rewrite to fix). `CLAUDE.md` stays terse: migration note, source-verification bullets, log references. Update root `README.md`'s per-command summary (a few lines + pointer, not a duplicate table) and its architecture tree.
+
 ### Parameter conventions in test items (MISSION_ITEM_INT)
 
 | Param position | Default / unused value |
@@ -196,17 +222,16 @@ Always find the probe item by `seq` on download, not by list index.
 
 ### Conditional Tier 2 pattern
 
-For edge-case params (negative yaw, overflow yaw, negative pitch, etc.) Tier 1 alone is **ambiguous**: if the value is stored raw, the autopilot deferred interpretation to execution time and a Tier 2 test is required.
-If already normalised, execution is unambiguous.
+See also root `CLAUDE.md`'s "General testing philosophy for MAV_CMD support" for the broader framing this pattern is one instance of (supported-vs-fail, characterisation-vs-"is it honoured", the accepted-but-ignored-without-NACK rule).
 
-A Tier 2 test begins with an **inline Tier 1 probe** (upload, download, read stored value) and skips based on the outcome:
+For edge-case params (negative yaw, overflow yaw, negative pitch, etc.) a Tier 2 test begins with an **inline Tier 1 probe** (upload, download, read stored value) to decide whether to proceed, per root `CLAUDE.md`'s Tier 2 design pattern #1: **the only legitimate skip basis is an actual upload NACK.** Any accepted outcome — stored raw, normalised to a canonical form, zeroed, or altered to something else entirely — proceeds to execution, and the assertion checks against **the value the probe actually observed as stored**, not the value the test intended to upload.
 
-| Stored value | Meaning | Tier 2 action |
-|---|---|---|
-| `N` (normalised) | Stack committed to canonical form | **Skip** — execution unambiguous |
-| `V` (raw) | Stack deferred normalisation | **Proceed** — verify execution |
-| Other value | Altered (zeroed etc.) | **Skip** — documented by Tier 1 |
-| NACKed | Upload rejected | **Skip** — captured by Tier 1 |
+| Probe outcome | Tier 2 action |
+|---|---|
+| NACKed | **Skip** — nothing was stored, so there is nothing to execute |
+| Accepted — any stored value (`N` normalised, `V` raw, zeroed, or otherwise altered) | **Proceed** — assert execution reflects the *observed* stored value |
+
+Earlier versions of this pattern skipped whenever storage already looked "normalised" (reasoning: execution must be unambiguous) or "altered" (reasoning: already documented by Tier 1, e.g. a zeroed field is presumably unused at execution). Both reasons were dropped: neither is something the round-trip probe itself proves — they're inferences about *why* the stack behaves that way, which a different frame, vehicle mode, or future stack version is free to violate silently. A test cannot know a field is safe to skip without either an explicit NACK or actually flying it; source reading can motivate *what value to expect*, but must never decide *whether to run*.
 
 `_probe_takeoff_item(system, home_item, **overrides)` in `test_flight.py` performs the upload–download–clear cycle without flying.
 

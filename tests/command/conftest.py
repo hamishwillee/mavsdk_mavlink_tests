@@ -33,6 +33,7 @@ from tests.mock_flight_stack import (
     MAV_RESULT_UNSUPPORTED,
     MockFlightStack,
 )
+from tests.param_spec import INT32_MAX, ParamSpec
 
 log = logging.getLogger(__name__)
 
@@ -55,9 +56,6 @@ _DRONE_SYSID = 1
 _DRONE_COMPID = 1
 
 _FMT = "%-14s | %-44s | %s"
-
-# Sentinel: "use current position" for lat/lon in COMMAND_INT
-INT32_MAX = 0x7FFF_FFFF
 
 # Canonical MAV_FRAME catalogue (0-21) for frame-validation surveys — see
 # CLAUDE.md § Mandatory common tests item 6. Mirrors
@@ -485,58 +483,9 @@ async def await_command_ack(
 # of a MAV_CMD's 7 parameter slots are DEFINED (have a MAVLink meaning) vs
 # UNDEFINED ("Empty" in the XML), and what a valid baseline send looks like.
 # Drives Tier1CommandTestBase (below) and its pytest_generate_tests hook.
-
-# Slot 5/6/7 are COMMAND_INT's x/y/z — genuinely int32 for x/y (whether or not
-# the command assigns them meaning) and always float for z, a fact of the
-# COMMAND_INT wire struct, not of whether the command's spec uses that slot.
-_SLOT_WIRE_FIELDS: dict[int, tuple[str, str]] = {
-    5: ("long5", "int_x"),
-    6: ("long6", "int_y"),
-    7: ("long7", "int_z"),
-}
-# A plausible non-sentinel value for the int32 x/y fields (SIH home lat/lon
-# scale — arbitrary but realistic, mirrors external_wind_estimate's _REAL_INT).
-_REAL_INT = 473977000
-
-
-@dataclass
-class ParamSpec:
-    """
-    Metadata for one MAV_CMD parameter slot (1-7).
-
-    Drives the mandatory undefined/defined sentinel-pair Tier 1 tests — see
-    CLAUDE.md § Mandatory common tests items 4 and 5.
-    """
-
-    slot: int  # 1-7
-    label: str  # human-readable name, e.g. "Wind speed" or "Empty"
-    defined: bool  # False = no MAVLink meaning ("Empty" in the XML)
-    sentinel_policy: str = "tolerate"  # defined params only: "tolerate"
-        # (category 5, default) or "deny_required" (a mandatory field with no
-        # sentinel fallback, e.g. DO_SET_GLOBAL_ORIGIN's lat/lon/altitude).
-    reject_xfail_reason: str | None = None  # undefined params only: a
-        # per-command known-behaviour xfail reason. Falls back to a generic
-        # message (no known stack validates undefined params) if not given.
-
-    @property
-    def sentinel_kwargs(self) -> dict:
-        """probe_dual() kwargs that set this slot to its own sentinel value."""
-        if self.slot <= 4:
-            return {f"param{self.slot}": None}
-        long_name, int_name = _SLOT_WIRE_FIELDS[self.slot]
-        if int_name == "int_z":  # always float — NaN in both message types
-            return {long_name: None, int_name: None}
-        return {long_name: None, int_name: INT32_MAX}  # int_x / int_y
-
-    @property
-    def nonsentinel_kwargs(self) -> dict:
-        """probe_dual() kwargs that set this slot to a real, non-sentinel value."""
-        if self.slot <= 4:
-            return {f"param{self.slot}": 1.0}
-        long_name, int_name = _SLOT_WIRE_FIELDS[self.slot]
-        if int_name == "int_z":
-            return {long_name: 1.0, int_name: 1.0}
-        return {long_name: 1.0, int_name: _REAL_INT}
+# ParamSpec itself lives in tests/param_spec.py — shared with
+# tests/mission/conftest.py's Tier1MissionTestBase, since COMMAND_INT/LONG and
+# MISSION_ITEM_INT share the same param1-4/x/y/z wire layout slot for slot.
 
 
 @dataclass
