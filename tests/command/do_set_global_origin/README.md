@@ -62,6 +62,8 @@ Confirmed gaps (all xfail, §4 above): PX4 returns `FAILED(4)` instead of `DENIE
 
 `XFAIL` = asserts DENIED but stack returns something else (documented spec gap). `SKIP` = mock-only test.
 
+**Message-type exclusivity (check 7, added 2026-09-18 — see `../CLAUDE.md` § Mandatory common tests)**: `test_do_set_global_origin_command_long_accepted` now also asserts `result != MAV_RESULT_COMMAND_INT_ONLY` — this command is the one documented exception to the exclusivity rule (its own XML text: "Should be sent in a COMMAND_INT... this should be assumed when sent in COMMAND_LONG"), so unlike `NAV_TAKEOFF`/`NAV_LAND`/`DO_REPOSITION` (which `XFAIL` an equivalent check) this is a real, non-xfail assertion. Confirmed PASS (2026-09-17) — PX4 correctly does not reject COMMAND_LONG here.
+
 ¹ PX4 MC: the first `GPS_GLOBAL_ORIGIN` received (`alt_mm=-500000 extra=1`) was a late emission from the preceding `test_do_set_global_origin_altitude_negative` (z=−500 m); the response to the current command (z=10 m) arrived as the extra — a test-ordering timing artifact in standalone mode. Emission and exactly-once assertions are enforced on the mock only.
 
 Other vehicle types (PX4 FW/VTOL/Rover, ArduPilot) not yet tested.

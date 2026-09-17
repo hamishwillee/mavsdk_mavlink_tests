@@ -100,6 +100,17 @@ _CMD_ID = 187  # MAV_CMD_DO_SET_ACTUATOR
 SPEC = CommandSpec(
     cmd_id=_CMD_ID,
     name=_CMD,
+    # has_location/float_params5_6 both stay at their False default (see
+    # tests/command/conftest.py's CommandSpec) despite param5/6 (Actuator
+    # 5/6) being real, defined float values — common.xml's own text for
+    # this command documents an explicit DUAL encoding ("If sent in
+    # COMMAND_LONG: value is scaled from [-1 to 1]... If sent in
+    # COMMAND_INT or MISSION_ITEM_INT: value is scaled by 1e7"), so
+    # test_float_params5_6_rejects_command_int's message-type-exclusivity
+    # expectation genuinely does not apply here — both message types are
+    # spec-valid, which is exactly what this whole test file (and PR
+    # #28723) verifies. See tests/command/CLAUDE.md § Mandatory common
+    # tests, check 7.
     baseline=dict(
         param1=0.5, param2=None, param3=None, param4=None,   # Actuator 1 = 0.5, others ignored
         long5=None, long6=None, long7=0.0,                    # COMMAND_LONG: Actuator 5/6 ignored, Index=0

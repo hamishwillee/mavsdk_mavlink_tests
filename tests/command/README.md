@@ -10,6 +10,7 @@ Tests for the MAVLink **command protocol** — `COMMAND_INT`/`COMMAND_LONG` sent
 | `test_ack_uniqueness.py` | Assert exactly one terminal COMMAND_ACK per command (catches double-ACK bugs) |
 | `test_protocol.py` | Protocol mechanics: ACK receipt/echo/result, retry, IN_PROGRESS |
 | `nav_takeoff/test_command.py` | NAV_TAKEOFF (22) via COMMAND_INT — ACK tests |
+| `nav_vtol_takeoff/test_command.py` | NAV_VTOL_TAKEOFF (84) via COMMAND_INT — ACK tests; verifies PX4 commit `aad2f0f3` (param1/param2 mask fix). See `nav_vtol_takeoff/README.md` |
 | `nav_land/test_command.py` | NAV_LAND (21) via COMMAND_INT — ACK tests |
 | `do_set_mission_current/test_command.py` | DO_SET_MISSION_CURRENT (224) via COMMAND_LONG — ACK tests |
 | `do_set_mission_current/test_flight.py` | DO_SET_MISSION_CURRENT — Tier 2: does param2 reset a `DO_JUMP` counter / make a completed mission restartable? See `do_set_mission_current/README.md` |
@@ -118,4 +119,4 @@ Tested 2026-05-27.
 
 ---
 
-Per-command detail: [`nav_takeoff/README.md`](nav_takeoff/README.md) (COMMAND_INT vs mission-protocol comparison) · [`nav_land/README.md`](nav_land/README.md) (Tier 2: commanded lat/lon/alt is *not* the touchdown point on PX4 MC/VTOL or ArduCopter MC) · [`do_set_mission_current/README.md`](do_set_mission_current/README.md) (authoritative behaviour matrix, 18/18 on PX4 MC, `DO_JUMP` counter reset confirmed in flight).
+Per-command detail: [`nav_takeoff/README.md`](nav_takeoff/README.md) (COMMAND_INT vs mission-protocol comparison) · [`nav_vtol_takeoff/README.md`](nav_vtol_takeoff/README.md) (PX4's real param1/param2 semantics vs. the XML; verifies the `aad2f0f3` mask fix) · [`nav_land/README.md`](nav_land/README.md) (Tier 2: commanded lat/lon/alt is *not* the touchdown point on PX4 MC/VTOL or ArduCopter MC) · [`do_set_mission_current/README.md`](do_set_mission_current/README.md) (authoritative behaviour matrix, 18/18 on PX4 MC, `DO_JUMP` counter reset confirmed in flight).

@@ -32,6 +32,10 @@ Before the fix, PX4 returned `UNSUPPORTED` for all inputs. After (`dakejahl/do-r
 | `param2=0` AND already in AUTO_LOITER | `ACCEPTED` — repositions hold point |
 | `param2=0` AND not in AUTO_LOITER | `DENIED` |
 
+## Message-type exclusivity (check 7, added 2026-09-18)
+
+`test_do_reposition_command_long_rejected` — hand-rolled equivalent of `Tier1CommandTestBase.test_hasLocation_rejects_command_long` (this file predates that base class migration; see `../CLAUDE.md` § Mandatory common tests, check 7). Result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot` with the reposition-ack fix applied): **XFAIL** — COMMAND_LONG returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
+
 ## Tier 1 test results
 
 ### PX4 MC 1.18.0-alpha — unpatched (before bc236e7178)

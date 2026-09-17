@@ -39,6 +39,9 @@ Tier 1 tests below are scoped to "was the value accepted", never "was it interpr
 | D — param4 (Yaw) | `_specific_ack`, `_nan_ack` | Both observational (see below) |
 | E — Location (5/6/7) | `_specific_ack/_int32max_ack/_out_of_range_latlon_ack`, `_altitude_specific_ack/_nan_ack`, `_wrong_frame_ack` | `specific`/`altitude_specific` assert not UNSUPPORTED; `out_of_range_latlon` asserts DENIED (xfail, mirrors NAV_TAKEOFF's tracked PX4 gap); rest observational |
 | F — COMMAND_LONG sentinels | `_latlon_nan_command_long_ack`, `_latlon_int32max_command_long` | Mirror NAV_TAKEOFF's; real-stack only |
+| G — Message-type exclusivity | `test_nav_land_command_long_rejected` | Hand-rolled equivalent of `Tier1CommandTestBase.test_hasLocation_rejects_command_long` (this file predates that base class migration) — see `../CLAUDE.md` § Mandatory common tests, check 7 |
+
+**Message-type exclusivity result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`)**: `test_nav_land_command_long_rejected` **XFAIL** — COMMAND_LONG for NAV_LAND returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
 
 **param4 (Yaw) is observational here, unlike NAV_TAKEOFF's assertion**: NAV_TAKEOFF asserts DENIED because prior surveys established every stack ignores param4 there. No equivalent evidence exists for landing — a heading-on-touchdown preference is plausible enough to honour that it isn't assumed ignored. Convert to an assertion once real-stack evidence shows otherwise.
 

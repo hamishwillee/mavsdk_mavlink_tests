@@ -21,9 +21,13 @@ PX4 correctly converts INT32_MAX→NaN for COMMAND_INT and passes NaN through fo
 
 Both PX4 (`navigator_main.cpp:630`: `rep->current.yaw = NAN` unconditionally) and ArduPilot (`GCS_MAVLink_Copter.cpp:585`: "not supported"; ArduPlane reads only altitude) ignore param4 in the COMMAND_INT path — see `../CLAUDE.md` § Command vs mission protocol differences for the full comparison with the mission-protocol path (where PX4 *does* store and use it).
 
+## Message-type exclusivity (check 7, added 2026-09-18)
+
+`test_hasLocation_rejects_command_long` (inherited — see `../CLAUDE.md` § Mandatory common tests, check 7): **XFAIL** against PX4 MC (confirmed 2026-09-17 against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`) — COMMAND_LONG for NAV_TAKEOFF returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. This is a real, currently-uneven gap: the sibling command `NAV_VTOL_TAKEOFF` genuinely enforces this on the very same PX4 build (PX4 commit `83e7afba56` adds a `command_is_int_only()` switch, but its case list currently has only `MAV_CMD_NAV_VTOL_TAKEOFF`, not this command) — see `../nav_vtol_takeoff/CLAUDE.md` for the full story. `test_float_params5_6_rejects_command_int` is SKIP (NA) — this command has no non-location float in param5/6.
+
 ## Tier 1 (ACK) results
 
-23 tests: `test_command_ack_received`, `test_command_supported`, `test_exactly_one_ack`, `test_frame_validation_survey`, `test_undefined_param_{sentinel_accepted,nonsentinel_rejected}[param2]`, and `test_defined_param_sentinel_tolerated[param{1,3,4,5,6,7}]` are inherited from `Tier1CommandTestBase` (`../CLAUDE.md`); the rest are this command's own bespoke tests. All COMMAND_INT except the two rows marked COMMAND_LONG.
+25 tests: `test_command_ack_received`, `test_command_supported`, `test_exactly_one_ack`, `test_frame_validation_survey`, `test_undefined_param_{sentinel_accepted,nonsentinel_rejected}[param2]`, `test_defined_param_sentinel_tolerated[param{1,3,4,5,6,7}]`, `test_hasLocation_rejects_command_long`, and `test_float_params5_6_rejects_command_int` are inherited from `Tier1CommandTestBase` (`../CLAUDE.md`); the rest are this command's own bespoke tests. All COMMAND_INT except the two rows marked COMMAND_LONG. The table below predates check 7's addition — see the section above for its result.
 
 ### PX4 MC / FW / VTOL / Rover (1.18.0-beta, re-verified 2026-09-11)
 
