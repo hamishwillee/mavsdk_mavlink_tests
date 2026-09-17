@@ -19,20 +19,24 @@ flight telemetry rather than trusting the prose:
    waypoint) is direct evidence of the blocking/trigger mechanism, and its
    location on the track confirms *where* the crossing was detected.
 3. "UseAltitude field ignored [by PX4]... geometry test is 2D" — has a Tier 2
-   test (test_use_altitude_gates_on_altitude_if_supported) that always flies:
-   per root CLAUDE.md's Tier 2 design pattern #1, only an actual upload NACK
-   is a legitimate skip basis, so Tier 1's finding that param2 doesn't survive
-   the round trip (test_params_1_2_zeroed_on_roundtrip_px4) is logged as
-   context, not used to decide whether to run. The test is purely
-   observational either way (no assertion on which outcome is "correct").
+   test (test_gate_obs_use_altitude_gates_on_altitude_if_supported) that
+   always flies: per root CLAUDE.md's Tier 2 design pattern #1, only an
+   actual upload NACK is a legitimate skip basis, so Tier 1's finding that
+   param2 doesn't survive the round trip (test_params_1_2_zeroed_on_roundtrip_px4)
+   is logged as context, not used to decide whether to run. The test is
+   purely observational either way (no assertion on which outcome is
+   "correct").
 
 Mirrors the shape of the sibling manual-verification tool at
 mavsdk_qgc_server_tests/condition_gate_tests/upload_condition_gate_mission.py
-(takeoff -> waypoint -> gate -> DO_CHANGE_SPEED -> waypoint -> RTL) but
-automates the observation with telemetry sampling instead of a human
-watching QGroundControl, and uploads via the raw mavlink_direct transport
-(see tests/mission/conftest.py's raw_upload_mission_items) since
-mission_raw rejects this <wip/> command client-side.
+(waypoint -> gate -> DO_CHANGE_SPEED -> waypoint -> RTL, with takeoff
+commanded separately beforehand — see root CLAUDE.md's Tier 2 design pattern
+#11 and 2026-09-16's dated section in CLAUDE.md for why this file doesn't
+carry a mission-item NAV_TAKEOFF) but automates the observation with
+telemetry sampling instead of a human watching QGroundControl, and uploads
+via the raw mavlink_direct transport (see tests/mission/conftest.py's
+raw_upload_mission_items) since mission_raw rejects this <wip/> command
+client-side.
 
 Running
 -------
@@ -52,17 +56,22 @@ import pytest
 from mavsdk.mavlink_direct import MavlinkMessage
 from mavsdk.mission_raw import MissionItem
 
+from tests import report
 from ..conftest import (
     RawMissionError,
     clear_all_mission_types,
     raw_download_mission_items,
     raw_upload_mission_items,
 )
+from .test_protocol import SPEC as _GATE_SPEC
 from tests.flight_helpers import (
     _get_home_position,
     _request_position_stream,
     _rtl_and_land,
-    _wait_armable,
+    _takeoff_via_command,
+    _tier2_auto_record,
+    record_tier2_detail,
+    record_tier2_param_verdict,
     require_real_stack,
 )
 
@@ -70,9 +79,17 @@ log = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.timeout(360)
 
+# Read by tests/report.py's write() to name/identify this module's report.
+_CMD_NAME = "CONDITION_GATE"
+_CMD_ID = 4501
+
+# Declare identity + full param-slot list at import time — see nav_takeoff/
+# test_flight.py's identical pattern for the full reasoning.
+report.declare_command("mission", _CMD_NAME, _CMD_ID)
+report.declare_params("mission", _CMD_NAME, [f"{p.slot}_{p.label}" for p in _GATE_SPEC.params])
+
 NAN = float("nan")
 _GATE_CMD = 4501
-_TAKEOFF_CMD = 22
 _WAYPOINT_CMD = 16
 _DO_CHANGE_SPEED_CMD = 178
 _RTL_CMD = 20
@@ -142,7 +159,18 @@ def _build_mission(
     *, gate_param2: float = 0.0, gate_alt_m: float = _CRUISE_ALT_M,
 ) -> list[MissionItem]:
     """
-    takeoff -> wp1 -> gate (off-path) -> DO_CHANGE_SPEED -> wp2 -> RTL.
+    wp1 -> gate (off-path) -> DO_CHANGE_SPEED -> wp2 -> RTL.
+
+    Deliberately carries NO takeoff item — the vehicle takes off via
+    _takeoff_via_command() (commanded, not a mission-item NAV_TAKEOFF) before
+    this mission is ever uploaded, per root CLAUDE.md's Tier 2 design pattern
+    #11 principle applied to CONDITION_GATE 2026-09-16: this file exists to
+    test CONDITION_GATE, not NAV_TAKEOFF, so its own reliability shouldn't
+    depend on mission-item NAV_TAKEOFF's (see nav_takeoff/CLAUDE.md and root
+    CLAUDE.md future-work #10 for why that's a real, separate risk on some
+    stacks/frames — PX4 fixed-wing/VTOL never leaves the ground via a
+    mission-item takeoff in this environment, an issue this file has no
+    reason to inherit).
 
     All items use frame=6 (GLOBAL_RELATIVE_ALT_INT) except DO_CHANGE_SPEED
     (frame=2, MAV_FRAME_MISSION — its params are unscaled, per
@@ -151,8 +179,8 @@ def _build_mission(
     do_reposition's sibling finding for the same command family).
 
     `gate_param2` (UseAltitude) and `gate_alt_m` are overridable for
-    test_use_altitude_gates_on_altitude_if_supported's conditional 3D-gate
-    probe/flight — every other caller uses the 2D-gate defaults.
+    test_gate_obs_use_altitude_gates_on_altitude_if_supported's conditional
+    3D-gate probe/flight — every other caller uses the 2D-gate defaults.
     """
     leg_end_m = _LEG_START_M + _LEG_LENGTH_M
     gate_north_m = _LEG_START_M + _GATE_FRACTION * _LEG_LENGTH_M
@@ -163,36 +191,30 @@ def _build_mission(
 
     items = [
         MissionItem(
-            seq=0, frame=6, command=_TAKEOFF_CMD, current=1, autocontinue=1,
-            param1=NAN, param2=0.0, param3=0.0, param4=NAN,
-            x=int(home_lat * 1e7), y=int(home_lon * 1e7), z=_CRUISE_ALT_M,
-            mission_type=0,
-        ),
-        MissionItem(
-            seq=1, frame=6, command=_WAYPOINT_CMD, current=0, autocontinue=1,
+            seq=0, frame=6, command=_WAYPOINT_CMD, current=1, autocontinue=1,
             param1=0.0, param2=0.0, param3=0.0, param4=NAN,
             x=int(wp1_lat * 1e7), y=int(wp1_lon * 1e7), z=_CRUISE_ALT_M,
             mission_type=0,
         ),
         MissionItem(
-            seq=2, frame=6, command=_GATE_CMD, current=0, autocontinue=1,
+            seq=1, frame=6, command=_GATE_CMD, current=0, autocontinue=1,
             param1=0.0, param2=gate_param2, param3=0.0, param4=0.0,
             x=int(gate_lat * 1e7), y=int(gate_lon * 1e7), z=gate_alt_m,
             mission_type=0,
         ),
         MissionItem(
-            seq=3, frame=2, command=_DO_CHANGE_SPEED_CMD, current=0, autocontinue=1,
+            seq=2, frame=2, command=_DO_CHANGE_SPEED_CMD, current=0, autocontinue=1,
             param1=1.0, param2=_REDUCED_SPEED_MPS, param3=-1.0, param4=0.0,
             x=0, y=0, z=0.0, mission_type=0,
         ),
         MissionItem(
-            seq=4, frame=6, command=_WAYPOINT_CMD, current=0, autocontinue=1,
+            seq=3, frame=6, command=_WAYPOINT_CMD, current=0, autocontinue=1,
             param1=0.0, param2=0.0, param3=0.0, param4=NAN,
             x=int(wp2_lat * 1e7), y=int(wp2_lon * 1e7), z=_CRUISE_ALT_M,
             mission_type=0,
         ),
         MissionItem(
-            seq=5, frame=2, command=_RTL_CMD, current=0, autocontinue=1,
+            seq=4, frame=2, command=_RTL_CMD, current=0, autocontinue=1,
             param1=0.0, param2=0.0, param3=0.0, param4=0.0,
             x=0, y=0, z=0.0, mission_type=0,
         ),
@@ -288,10 +310,11 @@ async def _sample_track(system, home_lat: float, home_lon: float, duration_s: fl
     return samples
 
 
-async def test_gate_does_not_bend_path_and_triggers_mid_leg(gcs_system):
+async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, request):
     """
-    Fly takeoff -> wp1 -> gate (25 m off-path) -> DO_CHANGE_SPEED -> wp2 -> RTL
-    and verify, from telemetry:
+    Fly wp1 -> gate (25 m off-path) -> DO_CHANGE_SPEED -> wp2 -> RTL (takeoff
+    is commanded, not a mission item — see _build_mission's docstring) and
+    verify, from telemetry:
       1. The flown track during the wp1->wp2 leg stays close to the direct
          line between them (the gate is not a destination — PR #761 claim 1).
       2. The track never approaches the gate's own coordinates as closely as
@@ -301,6 +324,10 @@ async def test_gate_does_not_bend_path_and_triggers_mid_leg(gcs_system):
          point roughly matching the gate's projection onto the leg, not at
          either waypoint (the mission-blocking/trigger mechanism — PR #761
          claim 2).
+
+    This is the definitive "is CONDITION_GATE supported at all" check for
+    this file (root CLAUDE.md rule 8) — SUPPORTED if every claim above holds,
+    NA (via the NACK skip below) on a stack that rejects the command outright.
     """
     home = await _get_home_position(gcs_system)
     home_lat, home_lon, home_amsl = home.latitude_deg, home.longitude_deg, home.absolute_altitude_m
@@ -329,20 +356,22 @@ async def test_gate_does_not_bend_path_and_triggers_mid_leg(gcs_system):
             await raw_upload_mission_items(gcs_system, items, mission_type=0)
         except RawMissionError as exc:
             # Tier 1 already tells us definitively whether this stack accepts
-            # CONDITION_GATE at all (test_command_supported) — if it doesn't
+            # CONDITION_GATE at all (test_mission_item_supported) — if it doesn't
             # (e.g. ArduPilot: MAV_MISSION_UNSUPPORTED), there is no mission to
             # fly and attempting to arm/fly anyway would only ever reproduce
             # that same finding at a much higher cost. Skip, don't fail: see
             # root CLAUDE.md's "Tier 1 findings gate Tier 2 scope" convention.
+            # Checked BEFORE taking off (per _build_mission's docstring, the
+            # upload no longer carries a takeoff item either) so an
+            # unsupported stack skips in seconds, never arming at all.
+            record_tier2_param_verdict(request, "CONDITION_GATE (command)", "REJECTED (NACKed) — not implemented as a mission item on this stack")
             pytest.skip(
                 f"CONDITION_GATE rejected as a mission item on this stack ({exc}) — "
-                "Tier 1 (test_protocol.py::test_command_supported) already establishes this; "
+                "Tier 1 (test_protocol.py::test_mission_item_supported) already establishes this; "
                 "no Tier 2 flight is possible or meaningful here"
             )
         await _request_position_stream(gcs_system, rate_hz=5.0)
-        await _wait_armable(gcs_system)
-        await gcs_system.action.arm()
-        await asyncio.sleep(0.5)
+        await _takeoff_via_command(gcs_system, _CRUISE_ALT_M)
         await _send_mission_start(gcs_system)
 
         # Derived from the measured cruise speed (not assumed) so a stack
@@ -418,6 +447,14 @@ async def test_gate_does_not_bend_path_and_triggers_mid_leg(gcs_system):
         f"Speed drop at north={trigger_north_m:.1f} m is far from the gate's projection "
         f"({gate_north_m:.1f} m) relative to the leg length ({_LEG_LENGTH_M:.0f} m)"
     )
+    record_tier2_detail(
+        request,
+        f"PASS if the route stays on the direct wp1-wp2 line (max cross-track "
+        f"{max_cross_track:.1f}m) and the DO_CHANGE_SPEED trigger fires mid-leg "
+        f"(north={trigger_north_m:.1f}m, gate projects to {gate_north_m:.1f}m) rather than at "
+        f"either waypoint — confirms mavlink-devguide PR #761's two behavioural claims",
+    )
+    record_tier2_param_verdict(request, "CONDITION_GATE (command)", "SUPPORTED")
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +489,7 @@ async def _probe_use_altitude_stored(system, home_lat: float, home_lon: float) -
     return bool(downloaded) and abs(downloaded[0].param2 - 1.0) < 1e-6
 
 
-async def test_use_altitude_gates_on_altitude_if_supported(gcs_system):
+async def test_gate_obs_use_altitude_gates_on_altitude_if_supported(gcs_system, request):
     """
     Fly a gate placed _GATE_ALT_OFFSET_M above cruise altitude with
     UseAltitude=1 (MAV_BOOL_TRUE — "include altitude") and observe whether
@@ -482,11 +519,19 @@ async def test_use_altitude_gates_on_altitude_if_supported(gcs_system):
     cruise_mps = await _get_cruise_speed_mps(gcs_system)
     samples: list[tuple[float, float, float, float]] = []
     try:
-        await raw_upload_mission_items(gcs_system, items, mission_type=0)
+        try:
+            await raw_upload_mission_items(gcs_system, items, mission_type=0)
+        except RawMissionError as exc:
+            # Same NACK-skip basis as test_gate_compat_does_not_bend_path_and_
+            # triggers_mid_leg — CONDITION_GATE's own command-level support is
+            # already established there; this test's UseAltitude-specific
+            # question is moot if the whole command isn't accepted.
+            pytest.skip(
+                f"NA: CONDITION_GATE rejected as a mission item on this stack ({exc}) — "
+                "test_gate_compat_does_not_bend_path_and_triggers_mid_leg already establishes this"
+            )
         await _request_position_stream(gcs_system, rate_hz=5.0)
-        await _wait_armable(gcs_system)
-        await gcs_system.action.arm()
-        await asyncio.sleep(0.5)
+        await _takeoff_via_command(gcs_system, _CRUISE_ALT_M)
         await _send_mission_start(gcs_system)
         sample_duration_s = (
             _CLIMB_AND_TRANSIT_ALLOWANCE_S + _LEG_START_M / cruise_mps + _LEG_LENGTH_M / _REDUCED_SPEED_MPS
@@ -499,16 +544,17 @@ async def test_use_altitude_gates_on_altitude_if_supported(gcs_system):
     threshold = (cruise_mps + _REDUCED_SPEED_MPS) / 2.0
     fired = [s for s in samples if s[2] < threshold]
     if fired:
-        log.warning(
-            "CONDITION_GATE flight: UseAltitude=1 with gate %.0fm above cruise altitude — "
-            "DO_CHANGE_SPEED FIRED ANYWAY at north=%.1fm — UseAltitude is stored but still has "
-            "no functional effect on the crossing test (document this precisely, don't just say "
-            "'ignored')", _GATE_ALT_OFFSET_M, fired[0][0],
+        detail = (
+            f"Observational: UseAltitude=1 with gate {_GATE_ALT_OFFSET_M:.0f}m above cruise altitude — "
+            f"DO_CHANGE_SPEED fired anyway at north={fired[0][0]:.1f}m — UseAltitude has no functional "
+            f"effect on the crossing test (param2_stored={param2_stored})"
         )
+        log.warning(detail)
     else:
-        log.warning(
-            "CONDITION_GATE flight: UseAltitude=1 with gate %.0fm above cruise altitude — "
-            "DO_CHANGE_SPEED NEVER FIRED within the budget — UseAltitude now appears to gate on "
-            "altitude as mavlink-devguide PR #761 describes; document the version this started in",
-            _GATE_ALT_OFFSET_M,
+        detail = (
+            f"Observational: UseAltitude=1 with gate {_GATE_ALT_OFFSET_M:.0f}m above cruise altitude — "
+            f"DO_CHANGE_SPEED never fired within the budget — UseAltitude appears to gate on altitude "
+            f"as mavlink-devguide PR #761 describes (param2_stored={param2_stored})"
         )
+        log.warning(detail)
+    record_tier2_detail(request, detail)

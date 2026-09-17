@@ -121,11 +121,14 @@ from tests.mock_flight_stack import (
     MAV_RESULT_FAILED,
     MAV_RESULT_UNSUPPORTED,
 )
+from tests import report
+from tests.report import _tier1_auto_record  # noqa: F401 — autouse: records every test's outcome into the combined report
 
 log = logging.getLogger(__name__)
 
 _CMD = "DO_SET_MISSION_CURRENT"
 _CMD_ID = 224  # MAV_CMD_DO_SET_MISSION_CURRENT
+_CMD_NAME = _CMD  # read by tests/report.py's _tier1_auto_record
 
 
 def _set_current_cmd(**overrides) -> dict:
@@ -206,6 +209,9 @@ class TestDoSetMissionCurrentNoMission:
             ack = await _probe(system)
             unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
             TestDoSetMissionCurrentNoMission._supported = not unsupported
+            # Not recorded via report.record_command_fact() here — WithMission's
+            # _ensure_supported (below) is the definitive probe (a mission actually
+            # uploaded, matching the command's real precondition) and records it.
         if not TestDoSetMissionCurrentNoMission._supported:
             pytest.skip(f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run")
 
@@ -229,7 +235,7 @@ class TestDoSetMissionCurrentNoMission:
             )
         assert result == MAV_RESULT_FAILED
 
-    async def test_no_mission_sentinel_failed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_no_mission_sentinel_failed(self, gcs_system_cls, mock_stack_cls):
         """param1=-1, param2=0 — even the 'keep unchanged' sentinel requires a mission to exist."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_no_mission_failed(
@@ -237,7 +243,7 @@ class TestDoSetMissionCurrentNoMission:
             param1=-1.0, param2=0.0,
         )
 
-    async def test_no_mission_valid_looking_index_failed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_no_mission_valid_looking_index_failed(self, gcs_system_cls, mock_stack_cls):
         """param1=0 (looks like a valid index) — still FAILED, nothing exists to index into."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_no_mission_failed(
@@ -245,7 +251,7 @@ class TestDoSetMissionCurrentNoMission:
             param1=0.0, param2=0.0,
         )
 
-    async def test_no_mission_out_of_range_failed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_no_mission_out_of_range_failed(self, gcs_system_cls, mock_stack_cls):
         """param1=999999 — same gate; a large value doesn't change the result."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_no_mission_failed(
@@ -277,6 +283,7 @@ class TestDoSetMissionCurrentWithMission:
             ack = await _probe(system)
             unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
             TestDoSetMissionCurrentWithMission._supported = not unsupported
+            report.record_command_fact("command", _CMD_NAME, supported=TestDoSetMissionCurrentWithMission._supported)
         if not TestDoSetMissionCurrentWithMission._supported:
             pytest.skip(f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run")
 
@@ -299,7 +306,7 @@ class TestDoSetMissionCurrentWithMission:
     # Group A — baseline / hygiene
     # -----------------------------------------------------------------------
 
-    async def test_command_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_command_accepted(self, gcs_system_cls, mock_stack_cls):
         """Baseline: param1=<valid index>, param2=0 — not UNSUPPORTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         seq = float(TestDoSetMissionCurrentWithMission._valid_seq)
@@ -310,7 +317,7 @@ class TestDoSetMissionCurrentWithMission:
         log.info(_FMT, _CMD, "baseline COMMAND_LONG (mission loaded)", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_exactly_one_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_exactly_one_ack(self, gcs_system_cls, mock_stack_cls):
         """
         Exactly one COMMAND_ACK must be received per command send.
 
@@ -357,7 +364,7 @@ class TestDoSetMissionCurrentWithMission:
         if mock_stack_cls is not None:
             assert len(extra) == 0, f"Got {1 + len(extra)} ACKs; expected exactly 1"
 
-    async def test_command_int_variant_observational(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_command_int_variant_observational(self, gcs_system_cls, mock_stack_cls):
         """
         Same params sent via COMMAND_INT instead of COMMAND_LONG — observational.
 
@@ -384,7 +391,7 @@ class TestDoSetMissionCurrentWithMission:
     # Group B — param1 behaviour matrix
     # -----------------------------------------------------------------------
 
-    async def test_param1_negative_one_keeps_unchanged_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param1_negative_one_keeps_unchanged_accepted(self, gcs_system_cls, mock_stack_cls):
         """
         param1=-1 ('keep current item, just reset'), param2=0 — must be ACCEPTED
         once a mission exists.
@@ -416,7 +423,7 @@ class TestDoSetMissionCurrentWithMission:
             )
         assert result == MAV_RESULT_ACCEPTED
 
-    async def test_param1_valid_index_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param1_valid_index_accepted(self, gcs_system_cls, mock_stack_cls):
         """param1=<valid index>, param2=0 — sets the current item; must be ACCEPTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         seq = float(TestDoSetMissionCurrentWithMission._valid_seq)
@@ -435,7 +442,7 @@ class TestDoSetMissionCurrentWithMission:
             f"spec requires ACCEPTED, got {result}"
         )
 
-    async def test_param1_out_of_range_failed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param1_out_of_range_failed(self, gcs_system_cls, mock_stack_cls):
         """
         param1 > number of mission items — must be FAILED.
 
@@ -465,7 +472,7 @@ class TestDoSetMissionCurrentWithMission:
             )
         assert result == MAV_RESULT_FAILED
 
-    async def test_param1_other_invalid_denied(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param1_other_invalid_denied(self, gcs_system_cls, mock_stack_cls):
         """param1=-2 (negative, not the -1 sentinel) — 'any other value': must be DENIED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param1=-2.0, param2=0.0)
@@ -491,7 +498,7 @@ class TestDoSetMissionCurrentWithMission:
     # Group C — param2 behaviour matrix
     # -----------------------------------------------------------------------
 
-    async def test_param2_zero_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param2_zero_accepted(self, gcs_system_cls, mock_stack_cls):
         """param2=0 (jump counters untouched) — must be ACCEPTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         seq = float(TestDoSetMissionCurrentWithMission._valid_seq)
@@ -506,7 +513,7 @@ class TestDoSetMissionCurrentWithMission:
             return
         assert result == MAV_RESULT_ACCEPTED
 
-    async def test_param2_one_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param2_one_accepted(self, gcs_system_cls, mock_stack_cls):
         """
         param2=1 (reset jump counters; COMPLETE -> ACTIVE/PAUSED) — must be ACCEPTED.
 
@@ -528,7 +535,7 @@ class TestDoSetMissionCurrentWithMission:
             return
         assert result == MAV_RESULT_ACCEPTED
 
-    async def test_param2_invalid_denied(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_param2_invalid_denied(self, gcs_system_cls, mock_stack_cls):
         """param2=2 (not 0 or 1) — 'any other value': must be DENIED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         seq = float(TestDoSetMissionCurrentWithMission._valid_seq)
@@ -583,27 +590,27 @@ class TestDoSetMissionCurrentWithMission:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_reserved_param3_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_reserved_param3_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
         """param3=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param3=1.0 (non-NaN reserved)", 1.0, param3=1.0)
 
-    async def test_reserved_param4_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_reserved_param4_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
         """param4=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param4=1.0 (non-NaN reserved)", 1.0, param4=1.0)
 
-    async def test_reserved_param5_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_reserved_param5_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
         """param5=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param5=1.0 (non-NaN reserved)", 1.0, param5=1.0)
 
-    async def test_reserved_param6_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_reserved_param6_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
         """param6=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param6=1.0 (non-NaN reserved)", 1.0, param6=1.0)
 
-    async def test_reserved_param7_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_set_mission_current_reserved_param7_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
         """param7=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param7=1.0 (non-NaN reserved)", 1.0, param7=1.0)

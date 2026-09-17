@@ -61,11 +61,14 @@ from tests.command.conftest import (
     _FMT,
 )
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
+from tests import report
+from tests.report import _tier1_auto_record  # noqa: F401 — autouse: records every test's outcome into the combined report
 
 log = logging.getLogger(__name__)
 
 _CMD    = "DO_REPOSITION"
 _CMD_ID = 192  # MAV_CMD_DO_REPOSITION
+_CMD_NAME = _CMD  # read by tests/report.py's _tier1_auto_record
 
 # SIH simulator home (47.3977°N, 8.5456°E) — same as takeoff tests
 _LAT_INT = 473977000   # 47.3977° × 1e7
@@ -105,7 +108,7 @@ async def _probe(system, **kwargs) -> dict | None:
 # These tests depend on PX4 starting in MANUAL mode (SITL startup state).
 # They must run before any other tests that send CHANGE_MODE (param2=1), which
 # would switch PX4 into AUTO_LOITER and invalidate the "not in Hold" precondition
-# for test_denied_not_in_hold.
+# for test_do_reposition_denied_not_in_hold.
 
 @pytest.mark.asyncio(loop_scope="class")
 @pytest.mark.timeout(300)
@@ -140,7 +143,7 @@ class TestDoRepositionPx4ModeGating:
             pytest.skip("Mode-gating tests require a real flight stack (not mock)")
         if TestDoRepositionPx4ModeGating._supported is None:
             # Probe with param2=0 (no CHANGE_MODE) so we don't alter the vehicle mode
-            # before test_denied_not_in_hold runs.  Pre-fix PX4 returns UNSUPPORTED
+            # before test_do_reposition_denied_not_in_hold runs.  Pre-fix PX4 returns UNSUPPORTED
             # for all inputs; patched PX4 returns DENIED (not UNSUPPORTED) for param2=0.
             ack = await probe_command_int(system, **_reposition_cmd(param2=0.0))
             unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
@@ -151,7 +154,7 @@ class TestDoRepositionPx4ModeGating:
                 "mode-gating tests require the patched PX4 build (bc236e7178)"
             )
 
-    async def test_denied_not_in_hold(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_denied_not_in_hold(self, gcs_system_cls, mock_stack_cls):
         """
         param2=0 (no CHANGE_MODE), vehicle in MANUAL mode at SITL startup.
 
@@ -179,7 +182,7 @@ class TestDoRepositionPx4ModeGating:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_accepted_change_mode(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_accepted_change_mode(self, gcs_system_cls, mock_stack_cls):
         """
         param2=1 (CHANGE_MODE) → ACCEPTED; vehicle switches to AUTO_LOITER.
 
@@ -199,20 +202,20 @@ class TestDoRepositionPx4ModeGating:
             f"CHANGE_MODE should produce ACCEPTED; got {result}"
         )
 
-    async def test_accepted_already_in_hold(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_accepted_already_in_hold(self, gcs_system_cls, mock_stack_cls):
         """
         param2=0 (no CHANGE_MODE), vehicle now in AUTO_LOITER (set by prior test).
 
         Branch 2: already in AUTO_LOITER AND no mode change → ACCEPTED.
         Enables repositioning the Hold point without repeated mode-switch requests.
 
-        Must run THIRD (depends on test_accepted_change_mode having switched to Hold).
+        Must run THIRD (depends on test_do_reposition_accepted_change_mode having switched to Hold).
         Before fix: UNSUPPORTED. After fix: ACCEPTED (correct).
         """
         await self._ensure_mode_gating_applicable(gcs_system_cls, mock_stack_cls)
         if not TestDoRepositionPx4ModeGating._in_hold:
             pytest.skip(
-                "Vehicle not in Hold mode — requires test_accepted_change_mode to have "
+                "Vehicle not in Hold mode — requires test_do_reposition_accepted_change_mode to have "
                 "passed first"
             )
         ack = await probe_command_int(gcs_system_cls, **_reposition_cmd(param2=0.0))
@@ -244,6 +247,7 @@ class TestDoRepositionCommand:
             ack = await _probe(system)
             unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
             TestDoRepositionCommand._supported = not unsupported
+            report.record_command_fact("command", _CMD_NAME, supported=TestDoRepositionCommand._supported)
         if not TestDoRepositionCommand._supported:
             pytest.skip(
                 f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run"
@@ -253,7 +257,7 @@ class TestDoRepositionCommand:
     # Group A — Baseline
     # -----------------------------------------------------------------------
 
-    async def test_command_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_command_accepted(self, gcs_system_cls, mock_stack_cls):
         """Baseline: DO_REPOSITION COMMAND_INT returns ACCEPTED (or non-UNSUPPORTED)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls)
@@ -269,7 +273,7 @@ class TestDoRepositionCommand:
     # Group B — param2 (MAV_DO_REPOSITION_FLAGS bitmask)
     # -----------------------------------------------------------------------
 
-    async def test_param2_change_mode_flag(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param2_change_mode_flag(self, gcs_system_cls, mock_stack_cls):
         """
         param2=1 (CHANGE_MODE) — vehicle should switch to hold/guided mode.
 
@@ -287,7 +291,7 @@ class TestDoRepositionCommand:
             f"CHANGE_MODE flag should produce ACCEPTED; got {result}"
         )
 
-    async def test_param2_flags_zero(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param2_flags_zero(self, gcs_system_cls, mock_stack_cls):
         """
         param2=0 (no flags) — observational.
 
@@ -305,7 +309,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param2=0 (no flags)", f"result={result}  "
                  "(PX4 patched: DENIED when not in Hold; ArduCopter/Rover: likely ACCEPTED)")
 
-    async def test_param2_relative_yaw_only(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param2_relative_yaw_only(self, gcs_system_cls, mock_stack_cls):
         """
         param2=2 (RELATIVE_YAW only, no CHANGE_MODE) — observational.
 
@@ -321,7 +325,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param2=RELATIVE_YAW(2)", f"result={result}  "
                  "(PX4 patched: DENIED — no CHANGE_MODE bit; others: likely ACCEPTED)")
 
-    async def test_param2_all_flags(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param2_all_flags(self, gcs_system_cls, mock_stack_cls):
         """
         param2=3 (CHANGE_MODE | RELATIVE_YAW) — both defined flags set.
 
@@ -339,7 +343,7 @@ class TestDoRepositionCommand:
             f"CHANGE_MODE bit set; should produce ACCEPTED; got {result}"
         )
 
-    async def test_param2_undefined_bits(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param2_undefined_bits(self, gcs_system_cls, mock_stack_cls):
         """
         param2=255 (all bits, including undefined bits 2–7).
 
@@ -361,7 +365,7 @@ class TestDoRepositionCommand:
     # Group C — param1 (Speed m/s; spec minValue=-1)
     # -----------------------------------------------------------------------
 
-    async def test_param1_default_speed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param1_default_speed(self, gcs_system_cls, mock_stack_cls):
         """param1=-1.0 — spec-defined 'use default cruise speed' sentinel."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param1=-1.0)
@@ -372,7 +376,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param1 (Speed) = -1 (default)", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_param1_positive_speed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param1_positive_speed(self, gcs_system_cls, mock_stack_cls):
         """param1=5.0 m/s — positive, valid speed. Observational."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param1=5.0)
@@ -382,7 +386,7 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param1 (Speed) = 5.0 m/s", f"result={result}")
 
-    async def test_param1_zero_speed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param1_zero_speed(self, gcs_system_cls, mock_stack_cls):
         """
         param1=0.0 — boundary value; PX4 treats <=0 as default. Observational.
         """
@@ -395,7 +399,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param1 (Speed) = 0.0", f"result={result}  "
                  "(PX4: param1 <=0 treated as default speed)")
 
-    async def test_param1_nan_speed(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param1_nan_speed(self, gcs_system_cls, mock_stack_cls):
         """
         param1=NaN — 'no speed preference'; should use default cruise speed.
         Skips in mock mode.
@@ -411,7 +415,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param1 (Speed) = NaN", f"result={result}  "
                  "(PX4: !PX4_ISFINITE(NaN) → use default speed)")
 
-    async def test_param1_below_min(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param1_below_min(self, gcs_system_cls, mock_stack_cls):
         """
         param1=-5.0 — below the declared minValue="-1".
 
@@ -439,7 +443,7 @@ class TestDoRepositionCommand:
     # Group D — param4 (Yaw, radians; NaN = use current heading mode)
     # -----------------------------------------------------------------------
 
-    async def test_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls):
         """param4=NaN — 'use current heading mode'. Spec-correct sentinel. Must not UNSUPPORTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param4=None)
@@ -450,7 +454,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param4 (Yaw) = NaN", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_param4_yaw_zero(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param4_yaw_zero(self, gcs_system_cls, mock_stack_cls):
         """
         param4=0.0 rad — heading North.
 
@@ -467,7 +471,7 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param4 (Yaw) = 0.0 rad (North)", f"result={result}")
 
-    async def test_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls):
         """
         param4=π/2 rad (East, 90°) — a non-trivial heading.
 
@@ -482,7 +486,7 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param4 (Yaw) = π/2 rad (East)", f"result={result}")
 
-    async def test_param4_relative_yaw_with_flag(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param4_relative_yaw_with_flag(self, gcs_system_cls, mock_stack_cls):
         """
         param2=CHANGE_MODE|RELATIVE_YAW, param4=π/4 — yaw relative to current heading.
 
@@ -508,7 +512,7 @@ class TestDoRepositionCommand:
     # Group E — param3 (Loiter radius m; 0 or NaN = ignored; planes only)
     # -----------------------------------------------------------------------
 
-    async def test_param3_zero(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param3_zero(self, gcs_system_cls, mock_stack_cls):
         """param3=0.0 — spec 'ignored' value. Must not cause UNSUPPORTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param3=0.0)
@@ -519,7 +523,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param3 (Radius) = 0.0 (ignored)", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_param3_nan(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param3_nan(self, gcs_system_cls, mock_stack_cls):
         """
         param3=NaN — spec 'ignored' value (equivalent to 0).
         Skips in mock mode.
@@ -535,7 +539,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param3 (Radius) = NaN (ignored)", f"result={result}  "
                  "(spec: 0 and NaN are both ignored for loiter radius)")
 
-    async def test_param3_positive(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param3_positive(self, gcs_system_cls, mock_stack_cls):
         """
         param3=100.0 m — positive loiter radius (planes only).
 
@@ -554,7 +558,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param3 (Radius) = 100.0 m", f"result={result}  "
                  "(FW: should honour; MC: should DENIED (spec gap — cannot honour))")
 
-    async def test_param3_negative(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_param3_negative(self, gcs_system_cls, mock_stack_cls):
         """
         param3=-50.0 m — negative radius; spec says 'positive values only'.
 
@@ -574,7 +578,7 @@ class TestDoRepositionCommand:
     # Group F — Location (params 5/6/7)
     # -----------------------------------------------------------------------
 
-    async def test_location_specific(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_location_specific(self, gcs_system_cls, mock_stack_cls):
         """Specific lat/lon at SIH home — valid coordinates. Must not cause UNSUPPORTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, x=_LAT_INT, y=_LON_INT)
@@ -585,7 +589,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "params 5/6 (Lat/Lon) specific", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_location_int32max(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_location_int32max(self, gcs_system_cls, mock_stack_cls):
         """
         x=INT32_MAX, y=INT32_MAX — 'use current position' sentinel.
 
@@ -600,7 +604,7 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "params 5/6 INT32_MAX (use current pos)", f"result={result}")
 
-    async def test_location_out_of_range_latlon(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_location_out_of_range_latlon(self, gcs_system_cls, mock_stack_cls):
         """
         x=1_200_000_000 (120°N), y=2_000_000_000 (200°E) — impossible coordinates.
 
@@ -627,7 +631,7 @@ class TestDoRepositionCommand:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_altitude_nan(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_altitude_nan(self, gcs_system_cls, mock_stack_cls):
         """
         z=NaN — 'use current altitude'.
 
@@ -645,7 +649,7 @@ class TestDoRepositionCommand:
         log.info(_FMT, _CMD, "param7 (Alt) = NaN (use current)", f"result={result}  "
                  "(NaN altitude = keep current altitude per spec)")
 
-    async def test_altitude_zero(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_altitude_zero(self, gcs_system_cls, mock_stack_cls):
         """z=0.0 m — zero altitude. Observational (may be accepted or denied)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, z=0.0)
@@ -655,7 +659,7 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param7 (Alt) = 0.0 m", f"result={result}")
 
-    async def test_altitude_only_reposition(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_altitude_only_reposition(self, gcs_system_cls, mock_stack_cls):
         """
         x=INT32_MAX, y=INT32_MAX, z=100.0 — altitude-only reposition.
 
@@ -676,7 +680,7 @@ class TestDoRepositionCommand:
     # Group G — All-NaN "pause" (COMMAND_LONG required)
     # -----------------------------------------------------------------------
 
-    async def test_all_nan_pause(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_all_nan_pause(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG with all position/yaw fields NaN — 'pause vehicle'.
 
@@ -709,7 +713,7 @@ class TestDoRepositionCommand:
     # Group H — COMMAND_LONG variant
     # -----------------------------------------------------------------------
 
-    async def test_command_long_nan_latlon(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_command_long_nan_latlon(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG with param5/6=NaN — 'use current position'.
 
@@ -741,7 +745,7 @@ class TestDoRepositionCommand:
             "NaN lat/lon in COMMAND_LONG should not cause UNSUPPORTED"
         )
 
-    async def test_command_long_int32max_float(self, gcs_system_cls, mock_stack_cls):
+    async def test_do_reposition_command_long_int32max_float(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG with param5/6=float(INT32_MAX) — 'use current position' sentinel.
 

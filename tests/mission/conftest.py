@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import math
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,9 +16,10 @@ from mavsdk.mission_raw_server import MissionItem as ServerMissionItem
 from mavsdk.mavlink_direct import MavlinkMessage
 import mavsdk.mission_raw_server_pb2 as _mrs_pb2
 
-from tests.conftest import DRONE_GRPC_PORT, _format_autopilot_header, _wait_for_connection
+from tests import report
+from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
 from tests.mock_flight_stack import MockFlightStack
-from tests.param_spec import ParamSpec
+from tests.param_spec import MAV_FRAME_CATALOGUE, ParamSpec
 
 log = logging.getLogger(__name__)
 
@@ -711,18 +711,9 @@ _FMT = "%-14s | %-44s | %s"
 TRANSFER_TIMEOUT_S = 30.0
 
 
-def _record(cls, request, outcome: str, description: str, result) -> None:
-    cls._RESULTS.append((request.node.name, outcome, description, result))
-
-
-def _record_detail(cls, text: str) -> None:
-    """Attach a supplementary multi-line block to the Tier 1 log."""
-    cls._DETAILS.append(text)
-
-
 def _check(cls, request, description: str, outcome: str, *, expect, xfail_reason: str | None = None) -> None:
     """
-    Record this test's outcome into the class's Tier 1 results table, then
+    Record this test's outcome into the shared report (tests/report.py), then
     perform the actual pytest assertion/xfail.
 
     `outcome`: "ACCEPTED" (upload succeeded) or a MAV_MISSION_RESULT reason
@@ -730,77 +721,34 @@ def _check(cls, request, description: str, outcome: str, *, expect, xfail_reason
     `expect`: predicate(outcome:str) -> bool. `xfail_reason`: if given and
     the predicate fails, xfail with this reason instead of hard-failing.
     """
+    name = cls.SPEC.name
     if expect(outcome):
-        _record(cls, request, "PASS", description, outcome)
+        report.record_tier1_result("mission", name, request.node.name, "PASS", description, outcome)
         return
     if xfail_reason:
-        _record(cls, request, "XFAIL", description, outcome)
+        report.record_tier1_result("mission", name, request.node.name, "XFAIL", description, outcome)
         pytest.xfail(xfail_reason)
-    _record(cls, request, "FAIL", description, outcome)
+    report.record_tier1_result("mission", name, request.node.name, "FAIL", description, outcome)
     pytest.fail(f"{description} (got: {outcome})")
-
-
-def _safe(s: str) -> str:
-    return s.replace("/", "_").replace(" ", "_").replace("\\", "_")
 
 
 @pytest.fixture(scope="class", autouse=True)
 def _write_tier1_log(request):
     """
-    Write the accumulated Tier 1 results table to logs/ once, after every
-    test in the class has run. A no-op for any test class that isn't a
-    Tier1MissionTestBase subclass (no SPEC / no results).
+    Write this command's combined report (Tier 1, plus Tier 2 if it ran in
+    the same pytest session — see tests/report.py) once, after every test in
+    the class has run. A no-op for any test class that isn't a
+    Tier1MissionTestBase subclass, or one where nothing actually ran (e.g.
+    every test filtered out by -k).
     """
     yield
     cls = request.cls
     if cls is None or not hasattr(cls, "SPEC"):
         return
-    results = getattr(cls, "_RESULTS", None)
-    if not results:
-        return  # nothing ran (e.g. filtered with -k) -- nothing to write
-
     spec = cls.SPEC
-    info = getattr(request.config, "_autopilot_info", {})
-    drone_address = request.config.getoption("--drone-address")
-    header = _format_autopilot_header(info, drone_address)
-
-    counts: dict[str, int] = {}
-    lines = [
-        f"Tier 1 results: MAV_CMD_{spec.name} (cmd={spec.cmd_id}) as a mission item",
-        "=" * 100,
-        f"{'Test':<52} {'Outcome':<12} {'Result':<20} Pass case",
-        "-" * 100,
-    ]
-    for name, outcome, description, result in results:
-        counts[outcome] = counts.get(outcome, 0) + 1
-        result_str = "-" if result is None else str(result)
-        lines.append(f"{name:<52} {outcome:<12} {result_str:<20} {description}")
-    lines.append("-" * 100)
-    lines.append(
-        f"Total: {len(results)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-    )
-    details = getattr(cls, "_DETAILS", None)
-    if details:
-        lines.append("")
-        lines.append("Supplementary detail")
-        lines.append("=" * 100)
-        for block in details:
-            lines.append(block)
-    table = "\n".join(lines)
-    log.info("\n%s", table)
-
-    ap = _safe(info.get("autopilot", "unknown").lower().replace("ardupilotmega", "ardupilot"))
-    vt = _safe(info.get("vehicle_type", "unknown").lower())
-    ver_raw = info.get("firmware_version", "")
-    ver = f"_{_safe(ver_raw)}" if ver_raw and ver_raw != "N/A" else ""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-
-    logs_dir = Path("logs")
-    logs_dir.mkdir(exist_ok=True)
-    safe_name = _safe(spec.name.lower())
-    log_path = logs_dir / f"mission_{safe_name}_tier1_{ap}_{vt}{ver}_{timestamp}.log"
-    log_path.write_text(header + "\n\n" + table + "\n")
-    log.info(_FMT, spec.name, "Tier 1 results log written", str(log_path))
+    if not report.has_tier1_results("mission", spec.name):
+        return
+    report.write("mission", spec.name, spec.cmd_id, request.config)
 
 
 class Tier1MissionTestBase:
@@ -817,11 +765,21 @@ class Tier1MissionTestBase:
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
-        # Fresh per-subclass state — NOT shared via the base class, since
-        # multiple Test* classes (different commands) run in one pytest
-        # session and must not mix results or "supported" caches.
-        cls._RESULTS = []
-        cls._DETAILS = []
+        # Register this command's identity + full param-slot list with the
+        # shared report (tests/report.py) once per subclass, so every param
+        # key always appears in the rendered JSON (see declare_params'
+        # docstring), and so a Tier-2-only run of the same command can find
+        # this declaration even without Tier 1 running in the same session
+        # (Tier 2 files import SPEC from their sibling test_protocol.py).
+        spec = cls.SPEC
+        report.declare_command("mission", spec.name, spec.cmd_id)
+        report.declare_params("mission", spec.name, [f"{p.slot}_{p.label}" for p in spec.params])
+        # Undefined ("Empty") params have nothing to functionally support —
+        # set this immediately (not waiting for their sentinel test to run)
+        # so it's present even if that specific parametrized test is
+        # filtered out via -k.
+        for p in spec.undefined_params:
+            report.record_compat_fact("mission", spec.name, f"{p.slot}_{p.label}", supported="not-applicable")
 
     async def _upload_probe(self, system, home_item, **overrides) -> MissionItem:
         """
@@ -889,19 +847,19 @@ class Tier1MissionTestBase:
     def _skip_if_unsupported(self, request, _mission_support):
         """Skip every param-level test once the baseline is rejected outright.
 
-        `test_command_supported` itself is exempt — it's the one test that
+        `test_mission_item_supported` itself is exempt — it's the one test that
         records the baseline finding.
         """
-        if request.node.name == "test_command_supported":
+        if request.node.name == "test_mission_item_supported":
             return
         supported, reason = _mission_support
         if not supported:
             pytest.skip(
                 f"{self.SPEC.name} (cmd={self.SPEC.cmd_id}) rejected outright as a mission "
-                f"item ({reason}); param-level probing is moot — see test_command_supported"
+                f"item ({reason}); param-level probing is moot — see test_mission_item_supported"
             )
 
-    async def test_command_supported(self, _mission_support, request):
+    async def test_mission_item_supported(self, _mission_support, request):
         """
         Baseline: is this command accepted as a mission item at all?
 
@@ -916,7 +874,18 @@ class Tier1MissionTestBase:
         supported, reason = _mission_support
         description = "Baseline: accepted as a mission item at all (observational)"
         outcome = "ACCEPTED" if supported else reason
-        _record(type(self), request, "PASS", description, outcome)
+        report.record_tier1_result("mission", self.SPEC.name, request.node.name, "PASS", description, outcome)
+        if not supported:
+            # A protocol-level rejection is as reliable a "not supported"
+            # signal as this harness can ever have — record it at the
+            # command level so the JSON export has something even for a
+            # command with no Tier 2 test at all (e.g. DO_REPOSITION). Only
+            # attach `notes` when the reason says something `supported:
+            # false` doesn't already — the generic "UNSUPPORTED" NACK reason
+            # is exactly what `supported: false` already means, so a note
+            # restating it would be pure redundancy.
+            note = outcome if outcome != "UNSUPPORTED" else None
+            report.record_command_fact("mission", self.SPEC.name, supported=False, notes=note)
         log.info(_FMT, self.SPEC.name, "command", outcome)
 
     # -------------------------------------------------------------------
@@ -929,6 +898,9 @@ class Tier1MissionTestBase:
         p = undefined_param
         outcome = await self._probe_outcome(gcs_system_cls, home_item_for_mission, **p.mission_sentinel_kwargs)
         description = f"Accepted when param{p.slot} ({p.label}) is sent as its own sentinel (undefined param)"
+        report.record_compat_fact(
+            "mission", self.SPEC.name, f"{p.slot}_{p.label}", accept_nan_or_int32max=(outcome == "ACCEPTED"),
+        )
         _check(type(self), request, description, outcome, expect=lambda o: o == "ACCEPTED")
 
     async def test_undefined_param_nonsentinel_rejected(self, gcs_system_cls, mock_stack_cls, home_item_for_mission, request, undefined_param):
@@ -936,6 +908,9 @@ class Tier1MissionTestBase:
         p = undefined_param
         outcome = await self._probe_outcome(gcs_system_cls, home_item_for_mission, **p.mission_nonsentinel_kwargs)
         description = f"Rejected when param{p.slot} ({p.label}) is sent a real (non-sentinel) value (undefined param)"
+        report.record_compat_fact(
+            "mission", self.SPEC.name, f"{p.slot}_{p.label}", nacks_on_non_sentinel_value=(outcome != "ACCEPTED"),
+        )
         xfail_reason = p.reject_xfail_reason or (
             f"Stack returned {outcome!r} for undefined param{p.slot}; expected a NACK — no "
             "known stack validates parameters with no MAVLink definition (spec gap)"
@@ -953,6 +928,9 @@ class Tier1MissionTestBase:
         """Not rejected (or rejected, for a documented mandatory-field exemption) when a defined param is sent its sentinel."""
         p = defined_param
         outcome = await self._probe_outcome(gcs_system_cls, home_item_for_mission, **p.mission_sentinel_kwargs)
+        report.record_compat_fact(
+            "mission", self.SPEC.name, f"{p.slot}_{p.label}", accept_nan_or_int32max=(outcome == "ACCEPTED"),
+        )
         if p.sentinel_policy == "deny_required":
             description = (
                 f"Rejected when param{p.slot} ({p.label}) is sent its sentinel "
@@ -963,3 +941,53 @@ class Tier1MissionTestBase:
             description = f"Not rejected when param{p.slot} ({p.label}, defined) is sent its sentinel"
             _check(type(self), request, description, outcome, expect=lambda o: o == "ACCEPTED",
                    xfail_reason=p.sentinel_xfail_reason)
+
+    # -------------------------------------------------------------------
+    # Frame validation survey — mirrors Tier1CommandTestBase's own
+    # test_frame_validation_survey (tests/command/conftest.py), sharing the
+    # same MAV_FRAME_CATALOGUE (tests/param_spec.py). Command-side and
+    # mission-side outcomes are NOT symmetric: COMMAND_INT's raw ACK result
+    # code distinguishes MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME(9) (frame
+    # itself invalid) from MAV_RESULT_UNSUPPORTED(3) (command not
+    # recognised at all) — but MAVSDK's mission_raw plugin collapses BOTH
+    # MAV_MISSION_UNSUPPORTED_FRAME and MAV_MISSION_UNSUPPORTED into one
+    # client-side Result.UNSUPPORTED (confirmed by enumerating
+    # mavsdk.mission_raw.MissionRawResult.Result — no frame-specific member
+    # exists), so there is no equivalent PASS ("frame validation confirmed")
+    # / INCONCLUSIVE split here. Purely observational: which frames a
+    # command accepts as a mission item is itself command-specific (a
+    # location command like NAV_TAKEOFF accepts several; a non-location
+    # DO_* command may accept only MAV_FRAME_MISSION, or none at all if
+    # rejected outright already) — there's no universal right answer to
+    # assert against generically, so this always PASSes and records the
+    # full per-frame breakdown as supplementary detail for a human/README
+    # to read, exactly like an "any outcome is protocol-valid" observational
+    # test (root CLAUDE.md rule 3).
+    # -------------------------------------------------------------------
+
+    async def test_frame_validation_survey(self, gcs_system_cls, mock_stack_cls, home_item_for_mission, request):
+        """
+        Frame validation survey: which MAV_FRAME values is this command
+        accepted as a mission item under? Observational — see class docstring
+        note above for why this never fails/xfails regardless of the result.
+        """
+        description = "Frame validation survey: which MAV_FRAME values accept this command as a mission item"
+        per_frame: list[tuple[int, str, str]] = []
+        for frame_id, frame_name in MAV_FRAME_CATALOGUE:
+            outcome = await self._probe_outcome(gcs_system_cls, home_item_for_mission, frame=frame_id)
+            per_frame.append((frame_id, frame_name, outcome))
+
+        accepted = [(fid, fname) for fid, fname, outcome in per_frame if outcome == "ACCEPTED"]
+        table_lines = [f"  frame={fid:>2} ({fname}): {outcome}" for fid, fname, outcome in per_frame]
+        block = (
+            f"Frame validation survey ({self.SPEC.name}, cmd={self.SPEC.cmd_id}) — "
+            f"full breakdown:\n" + "\n".join(table_lines)
+        )
+        if accepted:
+            acc_desc = ", ".join(f"frame={fid} ({fname})" for fid, fname in accepted)
+            block += f"\nAccepted under: {acc_desc}"
+        else:
+            block += "\nAccepted under no frame in this catalogue (rejected outright — see test_mission_item_supported)."
+        report.record_tier1_detail("mission", self.SPEC.name, block)
+        log.info(_FMT, self.SPEC.name, "frame validation survey", block)
+        report.record_tier1_result("mission", self.SPEC.name, request.node.name, "PASS", description, None)

@@ -79,7 +79,9 @@ import os
 import pytest
 from mavsdk.mission_raw import MissionItem, MissionRawError
 
+from tests import report
 from ..conftest import clear_all_mission_types
+from .test_protocol import SPEC as _NAV_TAKEOFF_SPEC
 from tests.flight_helpers import (
     TAKEOFF_TIMEOUT_S,
     _dist_m,
@@ -109,16 +111,21 @@ pytestmark = pytest.mark.timeout(360)
 _CMD_NAME = "NAV_TAKEOFF"
 _CMD_ID = 22
 
-# Read by tests/flight_helpers.py's _render_compat_json() so every one of
-# NAV_TAKEOFF's 7 mission-item params always appears in the rendered
-# compatibility JSON — including a param whose Tier 2 test errored out
-# (e.g. TimeoutError) before ever calling record_compat_json(), which
-# otherwise renders as silently ABSENT rather than "supported": null
-# ("not independently tested this run" per the schema) — see 2026-09-15
-# discussion in nav_takeoff/CLAUDE.md.
-_COMPAT_JSON_ALL_PARAMS = [
-    "1_Pitch", "2_Empty", "3_Flags", "4_Yaw", "5_Latitude", "6_Longitude", "7_Altitude",
-]
+# Declare NAV_TAKEOFF's identity + full param-slot list with the shared
+# report (tests/report.py) at import time, deriving the list from the
+# sibling test_protocol.py's own SPEC (single source of truth — no more a
+# separately hand-maintained list to keep in sync) — so every one of NAV_
+# TAKEOFF's 7 params always appears in the rendered compatibility JSON, even
+# a param whose Tier 2 test errored out (e.g. TimeoutError) before ever
+# calling record_compat_json(), rendering "supported": null ("not
+# independently tested this run") rather than being silently absent. This
+# also means running test_flight.py alone (without test_protocol.py in the
+# same session) still gets the full param list, since the import above
+# triggers test_protocol.py's own module-level SPEC construction regardless.
+report.declare_command("mission", _CMD_NAME, _CMD_ID)
+report.declare_params(
+    "mission", _CMD_NAME, [f"{p.slot}_{p.label}" for p in _NAV_TAKEOFF_SPEC.params],
+)
 
 TRANSFER_TIMEOUT_S = 30.0
 TAKEOFF_ALT_M      = 20.0   # metres relative to home — this file's own nominal altitude
@@ -1125,7 +1132,7 @@ async def test_takeoff_compat_from_current_position(gcs_system, home_item_for_mi
     if nacked:
         record_compat_json(request, "5_Latitude", accept_nan_or_int32max=False)
         record_compat_json(request, "6_Longitude", accept_nan_or_int32max=False)
-        pytest.skip("INT32_MAX lat/lon NACKed — result captured by Tier 1 test_protocol_location_current_position")
+        pytest.skip("INT32_MAX lat/lon NACKed — result captured by Tier 1 test_nav_takeoff_location_current_position")
     if stored is None:
         pytest.skip("Probe item not found in download")
     record_compat_json(request, "5_Latitude", accept_nan_or_int32max=True)

@@ -58,9 +58,9 @@ A COMMAND_ACK only reports ACCEPTED/DENIED/FAILED/etc, not what the mission exec
 | Class | Tests | Approach |
 |-------|-------|----------|
 | `TestDoSetMissionCurrentNoMission` | `test_no_mission_{sentinel,valid_looking_index,out_of_range}_failed` | No mission; hard-assert `FAILED` on real stacks (xfail+DOC-DISCREPANCY-log if not); observational in mock |
-| `WithMission` Group A (baseline) | `test_command_accepted`, `test_exactly_one_ack`, `test_command_int_variant_observational` | Mission uploaded (`simple_mission.json`); not-UNSUPPORTED / exactly-one-ACK / observational |
-| Group B (param1) | `test_param1_{negative_one_keeps_unchanged,valid_index}_accepted`, `test_param1_out_of_range_failed`, `test_param1_other_invalid_denied` | Hard-assert per the matrix; xfail+log on real stacks if not, observational in mock |
-| Group C (param2) | `test_param2_{zero,one}_accepted`, `test_param2_invalid_denied` | Hard-assert per the matrix |
+| `WithMission` Group A (baseline) | `test_do_set_mission_current_command_accepted`, `test_do_set_mission_current_exactly_one_ack`, `test_do_set_mission_current_command_int_variant_observational` | Mission uploaded (`simple_mission.json`); not-UNSUPPORTED / exactly-one-ACK / observational |
+| Group B (param1) | `test_param1_{negative_one_keeps_unchanged,valid_index}_accepted`, `test_do_set_mission_current_param1_out_of_range_failed`, `test_do_set_mission_current_param1_other_invalid_denied` | Hard-assert per the matrix; xfail+log on real stacks if not, observational in mock |
+| Group C (param2) | `test_param2_{zero,one}_accepted`, `test_do_set_mission_current_param2_invalid_denied` | Hard-assert per the matrix |
 | Group D (reserved 3–7) | `test_reserved_param{3..7}_nonnan_ack` | Expect DENIED; xfail — spec names no result code here |
 
 `NoMission` is deliberately minimal (confirms the gate only) — testing param1/param2 without a mission would be confounded by the FAILED gate, so all substantive assertions live in `WithMission`.
@@ -76,11 +76,11 @@ Every test returns `ACCEPTED` (mock's generic accept-all fallback) — so ACCEPT
 | Test | Result |
 |------|--------|
 | `test_no_mission_{sentinel,valid_looking_index,out_of_range}_failed` | PASS — ACCEPTED (observational) |
-| `test_command_accepted`, `test_exactly_one_ack`, `test_command_int_variant_observational` | PASS — ACCEPTED |
+| `test_do_set_mission_current_command_accepted`, `test_do_set_mission_current_exactly_one_ack`, `test_do_set_mission_current_command_int_variant_observational` | PASS — ACCEPTED |
 | `test_param1_{negative_one_keeps_unchanged,valid_index}_accepted` | PASS — ACCEPTED |
-| `test_param1_out_of_range_failed`, `test_param1_other_invalid_denied` | PASS — ACCEPTED (observational) |
+| `test_do_set_mission_current_param1_out_of_range_failed`, `test_do_set_mission_current_param1_other_invalid_denied` | PASS — ACCEPTED (observational) |
 | `test_param2_{zero,one}_accepted` | PASS — ACCEPTED |
-| `test_param2_invalid_denied` | PASS — ACCEPTED (observational) |
+| `test_do_set_mission_current_param2_invalid_denied` | PASS — ACCEPTED (observational) |
 | `test_reserved_param{3..7}_nonnan_ack` | XFAIL ×5 — ACCEPTED |
 
 ### PX4 MC (standalone, 1.18.0-beta) — 18 passed, 0 xfailed
@@ -90,12 +90,12 @@ Zero deviation from the authoritative matrix:
 | Test | Result |
 |------|--------|
 | `test_no_mission_{sentinel,valid_looking_index,out_of_range}_failed` | PASS — FAILED(4) |
-| `test_command_accepted`, `test_exactly_one_ack`, `test_command_int_variant_observational` | PASS — ACCEPTED |
+| `test_do_set_mission_current_command_accepted`, `test_do_set_mission_current_exactly_one_ack`, `test_do_set_mission_current_command_int_variant_observational` | PASS — ACCEPTED |
 | `test_param1_{negative_one_keeps_unchanged,valid_index}_accepted` | PASS — ACCEPTED |
-| `test_param1_out_of_range_failed` | PASS — FAILED(4) |
-| `test_param1_other_invalid_denied` | PASS — DENIED(2) |
+| `test_do_set_mission_current_param1_out_of_range_failed` | PASS — FAILED(4) |
+| `test_do_set_mission_current_param1_other_invalid_denied` | PASS — DENIED(2) |
 | `test_param2_{zero,one}_accepted` | PASS — ACCEPTED |
-| `test_param2_invalid_denied` | PASS — DENIED(2) |
+| `test_do_set_mission_current_param2_invalid_denied` | PASS — DENIED(2) |
 | `test_reserved_param{3..7}_nonnan_ack` | PASS ×5 — DENIED(2) (PX4 genuinely validates these with a mission loaded — matches the xfail target) |
 
 Tier 2 below confirms the `param1=-1` sentinel and `param2=1` reset also hold mid-flight, not just pre-flight.

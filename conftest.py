@@ -125,6 +125,19 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--write-mock-reports",
+        action="store_true",
+        default=False,
+        help=(
+            "Write reports/ output (tests/report.py) for mock/paired-mode runs too "
+            "(--drone-address omitted). Off by default: mock isn't a real flight "
+            "stack/frame, so its mavlink-compat-data JSON can never be more than "
+            "{\"error\": \"Could not map autopilot='MOCK'/...\"} — pass this flag only "
+            "if you specifically want the Tier 1/2 text report for a mock-mode debugging "
+            "session."
+        ),
+    )
+    parser.addoption(
         "--mavlink-definitions-dir",
         action="store",
         default="mavlink/message_definitions/v1.0",

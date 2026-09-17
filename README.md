@@ -157,9 +157,12 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
         │   └── test_flight.py             # NAV_TAKEOFF execution tests (Tier 2, requires real stack)
         ├── do_reposition/
         │   └── test_protocol.py           # DO_REPOSITION mission-item acceptance (Tier 1, Tier1MissionTestBase — UNSUPPORTED everywhere; no Tier 2, see README)
-        └── condition_gate/
-            ├── test_protocol.py           # CONDITION_GATE mission-item acceptance (Tier 1 — raw transport, <wip/> command)
-            └── test_flight.py             # CONDITION_GATE execution tests (Tier 2, PX4 only, requires real stack)
+        ├── condition_gate/
+        │   ├── test_protocol.py           # CONDITION_GATE mission-item acceptance (Tier 1 — raw transport, <wip/> command)
+        │   └── test_flight.py             # CONDITION_GATE execution tests (Tier 2, PX4 only, requires real stack)
+        └── do_set_actuator/
+            ├── test_protocol.py           # DO_SET_ACTUATOR mission-item acceptance (Tier 1, Tier1MissionTestBase — requires MAV_FRAME_MISSION)
+            └── test_flight.py             # DO_SET_ACTUATOR execution test (Tier 2, PWM-output observation — verifies PX4 PR #28723)
 ```
 
 ## Adding new tests
@@ -228,6 +231,7 @@ Full per-param tables, source verification, and Tier 2 results live in each comm
 | `MAV_CMD_NAV_TAKEOFF` (22) | Stores Yaw + location; never stores Pitch/Flags (v1.17.0, confirmed 2026-09-14) — a newer 1.18.0-beta dev build (2026-09-13) instead actively rejects non-default Pitch/Flags/unused values, so this appears to be a version-dependent validation change, not settled behaviour. MC takes off correctly via mission upload (v1.17.0); **fixed-wing does not** — accepts the mission but never climbs within 90 s, a genuine spec-compliance FAIL, not yet root-caused (v1.17.0, 2026-09-14). VTOL untested — blocked by a sandbox resource issue, see root `CLAUDE.md` item #10 | Stores Pitch + location only; rejects NaN in any param but Yaw and rejects the `INT32_MAX` location sentinel (spec violations) | [`nav_takeoff/README.md`](tests/mission/nav_takeoff/README.md) |
 | `MAV_CMD_DO_REPOSITION` (192) | `UNSUPPORTED` — rejected outright as a mission item, on every vehicle type | Same | [`do_reposition/README.md`](tests/mission/do_reposition/README.md) |
 | `MAV_CMD_CONDITION_GATE` (4501) | Accepted (`<wip/>` tag needs the raw `mavlink_direct` transport — `mission_raw` blocks it client-side); never stores Geometry/UseAltitude; Tier 2 confirms mavlink-devguide PR #761's crossing-point claims | `UNSUPPORTED` — not implemented ([ardupilot#13778](https://github.com/ArduPilot/ardupilot/issues/13778)) | [`condition_gate/README.md`](tests/mission/condition_gate/README.md) |
+| `MAV_CMD_DO_SET_ACTUATOR` (187) | Accepted **only** under `MAV_FRAME_MISSION` (frame=2), rejected as `UNSUPPORTED` under location frames like GLOBAL_INT; param5/param6 (x/y) correctly round-trip at 1e7 scaling with independently-preserved sentinels ([PX4 PR #28723](https://github.com/PX4/PX4-Autopilot/pull/28723), verified 2026-09-17). Not tested against ArduCopter/ArduPlane this session | — | [`do_set_actuator/README.md`](tests/mission/do_set_actuator/README.md) |
 
 DO_REPOSITION's rejection is spec-aligned (the spec directs guided-only commands like it to COMMAND_INT, not missions — see `tests/command/do_reposition/`), so it has no Tier 2 mission-flight test.
 Both PX4 and ArduPilot's mission-command recognition switches are frame/vehicle-type independent — results generalise across multicopter/fixed-wing/VTOL within each firmware family unless a table says otherwise.

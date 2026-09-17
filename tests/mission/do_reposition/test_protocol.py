@@ -38,7 +38,7 @@ MAV_CMD_DO_REPOSITION parameter table (common.xml)
   param3  Radius  (m; planes only; positive only; 0/NaN = ignored) Defined
   param4  Yaw     (RADIANS; NaN = use current heading mode;        Defined
                    for planes: loiter direction 0=CW, 1=CCW — see
-                   DOC DISCREPANCY note in test_protocol_param4_yaw_specific)
+                   DOC DISCREPANCY note in test_do_reposition_param4_yaw_specific)
   param5  Latitude  (x field, int x 1e7)                           Location
   param6  Longitude (y field, int x 1e7)                           Location
   param7  Altitude  (z field, float m)                             Location
@@ -102,7 +102,7 @@ _LON_INT = 85456000
 # `MAV_MISSION_INVALID_PARAM4` — before the command-id switch that would
 # otherwise report `MAV_MISSION_UNSUPPORTED`.  Using 0.0 here keeps the
 # baseline probe focused on "is DO_REPOSITION accepted at all"; the NaN
-# behaviour itself is characterised separately in test_protocol_param4_yaw_nan
+# behaviour itself is characterised separately in test_do_reposition_param4_yaw_nan
 # (same workaround pattern as nav_takeoff's param2 — see
 # tests/mission/nav_takeoff/test_protocol.py::_takeoff_item).
 
@@ -147,7 +147,7 @@ class TestDoReposition(Tier1MissionTestBase):
     # param1 (Speed; minValue=-1; <0/-1 = "use default")
     # ------------------------------------------------------------------
 
-    async def test_protocol_param1_speed_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param1_speed_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Speed) = 8.0 m/s: a valid in-range value round-trips correctly."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=8.0)
@@ -162,7 +162,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param1_speed_default_sentinel(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param1_speed_default_sentinel(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Speed) = -1.0: spec-documented "use default" sentinel; must be accepted."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param1=-1.0)
@@ -177,7 +177,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param1_speed_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param1_speed_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Speed) = NaN: characterise whether NaN aliases to the -1 'use default' sentinel.
 
         The spec defines -1 (not NaN) as "use default" for this param.  Whether NaN is
@@ -200,7 +200,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param1_speed_below_min(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param1_speed_below_min(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Speed) = -5.0: below the documented minValue=-1 — expected to be unsupported.
 
         Only -1 (or any value <0, per the description "less than 0 (-1) for default")
@@ -232,7 +232,7 @@ class TestDoReposition(Tier1MissionTestBase):
     # param2 (Bitmask: MAV_DO_REPOSITION_FLAGS)
     # ------------------------------------------------------------------
 
-    async def test_protocol_param2_bitmask_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param2_bitmask_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 0: no flags set — must always be accepted and round-trip as 0."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=0.0)
@@ -247,7 +247,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param2_bitmask_change_mode(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param2_bitmask_change_mode(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 1: bit 0 (CHANGE_MODE) round-trips.
 
         CHANGE_MODE means "switch vehicle to guided/hold mode immediately" — a
@@ -269,7 +269,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param2_bitmask_relative_yaw(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param2_bitmask_relative_yaw(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 2: bit 1 (RELATIVE_YAW) round-trips."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param2=float(_FLAG_RELATIVE_YAW))
@@ -284,7 +284,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param2_bitmask_all_flags(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param2_bitmask_all_flags(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 3: both defined bits combined round-trip."""
         combined = float(_FLAG_CHANGE_MODE | _FLAG_RELATIVE_YAW)
         try:
@@ -300,7 +300,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param2_bitmask_undefined_bits(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param2_bitmask_undefined_bits(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param2 (Bitmask) = 252 (bits 2-7): undefined bits — expected to be unsupported.
 
         Only bits 0/1 are defined in MAV_DO_REPOSITION_FLAGS.  252 = 0b11111100
@@ -327,7 +327,7 @@ class TestDoReposition(Tier1MissionTestBase):
     # param3 (Radius; planes only; positive only; 0/NaN = ignored)
     # ------------------------------------------------------------------
 
-    async def test_protocol_param3_radius_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param3_radius_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Radius) = 0.0: spec sentinel "ignored"; must be accepted and round-trip as 0."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=0.0)
@@ -342,7 +342,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param3_radius_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param3_radius_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Radius) = NaN: spec sentinel "ignored" (alternative to 0); should be accepted.
 
         The spec explicitly states "A value of zero or NaN is ignored" — NaN is
@@ -372,7 +372,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param3_radius_positive(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param3_radius_positive(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Radius) = 80.0 m: a valid in-range (positive) value round-trips."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=80.0)
@@ -388,7 +388,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param3_radius_negative(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param3_radius_negative(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Radius) = -80.0 m: spec says "Positive values only" — expected to be unsupported.
 
         A negative radius is explicitly out-of-spec (direction is controlled by
@@ -420,7 +420,7 @@ class TestDoReposition(Tier1MissionTestBase):
     # param4 (Yaw, RADIANS; NaN = use current heading; planes: loiter direction)
     # ------------------------------------------------------------------
 
-    async def test_protocol_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = NaN: spec sentinel "use current system yaw heading mode"; must round-trip as NaN."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=NAN)
@@ -436,7 +436,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = pi/2 rad (~90 deg east): a specific in-range RADIAN value round-trips.
 
         DOC DISCREPANCY note: common.xml gives param4 units="rad" with the
@@ -468,14 +468,14 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param4_yaw_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = 0.0 rad (due north / CW loiter on planes): must be distinct from NaN.
 
         0.0 is a valid specific heading (and, per the plane-specific reading, a
         valid direction flag).  It must not be aliased to NaN ("use current
         heading"); a stack that does so confuses an explicit command with the
         sentinel — the same spec-violation pattern documented for NAV_TAKEOFF
-        param4 (see nav_takeoff/test_protocol.py::test_protocol_param4_yaw_zero).
+        param4 (see nav_takeoff/test_protocol.py::test_do_reposition_param4_yaw_zero).
 
         Note: a stack that does NOT store param4 at all will also return 0.0,
         causing this test to PASS vacuously.
@@ -501,7 +501,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_out_of_range(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_param4_yaw_out_of_range(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = 10.0 rad (> 2*pi ~ 6.283): outside the natural radian range — expected to be unsupported.
 
         A heading expressed in radians has a natural range of [0, 2*pi) (or
@@ -536,7 +536,7 @@ class TestDoReposition(Tier1MissionTestBase):
     # Location (params 5/6/7 -> x/y/z; hasLocation + isDestination)
     # ------------------------------------------------------------------
 
-    async def test_protocol_location_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_location_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """params 5/6/7 (Latitude/Longitude/Altitude): a specific, non-zero location round-trips."""
         lat_int = _LAT_INT + 50000   # ~0.005 deg north
         lon_int = _LON_INT + 50000   # ~0.005 deg east
@@ -555,14 +555,14 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_location_int32max(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_location_int32max(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """params 5/6 (lat/lon) = INT32_MAX: 'use current position' sentinel.
 
         INT32_MAX (0x7FFF_FFFF) is the MISSION_ITEM_INT sentinel meaning "use
         current position" for integer lat/lon fields — the natural way to say
         "reposition only altitude/speed/yaw, keep current horizontal position".
         Whether this is honoured is the same spec-level question already probed
-        for NAV_TAKEOFF (test_protocol_location_current_position); for a
+        for NAV_TAKEOFF (test_do_reposition_location_current_position); for a
         guided-style command like DO_REPOSITION the sentinel is, if anything,
         more semantically natural.  (Both x AND y must be set to INT32_MAX
         together — the generic per-slot "defined param sentinel tolerated"
@@ -590,7 +590,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_location_out_of_range_latlon(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_location_out_of_range_latlon(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """params 5/6 (lat/lon) outside +-90deg / +-180deg: expected to be unsupported.
 
         Latitude=91 deg, Longitude=181 deg are physically impossible coordinates
@@ -617,7 +617,7 @@ class TestDoReposition(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_altitude_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_do_reposition_altitude_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param 7 (Altitude) = NaN: characterise 'use current/default altitude' sentinel.
 
         NaN is the float sentinel for "use default / unspecified" per

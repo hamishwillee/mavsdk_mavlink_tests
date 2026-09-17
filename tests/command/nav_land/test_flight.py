@@ -82,6 +82,7 @@ from tests.flight_helpers import (
     _rtl_and_land,
     _set_guided_mode_ardupilot,
     _takeoff_cmd,
+    _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome into the combined report
     _wait_armable,
     _wait_for_altitude,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
@@ -94,6 +95,7 @@ pytestmark = pytest.mark.timeout(360)
 
 _CMD = "NAV_LAND"
 _CMD_ID = 21  # MAV_CMD_NAV_LAND
+_CMD_NAME = _CMD  # read by tests/flight_helpers.py's _tier2_auto_record
 
 _PRECISION_LAND_MODE_DISABLED = 0
 

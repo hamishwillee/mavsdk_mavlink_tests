@@ -2,7 +2,7 @@
 
 See `README.md` for the full Tier 1 results table and source-verification writeup.
 
-**Migrated onto `Tier1MissionTestBase`/`MissionItemSpec`** (`tests/mission/conftest.py`) — see `tests/mission/CLAUDE.md` § "Shared Tier 1 infrastructure". `test_protocol_command_accepted`, the `do_reposition_mission_support` fixture, and `_skip_unsupported_param_tests` are now the base class's generic `test_command_supported`/`_mission_support`/`_skip_if_unsupported`; the 21 bespoke per-parameter tests below are unchanged in behaviour (re-verified against mock, PX4, and ArduCopter after migration — identical results to the pre-migration run this file's log references were captured from).
+**Migrated onto `Tier1MissionTestBase`/`MissionItemSpec`** (`tests/mission/conftest.py`) — see `tests/mission/CLAUDE.md` § "Shared Tier 1 infrastructure". `test_do_reposition_command_accepted`, the `do_reposition_mission_support` fixture, and `_skip_unsupported_param_tests` are now the base class's generic `test_mission_item_supported`/`_mission_support`/`_skip_if_unsupported`; the 21 bespoke per-parameter tests below are unchanged in behaviour (re-verified against mock, PX4, and ArduCopter after migration — identical results to the pre-migration run this file's log references were captured from).
 
 ## One-line summary
 

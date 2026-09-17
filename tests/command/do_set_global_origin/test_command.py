@@ -65,6 +65,8 @@ from tests.command.conftest import (
     send_command_int,
 )
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
+from tests import report
+from tests.report import _tier1_auto_record  # noqa: F401 — autouse: records every test's outcome into the combined report
 
 # gcs_system_origin_cls / mock_stack_origin_cls / gcs_system_nack_cls / mock_stack_nack_cls
 # are injected by pytest from the local conftest.py.  The gcs_system_cls / mock_stack_cls
@@ -76,6 +78,7 @@ log = logging.getLogger(__name__)
 
 _CMD = "DO_SET_GLOBAL_ORIGIN"
 _CMD_ID = 611  # MAV_CMD_DO_SET_GLOBAL_ORIGIN (development.xml)
+_CMD_NAME = _CMD  # read by tests/report.py's _tier1_auto_record
 
 # PX4 SIH simulator home — used as nominal coordinate set A
 _LAT_INT = 473977000   # 47.3977 °N
@@ -166,6 +169,7 @@ class TestDoSetGlobalOriginCommand:
             ack = await _probe(system)
             unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
             TestDoSetGlobalOriginCommand._supported = not unsupported
+            report.record_command_fact("command", _CMD_NAME, supported=TestDoSetGlobalOriginCommand._supported)
         if not TestDoSetGlobalOriginCommand._supported:
             pytest.skip(f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run")
 
@@ -173,7 +177,7 @@ class TestDoSetGlobalOriginCommand:
     # Group A — Baseline + exactly-one-ACK
     # -----------------------------------------------------------------------
 
-    async def test_command_accepted(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_command_accepted(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """Baseline: DO_SET_GLOBAL_ORIGIN returns ACCEPTED with nominal coordinates."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         ack = await _probe(gcs_system_origin_cls)
@@ -183,7 +187,7 @@ class TestDoSetGlobalOriginCommand:
         log.info(_FMT, _CMD, "baseline COMMAND_INT", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_exactly_one_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_exactly_one_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         Exactly one COMMAND_ACK must be received per command send.
 
@@ -253,27 +257,27 @@ class TestDoSetGlobalOriginCommand:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_reserved_param1_zero_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_reserved_param1_zero_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """param1=0.0 (zero, not NaN) — reserved ("Empty"); must be DENIED; xfail all stacks."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param1=0.0 (zero, not NaN)", 0.0, param1=0.0)
 
-    async def test_reserved_param1_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_reserved_param1_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """param1=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param1=1.0 (non-NaN reserved)", 1.0, param1=1.0)
 
-    async def test_reserved_param2_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_reserved_param2_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """param2=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param2=1.0 (non-NaN reserved)", 1.0, param2=1.0)
 
-    async def test_reserved_param3_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_reserved_param3_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """param3=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param3=1.0 (non-NaN reserved)", 1.0, param3=1.0)
 
-    async def test_reserved_param4_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_reserved_param4_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """param4=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param4=1.0 (non-NaN reserved)", 1.0, param4=1.0)
@@ -282,7 +286,7 @@ class TestDoSetGlobalOriginCommand:
     # Group C — Frame validation
     # -----------------------------------------------------------------------
 
-    async def test_frame_global_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_frame_global_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         frame=0 (MAV_FRAME_GLOBAL) — observational.
 
@@ -298,7 +302,7 @@ class TestDoSetGlobalOriginCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "frame=MAV_FRAME_GLOBAL(0)", f"result={result}")
 
-    async def test_frame_global_relative_alt_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_frame_global_relative_alt_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         frame=3 (MAV_FRAME_GLOBAL_RELATIVE_ALT) — observational.
 
@@ -318,7 +322,7 @@ class TestDoSetGlobalOriginCommand:
     # Group D — Location validation (params 5–7 must be real, in-range values)
     # -----------------------------------------------------------------------
 
-    async def test_location_int32max_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_location_int32max_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         x=y=INT32_MAX — must be DENIED.
 
@@ -345,7 +349,7 @@ class TestDoSetGlobalOriginCommand:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_location_out_of_range_latlon_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_location_out_of_range_latlon_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         x=910_000_000 (91°N) — geometrically impossible; must be DENIED.
 
@@ -371,7 +375,7 @@ class TestDoSetGlobalOriginCommand:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_altitude_nan_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_altitude_nan_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         z=NaN — must be DENIED.
 
@@ -397,7 +401,7 @@ class TestDoSetGlobalOriginCommand:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_altitude_zero(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_altitude_zero(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """z=0.0 m MSL — valid; origin at sea level."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         ack = await _probe(gcs_system_origin_cls, z=0.0)
@@ -408,7 +412,7 @@ class TestDoSetGlobalOriginCommand:
         log.info(_FMT, _CMD, "z=0.0 (sea-level origin)", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_altitude_negative(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_altitude_negative(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         z=-500.0 m MSL — observational; spec has no lower bound.
 
@@ -427,7 +431,7 @@ class TestDoSetGlobalOriginCommand:
     # Group E — GPS_GLOBAL_ORIGIN response emission
     # -----------------------------------------------------------------------
 
-    async def test_gps_global_origin_emitted(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_gps_global_origin_emitted(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         GPS_GLOBAL_ORIGIN (id=49) must be emitted exactly once after ACCEPTED.
 
@@ -464,7 +468,7 @@ class TestDoSetGlobalOriginCommand:
                 f"GPS_GLOBAL_ORIGIN emitted {1 + len(extra)} times; expected exactly 1"
             )
 
-    async def test_gps_global_origin_changes_when_new_value_set(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_gps_global_origin_changes_when_new_value_set(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         GPS_GLOBAL_ORIGIN fields must reflect the NEW coordinates when the origin changes.
 
@@ -515,7 +519,7 @@ class TestDoSetGlobalOriginCommand:
             )
             assert changed, "GPS_GLOBAL_ORIGIN fields did not change when a different origin was commanded"
 
-    async def test_gps_global_origin_unchanged_and_emitted_on_repeat(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_gps_global_origin_unchanged_and_emitted_on_repeat(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         GPS_GLOBAL_ORIGIN is emitted even when the same origin is set again,
         and carries identical fields both times.
@@ -575,7 +579,7 @@ class TestDoSetGlobalOriginCommand:
     # Group F — COMMAND_LONG variant
     # -----------------------------------------------------------------------
 
-    async def test_command_long_accepted(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_command_long_accepted(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         COMMAND_LONG with float degrees — observational.
 
@@ -597,7 +601,7 @@ class TestDoSetGlobalOriginCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "COMMAND_LONG (float degrees)", f"result={result}")
 
-    async def test_command_long_float_int32max_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
+    async def test_do_set_global_origin_command_long_float_int32max_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
         COMMAND_LONG param5=float(INT32_MAX), param6=float(INT32_MAX) — must be DENIED.
 
@@ -632,7 +636,7 @@ class TestDoSetGlobalOriginCommand:
 class TestDoSetGlobalOriginNackBehaviour:
     """NACK-behaviour tests: GPS_GLOBAL_ORIGIN must not be emitted when command is DENIED."""
 
-    async def test_gps_global_origin_not_emitted_on_nack(
+    async def test_do_set_global_origin_gps_global_origin_not_emitted_on_nack(
         self, gcs_system_nack_cls, mock_stack_nack_cls
     ):
         """

@@ -25,16 +25,14 @@ import asyncio
 import json
 import logging
 import math
-import re
 import time as _time_m
-from pathlib import Path
 
 import pytest
 from mavsdk.mavlink_direct import MavlinkMessage
 from mavsdk.telemetry import LandedState
 
+from tests import report
 from tests.command.conftest import probe_command_long, send_command_int
-from tests.conftest import _format_autopilot_header
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +186,35 @@ async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
         await asyncio.wait_for(armable_event.wait(), timeout=timeout_s)
     finally:
         task.cancel()  # fire-and-forget — do NOT await (§4a)
+
+
+async def _takeoff_via_command(system, altitude_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S) -> None:
+    """
+    Arm and take off via the command protocol (action.set_takeoff_altitude()
+    + action.takeoff(), i.e. a COMMAND_LONG MAV_CMD_NAV_TAKEOFF) rather than
+    uploading a mission-item NAV_TAKEOFF, then block until relative altitude
+    reaches 85% of altitude_m.
+
+    Use this to get airborne for a Tier 2 test of a *different* mission item
+    (e.g. CONDITION_GATE) when that command's own test shouldn't depend on
+    mission-item NAV_TAKEOFF's reliability on every stack/frame — see root
+    CLAUDE.md future-work #10 (PX4 fixed-wing/VTOL's mission-item NAV_TAKEOFF
+    currently never leaves the ground; the commanded path is a different PX4
+    code path and untested for a shared root cause). Deliberately NOT used
+    by nav_takeoff's own Tier 2 tests — those exist specifically to test
+    mission-item NAV_TAKEOFF, so switching them to commanded takeoff would
+    test the wrong thing.
+
+    Caller uploads the actual mission under test AFTER this returns, then
+    starts it as usual (mission_raw.start_mission() or an equivalent raw
+    MISSION_START) — PX4 accepts a mission upload/start while already
+    airborne and switches to Mission mode on start.
+    """
+    await _wait_armable(system)
+    await system.action.set_takeoff_altitude(altitude_m)
+    await system.action.arm()
+    await system.action.takeoff()
+    await _wait_for_altitude(system, altitude_m * 0.85, timeout_s=timeout_s)
 
 
 async def _wait_for_altitude(system, threshold_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S):
@@ -560,14 +587,16 @@ async def _arm_and_send_takeoff(system, **overrides) -> None:
 # still leaves on disk whatever ran before the kill, rather than nothing.
 
 _TIER2_FMT = "%-46s | %-9s | %s"
-_TIER2_MODULE_RESULTS: dict[str, list[tuple[str, str, str]]] = {}
-_TIER2_MODULE_TIMESTAMP: dict[str, str] = {}  # module -> timestamp fixed at its first result
 _TIER2_DETAILS: dict[str, str] = {}  # nodeid -> explicit detail override
-_TIER2_PARAM_VERDICTS: dict[str, list[tuple[str, str]]] = {}  # module -> [(param_label, verdict), ...]
+
+_UNSET = report._UNSET  # re-exported: record_compat_json's default for `supported`
 
 
-def _safe_log_token(s: str) -> str:
-    return s.replace("/", "_").replace(" ", "_").replace("\\", "_")
+# Same key resolution Tier 1's own bespoke-file auto-record fixture uses
+# (tests/report.py's `_tier1_auto_record`) — defined once there as
+# `key_from_module`, aliased here so this file's many call sites don't need
+# to change.
+_tier2_key = report.key_from_module
 
 
 def record_tier2_detail(request, detail: str) -> None:
@@ -584,58 +613,22 @@ def record_tier2_param_verdict(request, param_label: str, verdict: str) -> None:
     """
     Tag this test's result as the definitive answer to "is `param_label` supported",
     for the "Compatibility summary" section appended after the main results table in
-    this module's Tier 2 log — a compact, scannable per-param rollup (e.g. "param1
-    (Pitch): NOT SUPPORTED") distilled from the detailed table above it, so a reader
-    doesn't have to reconstruct which of a dozen test rows answers which param's
-    question. Call once, from whichever single test is the definitive "is it honoured"
-    check for that param (e.g. test_takeoff_compat_tracks_pitch for "param1 (Pitch)") — not
-    from every test that happens to touch the param. `verdict` is a short human string:
-    "SUPPORTED", "NOT SUPPORTED", "NOT TESTABLE (<why>)", "NOT TESTED (<why>)", etc.
+    this module's report (tests/report.py) — a compact, scannable per-param rollup
+    (e.g. "param1 (Pitch): NOT SUPPORTED") distilled from the detailed table above it,
+    so a reader doesn't have to reconstruct which of a dozen test rows answers which
+    param's question. Call once, from whichever single test is the definitive "is it
+    honoured" check for that param (e.g. test_takeoff_compat_tracks_pitch for "param1
+    (Pitch)") — not from every test that happens to touch the param. `verdict` is a
+    short human string: "SUPPORTED", "NOT SUPPORTED", "NOT TESTABLE (<why>)", etc.
     """
-    module_name = request.node.module.__name__
-    _TIER2_PARAM_VERDICTS.setdefault(module_name, []).append((param_label, verdict))
-
-
-# ---------------------------------------------------------------------------
-# mavlink-compat-data schema-shaped JSON export
-# ---------------------------------------------------------------------------
-# Structured (not just human-readable-string) per-param compatibility facts,
-# shaped to match the sibling data repo github.com/hamishwillee/
-# mavlink-compat-data's command compatibility schema (schema/
-# compatibility-entry.schema.json's paramStatement/paramSupported defs, per
-# PR #9 — https://github.com/hamishwillee/mavlink-compat-data/pull/9). Lets a
-# Tier 2 run emit a block ready to paste into that repo's
-# data/dialects/<dialect>/mav_cmd/<context>/<NAME>.json under
-# compatibility.<stack>.frames.<frame>, instead of hand-transcribing prose
-# into that shape after the fact. Kept alongside, not instead of,
-# record_tier2_param_verdict() — that's the human-readable summary line;
-# this is the machine-shaped one, and the two are recorded independently
-# (nothing parses one from the other).
-_COMPAT_JSON_PARAMS: dict[str, dict[str, dict]] = {}  # module -> {param_key: fields}
-_COMPAT_JSON_COMMAND: dict[str, dict] = {}  # module -> {"supported": bool, "basis": str}
-_UNSET = object()  # record_compat_json's default for `supported` — distinct from a real None ("not tested")
-
-# --vehicle-type (as this harness's CLI already uses it) -> mavlink-compat-data
-# vocab.json frame name. "fixed_wing" is stack-dependent (px4: fixedwing,
-# ardupilot: plane) so it's resolved separately in _compat_json_frame().
-_COMPAT_FRAME_MAP = {
-    "quadcopter": "multicopter",
-    "vtol": "vtol",
-    "quadplane": "standard_quadplane",
-    "copter": "copter",
-    "rover": "rover",
-}
-
-
-def _compat_json_frame(autopilot: str, vehicle_type: str) -> str | None:
-    """Map this harness's (--autopilot, --vehicle-type) to a mavlink-compat-data vocab.json frame name."""
-    if vehicle_type == "fixed_wing":
-        return "fixedwing" if autopilot == "px4" else "plane"
-    return _COMPAT_FRAME_MAP.get(vehicle_type)
+    key = _tier2_key(request.node.module)
+    if key is None:
+        return
+    report.record_param_verdict(*key, param_label, verdict)
 
 
 def record_compat_command_supported(
-    request, supported: bool, basis: str = "verified", notes: str | list[str] | None = None,
+    request, supported: bool, basis: str = "testing", notes: str | list[str] | None = None,
 ) -> None:
     """
     Record whether MAV_CMD_<X> works AT ALL for this (stack, frame) — the
@@ -644,16 +637,19 @@ def record_compat_command_supported(
     takeoff command's XML actually requires — this is that fact, not a
     per-param one). `notes` here is a durable, frame-wide qualitative fact
     (e.g. "requires an explicit NAV_TAKEOFF item to launch"), distinct from
-    any single param's own notes. Merges into whatever's already recorded
-    (like record_compat_json) — safe to call more than once, e.g. once for
-    `supported` and again later once a `notes` fact is established.
+    any single param's own notes. Merges into whatever's already recorded —
+    safe to call more than once, e.g. once for `supported` and again later
+    once a `notes` fact is established. `basis` defaults to `"testing"` —
+    never pass `"verified"`; that value is reserved by mavlink-compat-data's
+    own schema for a human maintainer's manual sign-off, not anything an
+    automated harness can claim. Thin wrapper over tests/report.py's
+    record_command_fact(), keeping this name/signature stable for existing
+    Tier 2 call sites.
     """
-    module_name = request.node.module.__name__
-    facts = _COMPAT_JSON_COMMAND.setdefault(module_name, {})
-    facts["supported"] = supported
-    facts["basis"] = basis
-    if notes is not None:
-        facts["notes"] = notes
+    key = _tier2_key(request.node.module)
+    if key is None:
+        return
+    report.record_command_fact(*key, supported=supported, basis=basis, notes=notes)
 
 
 def record_compat_json(
@@ -667,148 +663,33 @@ def record_compat_json(
 ) -> None:
     """
     Record one param's compatibility fact in mavlink-compat-data's own schema
-    shape — see this section's module-level comment for the target schema.
-
-    **Merges into any facts already recorded for this param_key** (does not
-    overwrite) — different tests in the same module typically establish
-    different facets of the same param (e.g. one test finds whether it's
-    functionally `supported`, a separate sentinel-specific test finds
-    `accept_nan_or_int32max`), and calling this from each should accumulate,
-    not clobber. Only pass the field(s) *this* call actually has evidence
-    for; omitted fields (default) leave whatever's already recorded alone.
+    shape. Thin wrapper over tests/report.py's record_compat_fact() — see
+    that function's docstring for full field semantics; kept here, under
+    this name, so existing Tier 2 call sites (nav_takeoff, condition_gate)
+    don't need to change. Merges into any facts already recorded for this
+    param_key, same as record_compat_fact().
 
     `param_key`: mavlink-compat-data's `"<index>_<name>"` form, e.g.
     `"1_Pitch"` — matches the shared `ParamSpec`/XML param label, not this
     harness's own `"param1 (Pitch)"` label used by record_tier2_param_verdict.
-    `supported`: `True` (confirmed working — rendered as the
-    `{"added_version": true}` object form), `False` (confirmed not working),
-    `None` (not independently tested this run), or `"not-applicable"` (a
-    reserved/"Empty" param slot — see schema note on that convention).
-    `accept_nan_or_int32max`: does this param's sentinel value get accepted
-    (only meaningful if you actually tested the sentinel specifically).
-    `nacks_on_non_sentinel_value`: does the stack correctly reject a real,
-    non-sentinel value on this param — only meaningful (and only rendered)
-    when `supported` is not `True`, per the schema's own gating (a working
-    param is expected to accept real values, so the question is moot there).
-    `notes`: extremely terse per mavlink-compat-data's own convention — a
-    fragment, ~10 words, no period, describing observable behaviour only
-    (never an internal-implementation claim like "not stored" — black-box
-    testing can't evidence that, only the effect).
     """
-    module_name = request.node.module.__name__
-    facts = _COMPAT_JSON_PARAMS.setdefault(module_name, {}).setdefault(param_key, {})
-    if supported is not _UNSET:
-        facts["supported"] = supported
-    if accept_nan_or_int32max is not None:
-        facts["accept_nan_or_int32max"] = accept_nan_or_int32max
-    if nacks_on_non_sentinel_value is not None:
-        facts["nacks_on_non_sentinel_value"] = nacks_on_non_sentinel_value
-    if notes is not None:
-        facts["notes"] = notes
-
-
-def _render_compat_json_param(fact: dict) -> dict:
-    supported = fact.get("supported")  # a param may accumulate only sentinel facts, never a supported call
-    out: dict = {}
-    if supported is True:
-        sup: dict = {"added_version": True}
-        if fact.get("accept_nan_or_int32max") is not None:
-            sup["accept_nan_or_int32max"] = fact["accept_nan_or_int32max"]
-        out["supported"] = sup
-    else:
-        out["supported"] = supported  # False / None / "not-applicable"
-        if fact.get("accept_nan_or_int32max") is not None:
-            out["accept_nan_or_int32max"] = fact["accept_nan_or_int32max"]
-        if fact.get("nacks_on_non_sentinel_value") is not None:
-            out["nacks_on_non_sentinel_value"] = fact["nacks_on_non_sentinel_value"]
-    if fact.get("notes"):
-        out["notes"] = fact["notes"]
-    return out
-
-
-def _render_compat_json(module_name: str, config) -> str | None:
-    """
-    Render this module's recorded record_compat_json()/
-    record_compat_command_supported() facts as a mavlink-compat-data-shaped
-    JSON fragment for one (stack, frame), ready to paste into that repo's
-    compatibility.<stack>.frames.<frame>. Returns None if neither was ever
-    called this run (most modules — this is opt-in per Tier 2 file, not
-    automatic, since it needs per-param calls a generic writer can't infer).
-    """
-    params = _COMPAT_JSON_PARAMS.get(module_name)
-    command = _COMPAT_JSON_COMMAND.get(module_name)
-
-    # A module may declare its full param set (_COMPAT_JSON_ALL_PARAMS, e.g.
-    # NAV_TAKEOFF's 7 slots) so every one of them always appears in the
-    # rendered JSON — even a param whose Tier 2 test errored out (uncaught
-    # exception) before ever calling record_compat_json(), and so has no
-    # recorded facts at all this run. Per the schema, "supported": null
-    # (an empty {} fact dict renders to exactly that — see
-    # _render_compat_json_param) is the correct "not independently tested
-    # this run" signal — distinct from a param the module doesn't cover at
-    # all (silently absent, the pre-2026-09-15 behaviour), which would be
-    # indistinguishable from "we forgot to test it".
-    import sys
-    module = sys.modules.get(module_name)
-    all_param_keys = getattr(module, "_COMPAT_JSON_ALL_PARAMS", None)
-    if all_param_keys:
-        params = {k: (params or {}).get(k, {}) for k in all_param_keys}
-
-    if not params and not command:
-        return None
-
-    info = getattr(config, "_autopilot_info", {}) or {}
-    autopilot = (info.get("autopilot") or "").lower()
-    vehicle_type = config.getoption("--vehicle-type") or ""
-    frame = _compat_json_frame(autopilot, vehicle_type)
-    if autopilot not in ("px4", "ardupilot") or frame is None:
-        return (
-            f"# Could not map autopilot={autopilot!r}/vehicle_type={vehicle_type!r} to a "
-            f"mavlink-compat-data (stack, frame) pair (schema/vocab.json) — pass "
-            f"--autopilot/--vehicle-type matching that vocab, or fill this in by hand."
-        )
-
-    firmware_version = info.get("firmware_version", "") or ""
-    # mavlink-compat-data's own convention (its CLAUDE.md): never record
-    # supported/notes/version facts purely from a dev/pre-release snapshot —
-    # a specific git commit isn't a stable, re-comparable identity. Still
-    # render the JSON (useful to have ready), but flag it and omit the
-    # version-durability fields rather than silently overclaiming them.
-    is_dev_build = bool(re.search(r"(?i)-dev\b|-beta\b|-rc\d|\bmain\b", firmware_version))
-    bare_version = firmware_version.split("-")[0] if firmware_version else None
-
-    frame_obj: dict = {}
-    if command is not None:
-        frame_obj["supported"] = {"added_version": True} if command["supported"] else False
-        frame_obj["basis"] = "testing" if is_dev_build else command.get("basis", "verified")
-        if bare_version and not is_dev_build:
-            frame_obj["earliest_checked_version"] = bare_version
-        if command.get("notes"):
-            frame_obj["notes"] = command["notes"]
-    if params:
-        frame_obj["params"] = {k: _render_compat_json_param(v) for k, v in sorted(params.items())}
-
-    doc = {autopilot: {"frames": {frame: frame_obj}}}
-    rendered = json.dumps(doc, indent=2)
-    if is_dev_build:
-        rendered = (
-            f"# NOTE: {firmware_version} is a dev/pre-release build — per mavlink-compat-data's\n"
-            f"# own convention, do not merge this upstream as-is; retest against a tagged\n"
-            f"# release first (this is why basis is \"testing\" not \"verified\", and\n"
-            f"# earliest_checked_version is omitted).\n"
-            + rendered
-        )
-    return rendered
+    key = _tier2_key(request.node.module)
+    if key is None:
+        return
+    report.record_compat_fact(
+        *key, param_key, supported=supported, accept_nan_or_int32max=accept_nan_or_int32max,
+        nacks_on_non_sentinel_value=nacks_on_non_sentinel_value, notes=notes,
+    )
 
 
 @pytest.fixture(autouse=True)
 def _tier2_auto_record(request):
     """
     Record this test's outcome (PASS/FAIL/XFAIL/XPASS/SKIP/NA) and a one-line
-    detail, then (re)write the whole module's Tier 2 log immediately — with
-    no per-test code required. Writing after every test, not just at session
-    end, means a run that hangs or is force-killed still leaves a real,
-    if partial, log on disk.
+    detail into the shared report (tests/report.py), then (re)write it
+    immediately — with no per-test code required. Writing after every test,
+    not just at session end, means a run that hangs or is force-killed still
+    leaves a real, if partial, report on disk.
 
     NA is distinct from SKIP: SKIP means the test's own precondition for running
     at all is absent (no real stack connected — require_real_stack). NA means the
@@ -847,87 +728,12 @@ def _tier2_auto_record(request):
             doc = (node.function.__doc__ or "").strip()
             detail = doc.splitlines()[0].strip() if doc else ""
 
-    module_name = node.module.__name__
-    _TIER2_MODULE_RESULTS.setdefault(module_name, []).append((node.name, outcome, detail))
-    _TIER2_MODULE_TIMESTAMP.setdefault(module_name, _time_m.strftime("%Y%m%d_%H%M%S"))
-    _write_tier2_module_log(request.config, module_name)
-
-
-def _write_tier2_module_log(config, module_name: str) -> None:
-    """
-    (Re)write one module's accumulated Tier 2 results table to logs/,
-    unconditionally, overwriting the same path each time — called after every
-    test via _tier2_auto_record, not just once at session end.
-
-    The module is identified by its own `_CMD_NAME`/`_CMD_ID` constants;
-    protocol ("mission" vs "command", matching Tier 1's log filename prefix)
-    is inferred from the module's own package path. A module missing either
-    constant, or outside both trees, is skipped rather than guessed at.
-    """
-    import sys
-
-    results = _TIER2_MODULE_RESULTS.get(module_name)
-    if not results:
+    key = _tier2_key(node.module)
+    if key is None:
         return
-    module = sys.modules.get(module_name)
-    name = getattr(module, "_CMD_NAME", None)
-    cmd_id = getattr(module, "_CMD_ID", None)
-    if module is None or name is None or cmd_id is None:
+    protocol, cmd_name = key
+    report.record_tier2_result(protocol, cmd_name, node.name, outcome, detail)
+    cmd_id = getattr(node.module, "_CMD_ID", None)
+    if cmd_id is None:
         return
-    if ".mission." in module_name:
-        protocol = "mission"
-    elif ".command." in module_name:
-        protocol = "command"
-    else:
-        return
-
-    info = getattr(config, "_autopilot_info", {})
-    drone_address = config.getoption("--drone-address")
-    header = _format_autopilot_header(info, drone_address)
-
-    counts: dict[str, int] = {}
-    lines = [
-        f"Tier 2 results: MAV_CMD_{name} (cmd={cmd_id})",
-        "=" * 100,
-        f"{'Test':<46} {'Outcome':<9} Detail",
-        "-" * 100,
-    ]
-    for test_name, outcome, detail in results:
-        counts[outcome] = counts.get(outcome, 0) + 1
-        lines.append(f"{test_name:<46} {outcome:<9} {detail}")
-    lines.append("-" * 100)
-    lines.append(
-        f"Total: {len(results)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-    )
-
-    verdicts = _TIER2_PARAM_VERDICTS.get(module_name)
-    if verdicts:
-        lines.append("")
-        lines.append("Compatibility summary")
-        lines.append("=" * 100)
-        width = max(len(p) for p, _ in verdicts)
-        for param_label, verdict in verdicts:
-            lines.append(f"{param_label:<{width}}  {verdict}")
-
-    compat_json = _render_compat_json(module_name, config)
-    if compat_json:
-        lines.append("")
-        lines.append("Compatibility JSON (mavlink-compat-data schema — github.com/hamishwillee/mavlink-compat-data)")
-        lines.append("=" * 100)
-        lines.append(compat_json)
-
-    table = "\n".join(lines)
-    log.info("\n%s", table)
-
-    ap = _safe_log_token(info.get("autopilot", "unknown").lower().replace("ardupilotmega", "ardupilot"))
-    vt = _safe_log_token(info.get("vehicle_type", "unknown").lower())
-    ver_raw = info.get("firmware_version", "")
-    ver = f"_{_safe_log_token(ver_raw)}" if ver_raw and ver_raw != "N/A" else ""
-    timestamp = _TIER2_MODULE_TIMESTAMP[module_name]
-
-    logs_dir = Path("logs")
-    logs_dir.mkdir(exist_ok=True)
-    safe_name = _safe_log_token(name.lower())
-    log_path = logs_dir / f"{protocol}_{safe_name}_tier2_{ap}_{vt}{ver}_{timestamp}.log"
-    log_path.write_text(header + "\n\n" + table + "\n")
-    log.info(_TIER2_FMT, name, "LOG", f"Tier 2 results log updated: {log_path}")
+    report.write(protocol, cmd_name, cmd_id, request.config)
