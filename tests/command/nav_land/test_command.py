@@ -64,11 +64,14 @@ from tests.command.conftest import (
     _FMT,
 )
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
+from tests import report
+from tests.report import _tier1_auto_record  # noqa: F401 — autouse: records every test's outcome into the combined report
 
 log = logging.getLogger(__name__)
 
 _CMD = "NAV_LAND"
 _CMD_ID = 21  # MAV_CMD_NAV_LAND
+_CMD_NAME = _CMD  # read by tests/report.py's _tier1_auto_record
 
 # SIH simulator home (47.3977°N, 8.5456°E) — same as takeoff/do_reposition tests
 _LAT_INT = 473977000
@@ -116,6 +119,7 @@ class TestNavLandCommand:
             ack = await _probe(system)
             unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
             TestNavLandCommand._supported = not unsupported
+            report.record_command_fact("command", _CMD_NAME, supported=TestNavLandCommand._supported)
         if not TestNavLandCommand._supported:
             pytest.skip(f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run")
 
@@ -123,7 +127,7 @@ class TestNavLandCommand:
     # Group A — Baseline
     # -----------------------------------------------------------------------
 
-    async def test_command_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_command_accepted(self, gcs_system_cls, mock_stack_cls):
         """Baseline: NAV_LAND COMMAND_INT returns ACCEPTED (or non-UNSUPPORTED on real stack)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls)
@@ -139,7 +143,7 @@ class TestNavLandCommand:
     # Group B — param1 (Abort Altitude; 0 = undefined/use system default)
     # -----------------------------------------------------------------------
 
-    async def test_param1_abort_alt_zero(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param1_abort_alt_zero(self, gcs_system_cls, mock_stack_cls):
         """param1=0.0 — spec-defined 'undefined/use system default' sentinel. Must not be UNSUPPORTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param1=0.0)
@@ -150,7 +154,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param1 (Abort Alt) = 0.0 (use default)", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_param1_abort_alt_specific(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param1_abort_alt_specific(self, gcs_system_cls, mock_stack_cls):
         """
         param1=10.0 m — a specific minimum abort altitude.
 
@@ -167,7 +171,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param1 (Abort Alt) = 10.0 m", f"result={result}")
         # Observational — no assertion
 
-    async def test_param1_abort_alt_negative(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param1_abort_alt_negative(self, gcs_system_cls, mock_stack_cls):
         """
         param1=-5.0 m — negative abort altitude; not a meaningful value.
 
@@ -184,7 +188,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param1 (Abort Alt) = -5.0 m (invalid)", f"result={result}")
         # Observational — no assertion
 
-    async def test_param1_abort_alt_nan(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param1_abort_alt_nan(self, gcs_system_cls, mock_stack_cls):
         """
         param1=NaN — observational; the spec does NOT define NaN for this field.
 
@@ -212,7 +216,7 @@ class TestNavLandCommand:
     # Group C — param2 (Land Mode; PRECISION_LAND_MODE enum)
     # -----------------------------------------------------------------------
 
-    async def test_param2_land_mode_disabled(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param2_land_mode_disabled(self, gcs_system_cls, mock_stack_cls):
         """param2=PRECISION_LAND_MODE_DISABLED (0) — normal (non-precision) landing. Baseline value."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param2=float(_PRECISION_LAND_MODE_DISABLED))
@@ -223,7 +227,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param2 (Land Mode) = DISABLED (0)", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED
 
-    async def test_param2_land_mode_opportunistic(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param2_land_mode_opportunistic(self, gcs_system_cls, mock_stack_cls):
         """
         param2=PRECISION_LAND_MODE_OPPORTUNISTIC (1) — use precision landing if a
         beacon is detected, otherwise land normally.
@@ -242,7 +246,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param2 (Land Mode) = OPPORTUNISTIC (1)", f"result={result}")
         # Observational — no assertion
 
-    async def test_param2_land_mode_required(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param2_land_mode_required(self, gcs_system_cls, mock_stack_cls):
         """
         param2=PRECISION_LAND_MODE_REQUIRED (2) — require precision landing,
         searching for a beacon (land normally if none found).
@@ -262,12 +266,12 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param2 (Land Mode) = REQUIRED (2)", f"result={result}")
         # Observational — no assertion
 
-    async def test_param2_land_mode_undefined(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param2_land_mode_undefined(self, gcs_system_cls, mock_stack_cls):
         """
         param2=5.0 — value outside the PRECISION_LAND_MODE enum (0/1/2 defined).
 
         The spec does not state what a stack must do with an undefined enum
-        value.  Observational — mirrors do_reposition's test_param2_undefined_bits;
+        value.  Observational — mirrors do_reposition's test_do_reposition_param2_undefined_bits;
         a stack might DENY (correct, intent cannot be honoured), clamp to a
         nearby defined value, or silently ignore (ACCEPTED).
         """
@@ -284,7 +288,7 @@ class TestNavLandCommand:
     # Group D — param4 (Yaw Angle; NaN = use current system yaw heading mode)
     # -----------------------------------------------------------------------
 
-    async def test_param4_yaw_specific_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param4_yaw_specific_ack(self, gcs_system_cls, mock_stack_cls):
         """
         param4=90.0 deg — a specific desired landing heading.
 
@@ -306,7 +310,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param4 (Yaw) = 90.0", f"result={result}")
         # Observational — no assertion (see docstring: revisit once behaviour is known)
 
-    async def test_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
         """
         param4=NaN — observational: the documented "use current system yaw
         heading mode" sentinel (e.g. yaw towards next waypoint, yaw to home).
@@ -324,7 +328,7 @@ class TestNavLandCommand:
     # Group E — Location (params 5/6/7: Lat/Lon/Altitude)
     # -----------------------------------------------------------------------
 
-    async def test_location_specific_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_location_specific_ack(self, gcs_system_cls, mock_stack_cls):
         """Specific lat/lon at SIH home — valid coordinates. Must not be UNSUPPORTED."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, x=_LAT_INT, y=_LON_INT)
@@ -335,7 +339,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "params 5/6 (Lat/Lon) specific", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED, "Location coordinates should not cause UNSUPPORTED"
 
-    async def test_location_int32max_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_location_int32max_ack(self, gcs_system_cls, mock_stack_cls):
         """
         x=INT32_MAX, y=INT32_MAX — 'use current position' sentinel.
 
@@ -353,12 +357,12 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "params 5/6 (Lat/Lon) INT32_MAX", f"result={result}")
         # Observational — no assertion
 
-    async def test_location_out_of_range_latlon_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_location_out_of_range_latlon_ack(self, gcs_system_cls, mock_stack_cls):
         """
         x=1_200_000_000 (120°N), y=2_000_000_000 (200°E) — out-of-range lat/lon.
 
         Same reasoning as tests/command/nav_takeoff/test_command.py
-        test_location_out_of_range_latlon_ack: these are geometrically
+        test_nav_land_location_out_of_range_latlon_ack: these are geometrically
         impossible coordinates below the INT32_MAX sentinel.  Expected:
         MAV_RESULT_DENIED.
 
@@ -382,7 +386,7 @@ class TestNavLandCommand:
             )
         assert result == MAV_RESULT_DENIED
 
-    async def test_altitude_specific_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_altitude_specific_ack(self, gcs_system_cls, mock_stack_cls):
         """
         z=5.0 m — a specific non-zero landing/ground-level altitude.
 
@@ -404,7 +408,7 @@ class TestNavLandCommand:
         log.info(_FMT, _CMD, "param7 (Alt/ground-level) = 5.0 m", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED, "A ground-level altitude should not cause UNSUPPORTED"
 
-    async def test_altitude_nan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_altitude_nan_ack(self, gcs_system_cls, mock_stack_cls):
         """
         z=NaN — observational.
 
@@ -425,7 +429,7 @@ class TestNavLandCommand:
                  "(NaN meaning undefined for this field — see Spec gaps)")
         # Observational — no assertion
 
-    async def test_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
         """
         frame = MAV_FRAME_LOCAL_NED (1) — observational.
 
@@ -446,12 +450,12 @@ class TestNavLandCommand:
     # Group F — COMMAND_LONG sentinel tests (require real stack)
     # -----------------------------------------------------------------------
 
-    async def test_latlon_nan_command_long_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_latlon_nan_command_long_ack(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG param5=NaN, param6=NaN — "use current position" sentinel.
 
         Mirrors tests/command/nav_takeoff/test_command.py
-        test_latlon_nan_command_long_ack.  NaN in COMMAND_LONG param5/6 is the
+        test_nav_land_latlon_nan_command_long_ack.  NaN in COMMAND_LONG param5/6 is the
         float-field equivalent of INT32_MAX in COMMAND_INT x/y.
 
         Skips in paired/mock mode (mock does not model NaN lat/lon semantics
@@ -480,7 +484,7 @@ class TestNavLandCommand:
             "the command is valid; lat/lon=NaN means 'use current position'"
         )
 
-    async def test_latlon_int32max_command_long(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_land_latlon_int32max_command_long(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG param5=INT32_MAX (as float), param6=INT32_MAX — 'use current position'.
 

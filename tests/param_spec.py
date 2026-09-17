@@ -23,6 +23,38 @@ result-interpretation logic stays in each package's own conftest.py.
 
 from dataclasses import dataclass
 
+# Every MAV_FRAME value (common.xml) — shared by tests/command/conftest.py's
+# Tier1CommandTestBase.test_frame_validation_survey (COMMAND_INT) and
+# tests/mission/conftest.py's Tier1MissionTestBase.test_frame_validation_survey
+# (MISSION_ITEM_INT): both send the command's own baseline under every listed
+# frame and record whether the stack ever rejects one as unsupported — a
+# generic, per-command-agnostic protocol probe, so the catalogue itself lives
+# here rather than being duplicated per protocol.
+MAV_FRAME_CATALOGUE: list[tuple[int, str]] = [
+    (0, "MAV_FRAME_GLOBAL"),
+    (1, "MAV_FRAME_LOCAL_NED"),
+    (2, "MAV_FRAME_MISSION"),
+    (3, "MAV_FRAME_GLOBAL_RELATIVE_ALT"),
+    (4, "MAV_FRAME_LOCAL_ENU"),
+    (5, "MAV_FRAME_GLOBAL_INT"),
+    (6, "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT"),
+    (7, "MAV_FRAME_LOCAL_OFFSET_NED"),
+    (8, "MAV_FRAME_BODY_NED"),
+    (9, "MAV_FRAME_BODY_OFFSET_NED"),
+    (10, "MAV_FRAME_GLOBAL_TERRAIN_ALT"),
+    (11, "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT"),
+    (12, "MAV_FRAME_BODY_FRD"),
+    (13, "MAV_FRAME_RESERVED_13"),
+    (14, "MAV_FRAME_RESERVED_14"),
+    (15, "MAV_FRAME_RESERVED_15"),
+    (16, "MAV_FRAME_RESERVED_16"),
+    (17, "MAV_FRAME_RESERVED_17"),
+    (18, "MAV_FRAME_RESERVED_18"),
+    (19, "MAV_FRAME_RESERVED_19"),
+    (20, "MAV_FRAME_LOCAL_FRD"),
+    (21, "MAV_FRAME_LOCAL_FLU"),
+]
+
 # Sentinel: "use current position" for int32 lat/lon fields — x/y in
 # COMMAND_INT and MISSION_ITEM_INT, param5/6 in COMMAND_LONG (as a float).
 INT32_MAX = 0x7FFF_FFFF

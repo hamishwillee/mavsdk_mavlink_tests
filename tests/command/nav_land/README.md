@@ -33,7 +33,7 @@ Tier 1 tests below are scoped to "was the value accepted", never "was it interpr
 
 | Group | Tests | Approach |
 |-------|-------|----------|
-| A — Baseline | `test_command_accepted` | Assert not UNSUPPORTED |
+| A — Baseline | `test_nav_land_command_accepted` | Assert not UNSUPPORTED |
 | B — param1 (Abort Alt) | `_zero/_specific/_negative/_nan` | `zero` asserts not UNSUPPORTED (spec-defined sentinel); rest observational |
 | C — param2 (Land Mode) | `_disabled/_opportunistic/_required/_undefined` | `disabled` asserts not UNSUPPORTED; rest observational — precision-landing *engagement* needs a simulated beacon (out of scope) |
 | D — param4 (Yaw) | `_specific_ack`, `_nan_ack` | Both observational (see below) |
@@ -44,8 +44,8 @@ Tier 1 tests below are scoped to "was the value accepted", never "was it interpr
 
 ## Spec gaps
 
-1. **param1 NaN sentinel undefined** — spec defines `0` as "use system default" but is silent on `NaN`; neither ACCEPTED nor DENIED for `NaN` would be a spec violation, so `test_param1_abort_alt_nan` is observational. Observed: PX4 and ArduCopter both ACCEPT `NaN` — but PX4 DENIEs other non-zero finite values (`10.0`, `-5.0`), i.e. it special-cases `NaN` rather than validating it as an ordinary float.
-2. **param7 NaN meaning undefined** — unlike NAV_TAKEOFF (NaN = "use default altitude"), NAV_LAND's "ground level in current frame" doesn't define NaN. `test_altitude_nan_ack` is observational. Observed: both stacks ACCEPT `NaN`; which meaning is actually applied is a Tier 2 question.
+1. **param1 NaN sentinel undefined** — spec defines `0` as "use system default" but is silent on `NaN`; neither ACCEPTED nor DENIED for `NaN` would be a spec violation, so `test_nav_land_param1_abort_alt_nan` is observational. Observed: PX4 and ArduCopter both ACCEPT `NaN` — but PX4 DENIEs other non-zero finite values (`10.0`, `-5.0`), i.e. it special-cases `NaN` rather than validating it as an ordinary float.
+2. **param7 NaN meaning undefined** — unlike NAV_TAKEOFF (NaN = "use default altitude"), NAV_LAND's "ground level in current frame" doesn't define NaN. `test_nav_land_altitude_nan_ack` is observational. Observed: both stacks ACCEPT `NaN`; which meaning is actually applied is a Tier 2 question.
 3. **param7 semantic ambiguity** — "ground level in current frame" is a reference concept with no stated usage rule (stop descending at this altitude? adjust glide path to it?). Testable only via flight observation.
 4. **Landing-point identity** (params 5/6/7) — spec doesn't state whether the commanded coordinate is the touchdown point, an approach/aim point, or a pattern-finish point. Also flight-observation only.
 
@@ -88,25 +88,25 @@ Tested against PX4 1.18.0-alpha (`0000006d67dc8571`), SIH. **18 PASS, 1 XFAIL, b
 
 | Test | Param | Result |
 |------|-------|--------|
-| `test_command_accepted` | baseline | PASS — ACCEPTED |
-| `test_param1_abort_alt_zero` | 0.0 | PASS — ACCEPTED |
-| `test_param1_abort_alt_specific` | 10.0 m | PASS — DENIED (observational; PX4 validates non-zero abort alt) |
-| `test_param1_abort_alt_negative` | -5.0 m | PASS — DENIED (observational; negative also rejected) |
-| `test_param1_abort_alt_nan` | NaN | PASS — ACCEPTED (treated like 0/default) |
-| `test_param2_land_mode_disabled` | 0 | PASS — ACCEPTED |
-| `test_param2_land_mode_opportunistic` | 1 | PASS — ACCEPTED (observational; no beacon configured) |
-| `test_param2_land_mode_required` | 2 | PASS — ACCEPTED (observational) |
-| `test_param2_land_mode_undefined` | 5 | PASS — ACCEPTED (observational; enum range not validated) |
-| `test_param4_yaw_specific_ack` | 90° | PASS — ACCEPTED (observational) |
-| `test_param4_yaw_nan_ack` | NaN | PASS — ACCEPTED (observational) |
-| `test_location_specific_ack` | home | PASS — ACCEPTED |
-| `test_location_int32max_ack` | INT32_MAX | PASS — ACCEPTED (observational) |
-| `test_location_out_of_range_latlon_ack` | 120°N, 200°E | PASS — DENIED (matches NAV_TAKEOFF; no gap here) |
-| `test_altitude_specific_ack` | 5.0 m | PASS — ACCEPTED |
-| `test_altitude_nan_ack` | NaN | PASS — ACCEPTED (observational) |
-| `test_wrong_frame_ack` | LOCAL_NED(1) | PASS — ACCEPTED (PX4 accepts any frame) |
-| `test_latlon_nan_command_long_ack` | NaN | PASS — ACCEPTED |
-| `test_latlon_int32max_command_long` | INT32_MAX | **XFAIL** — DENIED; PX4 rejects `float(INT32_MAX)` as a protocol error (`mavlink_receiver.cpp:499–505`), same gap as NAV_TAKEOFF |
+| `test_nav_land_command_accepted` | baseline | PASS — ACCEPTED |
+| `test_nav_land_param1_abort_alt_zero` | 0.0 | PASS — ACCEPTED |
+| `test_nav_land_param1_abort_alt_specific` | 10.0 m | PASS — DENIED (observational; PX4 validates non-zero abort alt) |
+| `test_nav_land_param1_abort_alt_negative` | -5.0 m | PASS — DENIED (observational; negative also rejected) |
+| `test_nav_land_param1_abort_alt_nan` | NaN | PASS — ACCEPTED (treated like 0/default) |
+| `test_nav_land_param2_land_mode_disabled` | 0 | PASS — ACCEPTED |
+| `test_nav_land_param2_land_mode_opportunistic` | 1 | PASS — ACCEPTED (observational; no beacon configured) |
+| `test_nav_land_param2_land_mode_required` | 2 | PASS — ACCEPTED (observational) |
+| `test_nav_land_param2_land_mode_undefined` | 5 | PASS — ACCEPTED (observational; enum range not validated) |
+| `test_nav_land_param4_yaw_specific_ack` | 90° | PASS — ACCEPTED (observational) |
+| `test_nav_land_param4_yaw_nan_ack` | NaN | PASS — ACCEPTED (observational) |
+| `test_nav_land_location_specific_ack` | home | PASS — ACCEPTED |
+| `test_nav_land_location_int32max_ack` | INT32_MAX | PASS — ACCEPTED (observational) |
+| `test_nav_land_location_out_of_range_latlon_ack` | 120°N, 200°E | PASS — DENIED (matches NAV_TAKEOFF; no gap here) |
+| `test_nav_land_altitude_specific_ack` | 5.0 m | PASS — ACCEPTED |
+| `test_nav_land_altitude_nan_ack` | NaN | PASS — ACCEPTED (observational) |
+| `test_nav_land_wrong_frame_ack` | LOCAL_NED(1) | PASS — ACCEPTED (PX4 accepts any frame) |
+| `test_nav_land_latlon_nan_command_long_ack` | NaN | PASS — ACCEPTED |
+| `test_nav_land_latlon_int32max_command_long` | INT32_MAX | **XFAIL** — DENIED; PX4 rejects `float(INT32_MAX)` as a protocol error (`mavlink_receiver.cpp:499–505`), same gap as NAV_TAKEOFF |
 
 **param1 validation is new**: unlike NAV_TAKEOFF (which ignores param1/pitch entirely), PX4 DENIEs any non-zero NAV_LAND abort altitude. Plausibly correct (values are checked against an internal range), but a GCS can't assume any finite abort altitude is accepted.
 
@@ -116,25 +116,25 @@ Tested against V4.8.0-dev (`70fe7125`, `--model +`). **18 PASS, 1 XFAIL.** SUPPO
 
 | Test | Param | Result |
 |------|-------|--------|
-| `test_command_accepted` | baseline | PASS — ACCEPTED |
-| `test_param1_abort_alt_zero` | 0.0 | PASS — ACCEPTED |
-| `test_param1_abort_alt_specific` | 10.0 m | PASS — ACCEPTED (observational; no validation, unlike PX4) |
-| `test_param1_abort_alt_negative` | -5.0 m | PASS — ACCEPTED (observational; no validation) |
-| `test_param1_abort_alt_nan` | NaN | PASS — ACCEPTED (observational) |
-| `test_param2_land_mode_disabled` | 0 | PASS — ACCEPTED |
-| `test_param2_land_mode_opportunistic` | 1 | PASS — ACCEPTED (observational; no precision-land handling via COMMAND_INT) |
-| `test_param2_land_mode_required` | 2 | PASS — ACCEPTED (observational) |
-| `test_param2_land_mode_undefined` | 5 | PASS — ACCEPTED (observational; not validated) |
-| `test_param4_yaw_specific_ack` | 90° | PASS — ACCEPTED (observational) |
-| `test_param4_yaw_nan_ack` | NaN | PASS — ACCEPTED (observational) |
-| `test_location_specific_ack` | home | PASS — ACCEPTED |
-| `test_location_int32max_ack` | INT32_MAX | PASS — ACCEPTED (observational) |
-| `test_location_out_of_range_latlon_ack` | 120°N, 200°E | **XFAIL** — ACCEPTED; accepts geometrically impossible lat/lon (spec violation, same gap as NAV_TAKEOFF) |
-| `test_altitude_specific_ack` | 5.0 m | PASS — ACCEPTED |
-| `test_altitude_nan_ack` | NaN | PASS — ACCEPTED (observational) |
-| `test_wrong_frame_ack` | LOCAL_NED(1) | PASS — ACCEPTED (accepts any frame) |
-| `test_latlon_nan_command_long_ack` | NaN | PASS — ACCEPTED |
-| `test_latlon_int32max_command_long` | INT32_MAX | PASS — **UNKNOWN, no ACK** (logged per no-ACK policy, not asserted; ArduCopter silently drops this rather than NACKing like PX4 — itself a spec-violation candidate, but indistinguishable from "busy/dropped" without further probing) |
+| `test_nav_land_command_accepted` | baseline | PASS — ACCEPTED |
+| `test_nav_land_param1_abort_alt_zero` | 0.0 | PASS — ACCEPTED |
+| `test_nav_land_param1_abort_alt_specific` | 10.0 m | PASS — ACCEPTED (observational; no validation, unlike PX4) |
+| `test_nav_land_param1_abort_alt_negative` | -5.0 m | PASS — ACCEPTED (observational; no validation) |
+| `test_nav_land_param1_abort_alt_nan` | NaN | PASS — ACCEPTED (observational) |
+| `test_nav_land_param2_land_mode_disabled` | 0 | PASS — ACCEPTED |
+| `test_nav_land_param2_land_mode_opportunistic` | 1 | PASS — ACCEPTED (observational; no precision-land handling via COMMAND_INT) |
+| `test_nav_land_param2_land_mode_required` | 2 | PASS — ACCEPTED (observational) |
+| `test_nav_land_param2_land_mode_undefined` | 5 | PASS — ACCEPTED (observational; not validated) |
+| `test_nav_land_param4_yaw_specific_ack` | 90° | PASS — ACCEPTED (observational) |
+| `test_nav_land_param4_yaw_nan_ack` | NaN | PASS — ACCEPTED (observational) |
+| `test_nav_land_location_specific_ack` | home | PASS — ACCEPTED |
+| `test_nav_land_location_int32max_ack` | INT32_MAX | PASS — ACCEPTED (observational) |
+| `test_nav_land_location_out_of_range_latlon_ack` | 120°N, 200°E | **XFAIL** — ACCEPTED; accepts geometrically impossible lat/lon (spec violation, same gap as NAV_TAKEOFF) |
+| `test_nav_land_altitude_specific_ack` | 5.0 m | PASS — ACCEPTED |
+| `test_nav_land_altitude_nan_ack` | NaN | PASS — ACCEPTED (observational) |
+| `test_nav_land_wrong_frame_ack` | LOCAL_NED(1) | PASS — ACCEPTED (accepts any frame) |
+| `test_nav_land_latlon_nan_command_long_ack` | NaN | PASS — ACCEPTED |
+| `test_nav_land_latlon_int32max_command_long` | INT32_MAX | PASS — **UNKNOWN, no ACK** (logged per no-ACK policy, not asserted; ArduCopter silently drops this rather than NACKing like PX4 — itself a spec-violation candidate, but indistinguishable from "busy/dropped" without further probing) |
 
 ### ArduPlane FW / ArduPlane QP / ArduRover
 

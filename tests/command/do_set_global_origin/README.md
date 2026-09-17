@@ -22,10 +22,10 @@ Unlike NAV_TAKEOFF/NAV_LAND (INT32_MAX = "use current position"), this command *
 ## Test coverage
 
 **Verified:**
-1. `GPS_GLOBAL_ORIGIN` response: changes on a new origin (`test_gps_global_origin_changes_when_new_value_set`), stays unchanged but is still emitted on a repeated identical origin per spec "irrespective of whether the origin is changed" (`test_gps_global_origin_unchanged_and_emitted_on_repeat`), emitted exactly once per accepted command (`test_gps_global_origin_emitted`), and NOT emitted when DENIED (`test_gps_global_origin_not_emitted_on_nack`).
-2. Exactly one COMMAND_ACK per send (`test_exactly_one_ack`).
-3. Params 1–4 must be NaN; non-NaN must be DENIED — **xfail on all known stacks** (spec gap, nothing enforces it): `test_reserved_param1_zero_ack` (the common `0.0`-for-NaN GCS mistake), `test_reserved_param{1,2,3,4}_nonnan_ack`.
-4. Params 5–7 must reject sentinels/out-of-range values — **xfail on PX4** (see implementation notes below): `test_location_int32max_denied`, `test_location_out_of_range_latlon_denied`, `test_altitude_nan_denied`.
+1. `GPS_GLOBAL_ORIGIN` response: changes on a new origin (`test_do_set_global_origin_gps_global_origin_changes_when_new_value_set`), stays unchanged but is still emitted on a repeated identical origin per spec "irrespective of whether the origin is changed" (`test_do_set_global_origin_gps_global_origin_unchanged_and_emitted_on_repeat`), emitted exactly once per accepted command (`test_do_set_global_origin_gps_global_origin_emitted`), and NOT emitted when DENIED (`test_do_set_global_origin_gps_global_origin_not_emitted_on_nack`).
+2. Exactly one COMMAND_ACK per send (`test_do_set_global_origin_exactly_one_ack`).
+3. Params 1–4 must be NaN; non-NaN must be DENIED — **xfail on all known stacks** (spec gap, nothing enforces it): `test_do_set_global_origin_reserved_param1_zero_ack` (the common `0.0`-for-NaN GCS mistake), `test_reserved_param{1,2,3,4}_nonnan_ack`.
+4. Params 5–7 must reject sentinels/out-of-range values — **xfail on PX4** (see implementation notes below): `test_do_set_global_origin_location_int32max_denied`, `test_do_set_global_origin_location_out_of_range_latlon_denied`, `test_do_set_global_origin_altitude_nan_denied`.
 
 **Not covered**: whether the navigation stack actually uses the new origin for local↔global coordinate transforms (would need to observe `LOCAL_POSITION_NED`/`GLOBAL_POSITION_INT`; no flight test planned).
 
@@ -39,30 +39,30 @@ Confirmed gaps (all xfail, §4 above): PX4 returns `FAILED(4)` instead of `DENIE
 
 | Test | Mock | PX4 MC |
 |------|------|--------|
-| `test_command_accepted` | PASS | PASS |
-| `test_exactly_one_ack` | PASS | PASS |
-| `test_reserved_param1_zero_ack` | XFAIL | XFAIL |
-| `test_reserved_param1_nonnan_ack` | XFAIL | XFAIL |
-| `test_reserved_param2_nonnan_ack` | XFAIL | XFAIL |
-| `test_reserved_param3_nonnan_ack` | XFAIL | XFAIL |
-| `test_reserved_param4_nonnan_ack` | XFAIL | XFAIL |
-| `test_frame_global_ack` | PASS | PASS |
-| `test_frame_global_relative_alt_ack` | PASS | PASS |
-| `test_location_int32max_denied` | PASS | XFAIL |
-| `test_location_out_of_range_latlon_denied` | PASS | XFAIL |
-| `test_altitude_nan_denied` | PASS | XFAIL |
-| `test_altitude_zero` | PASS | PASS |
-| `test_altitude_negative` | PASS | PASS |
-| `test_gps_global_origin_emitted` | PASS | PASS¹ |
-| `test_gps_global_origin_changes_when_new_value_set` | PASS | PASS |
-| `test_gps_global_origin_unchanged_and_emitted_on_repeat` | PASS | PASS |
-| `test_command_long_accepted` | PASS | PASS |
-| `test_command_long_float_int32max_denied` | PASS | PASS |
-| `test_gps_global_origin_not_emitted_on_nack` | PASS | SKIP |
+| `test_do_set_global_origin_command_accepted` | PASS | PASS |
+| `test_do_set_global_origin_exactly_one_ack` | PASS | PASS |
+| `test_do_set_global_origin_reserved_param1_zero_ack` | XFAIL | XFAIL |
+| `test_do_set_global_origin_reserved_param1_nonnan_ack` | XFAIL | XFAIL |
+| `test_do_set_global_origin_reserved_param2_nonnan_ack` | XFAIL | XFAIL |
+| `test_do_set_global_origin_reserved_param3_nonnan_ack` | XFAIL | XFAIL |
+| `test_do_set_global_origin_reserved_param4_nonnan_ack` | XFAIL | XFAIL |
+| `test_do_set_global_origin_frame_global_ack` | PASS | PASS |
+| `test_do_set_global_origin_frame_global_relative_alt_ack` | PASS | PASS |
+| `test_do_set_global_origin_location_int32max_denied` | PASS | XFAIL |
+| `test_do_set_global_origin_location_out_of_range_latlon_denied` | PASS | XFAIL |
+| `test_do_set_global_origin_altitude_nan_denied` | PASS | XFAIL |
+| `test_do_set_global_origin_altitude_zero` | PASS | PASS |
+| `test_do_set_global_origin_altitude_negative` | PASS | PASS |
+| `test_do_set_global_origin_gps_global_origin_emitted` | PASS | PASS¹ |
+| `test_do_set_global_origin_gps_global_origin_changes_when_new_value_set` | PASS | PASS |
+| `test_do_set_global_origin_gps_global_origin_unchanged_and_emitted_on_repeat` | PASS | PASS |
+| `test_do_set_global_origin_command_long_accepted` | PASS | PASS |
+| `test_do_set_global_origin_command_long_float_int32max_denied` | PASS | PASS |
+| `test_do_set_global_origin_gps_global_origin_not_emitted_on_nack` | PASS | SKIP |
 
 `XFAIL` = asserts DENIED but stack returns something else (documented spec gap). `SKIP` = mock-only test.
 
-¹ PX4 MC: the first `GPS_GLOBAL_ORIGIN` received (`alt_mm=-500000 extra=1`) was a late emission from the preceding `test_altitude_negative` (z=−500 m); the response to the current command (z=10 m) arrived as the extra — a test-ordering timing artifact in standalone mode. Emission and exactly-once assertions are enforced on the mock only.
+¹ PX4 MC: the first `GPS_GLOBAL_ORIGIN` received (`alt_mm=-500000 extra=1`) was a late emission from the preceding `test_do_set_global_origin_altitude_negative` (z=−500 m); the response to the current command (z=10 m) arrived as the extra — a test-ordering timing artifact in standalone mode. Emission and exactly-once assertions are enforced on the mock only.
 
 Other vehicle types (PX4 FW/VTOL/Rover, ArduPilot) not yet tested.
 

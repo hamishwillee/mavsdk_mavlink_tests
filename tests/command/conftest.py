@@ -16,7 +16,6 @@ is unsupported.  Log at WARNING level when no ACK is received.
 import asyncio
 import json
 import logging
-import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,14 +25,15 @@ import pytest_asyncio
 from mavsdk import System
 from mavsdk.mavlink_direct import MavlinkMessage
 
-from tests.conftest import DRONE_GRPC_PORT, _format_autopilot_header, _wait_for_connection
+from tests import report
+from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
 from tests.mock_flight_stack import (
     MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME,
     MAV_RESULT_DENIED,
     MAV_RESULT_UNSUPPORTED,
     MockFlightStack,
 )
-from tests.param_spec import INT32_MAX, ParamSpec
+from tests.param_spec import INT32_MAX, MAV_FRAME_CATALOGUE, ParamSpec
 
 log = logging.getLogger(__name__)
 
@@ -56,36 +56,6 @@ _DRONE_SYSID = 1
 _DRONE_COMPID = 1
 
 _FMT = "%-14s | %-44s | %s"
-
-# Canonical MAV_FRAME catalogue (0-21) for frame-validation surveys — see
-# CLAUDE.md § Mandatory common tests item 6. Mirrors
-# tests/mission/test_frame_types.py's frame list (kept as an independent copy
-# since the two live in different subpackages and are used for different
-# protocols — mission items vs COMMAND_INT).
-MAV_FRAME_CATALOGUE: list[tuple[int, str]] = [
-    (0, "MAV_FRAME_GLOBAL"),
-    (1, "MAV_FRAME_LOCAL_NED"),
-    (2, "MAV_FRAME_MISSION"),
-    (3, "MAV_FRAME_GLOBAL_RELATIVE_ALT"),
-    (4, "MAV_FRAME_LOCAL_ENU"),
-    (5, "MAV_FRAME_GLOBAL_INT"),
-    (6, "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT"),
-    (7, "MAV_FRAME_LOCAL_OFFSET_NED"),
-    (8, "MAV_FRAME_BODY_NED"),
-    (9, "MAV_FRAME_BODY_OFFSET_NED"),
-    (10, "MAV_FRAME_GLOBAL_TERRAIN_ALT"),
-    (11, "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT"),
-    (12, "MAV_FRAME_BODY_FRD"),
-    (13, "MAV_FRAME_RESERVED_13"),
-    (14, "MAV_FRAME_RESERVED_14"),
-    (15, "MAV_FRAME_RESERVED_15"),
-    (16, "MAV_FRAME_RESERVED_16"),
-    (17, "MAV_FRAME_RESERVED_17"),
-    (18, "MAV_FRAME_RESERVED_18"),
-    (19, "MAV_FRAME_RESERVED_19"),
-    (20, "MAV_FRAME_LOCAL_FRD"),
-    (21, "MAV_FRAME_LOCAL_FLU"),
-]
 
 # ---------------------------------------------------------------------------
 # XML command loading
@@ -525,26 +495,31 @@ def pytest_generate_tests(metafunc):
 
 
 # ---------------------------------------------------------------------------
-# Tier 1 results table — recorded by _check(), written to logs/ at class end.
-# Stored per-class (cls._RESULTS / cls._DETAILS, set fresh by
-# Tier1CommandTestBase.__init_subclass__) so results from different commands
-# never mix, even though every migrated Test*Command class shares this code.
+# Tier 1 results — recorded by _check()/_record() into the shared report
+# (tests/report.py), keyed by ("command", cmd_name) so results from
+# different commands never mix, even though every migrated Test*Command
+# class shares this code.
 # ---------------------------------------------------------------------------
 
 
 def _record(cls, request, outcome: str, description: str, result: int | None) -> None:
-    cls._RESULTS.append((request.node.name, outcome, description, result))
+    """
+    Record this test's outcome into the shared report (tests/report.py).
+    Public-ish (some command test files import it directly, e.g.
+    external_wind_estimate/test_command.py) — keep this signature stable.
+    """
+    report.record_tier1_result("command", cls.SPEC.name, request.node.name, outcome, description, result)
 
 
 def _record_detail(cls, text: str) -> None:
-    """Attach a supplementary multi-line block to the Tier 1 log (e.g. a full per-frame breakdown)."""
-    cls._DETAILS.append(text)
+    """Attach a supplementary multi-line block to the report."""
+    report.record_tier1_detail("command", cls.SPEC.name, text)
 
 
 def _check(cls, request, description: str, result: int | None, *, expect, xfail_reason: str | None = None) -> None:
     """
-    Record this test's outcome into the class's Tier 1 results table, then
-    perform the actual pytest assertion/xfail.
+    Record this test's outcome into the shared report, then perform the
+    actual pytest assertion/xfail.
 
     `expect`: predicate(result:int) -> bool, only called when result is not
     None. `xfail_reason`: if given and the predicate fails, xfail with this
@@ -561,10 +536,6 @@ def _check(cls, request, description: str, result: int | None, *, expect, xfail_
         pytest.xfail(xfail_reason)
     _record(cls, request, "FAIL", description, result)
     pytest.fail(description)
-
-
-def _safe(s: str) -> str:
-    return s.replace("/", "_").replace(" ", "_").replace("\\", "_")
 
 
 def _reduce_dual(cmd_name: str, label: str, int_ack: dict | None, long_ack: dict | None) -> int | None:
@@ -593,61 +564,20 @@ def _reduce_dual(cmd_name: str, label: str, int_ack: dict | None, long_ack: dict
 @pytest.fixture(scope="class", autouse=True)
 def _write_tier1_log(request):
     """
-    Write the accumulated Tier 1 results table to logs/ once, after every
-    test in the class has run — mirrors test_survey.py / test_ack_uniqueness.py,
-    which always write regardless of pass/fail. A no-op for any test class
-    that isn't a Tier1CommandTestBase subclass (no SPEC / no results).
+    Write this command's combined report (Tier 1, plus Tier 2 if it ran in
+    the same pytest session — see tests/report.py) once, after every test in
+    the class has run. A no-op for any test class that isn't a
+    Tier1CommandTestBase subclass, or one where nothing actually ran (e.g.
+    every test filtered out by -k).
     """
     yield
     cls = request.cls
     if cls is None or not hasattr(cls, "SPEC"):
         return
-    results = getattr(cls, "_RESULTS", None)
-    if not results:
-        return  # nothing ran (e.g. filtered with -k) -- nothing to write
-
     spec = cls.SPEC
-    info = getattr(request.config, "_autopilot_info", {})
-    drone_address = request.config.getoption("--drone-address")
-    header = _format_autopilot_header(info, drone_address)
-
-    counts: dict[str, int] = {}
-    lines = [
-        f"Tier 1 results: MAV_CMD_{spec.name} (cmd={spec.cmd_id})",
-        "=" * 100,
-        f"{'Test':<52} {'Outcome':<12} {'Result':<7} Pass case",
-        "-" * 100,
-    ]
-    for name, outcome, description, result in results:
-        counts[outcome] = counts.get(outcome, 0) + 1
-        result_str = "-" if result is None else str(result)
-        lines.append(f"{name:<52} {outcome:<12} {result_str:<7} {description}")
-    lines.append("-" * 100)
-    lines.append(
-        f"Total: {len(results)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-    )
-    details = getattr(cls, "_DETAILS", None)
-    if details:
-        lines.append("")
-        lines.append("Supplementary detail")
-        lines.append("=" * 100)
-        for block in details:
-            lines.append(block)
-    table = "\n".join(lines)
-    log.info("\n%s", table)
-
-    ap = _safe(info.get("autopilot", "unknown").lower().replace("ardupilotmega", "ardupilot"))
-    vt = _safe(info.get("vehicle_type", "unknown").lower())
-    ver_raw = info.get("firmware_version", "")
-    ver = f"_{_safe(ver_raw)}" if ver_raw and ver_raw != "N/A" else ""
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-
-    logs_dir = Path("logs")
-    logs_dir.mkdir(exist_ok=True)
-    safe_name = _safe(spec.name.lower())
-    log_path = logs_dir / f"command_{safe_name}_tier1_{ap}_{vt}{ver}_{timestamp}.log"
-    log_path.write_text(header + "\n\n" + table + "\n")
-    log.info(_FMT, spec.name, "Tier 1 results log written", str(log_path))
+    if not report.has_tier1_results("command", spec.name):
+        return
+    report.write("command", spec.name, spec.cmd_id, request.config)
 
 
 class Tier1CommandTestBase:
@@ -666,10 +596,17 @@ class Tier1CommandTestBase:
         super().__init_subclass__(**kwargs)
         # Fresh per-subclass state — NOT shared via the base class, since
         # multiple Test*Command classes (different commands) run in one
-        # pytest session and must not mix results or "supported" caches.
-        cls._RESULTS = []
-        cls._DETAILS = []
+        # pytest session and must not mix "supported" caches.
         cls._supported = None
+        # Register this command's identity + full param-slot list with the
+        # shared report (tests/report.py) once per subclass — see
+        # tests/mission/conftest.py's Tier1MissionTestBase for the mission-
+        # protocol analogue of this same registration.
+        spec = cls.SPEC
+        report.declare_command("command", spec.name, spec.cmd_id)
+        report.declare_params("command", spec.name, [f"{p.slot}_{p.label}" for p in spec.params])
+        for p in spec.undefined_params:
+            report.record_compat_fact("command", spec.name, f"{p.slot}_{p.label}", supported="not-applicable")
 
     async def _probe(self, system, **overrides) -> tuple[dict | None, dict | None]:
         """probe_dual() with this command's baseline defaults applied."""
@@ -687,6 +624,15 @@ class Tier1CommandTestBase:
             int_ack, long_ack = await self._probe(system)
             result = self._reduce("support probe", int_ack, long_ack)
             cls._supported = (result != MAV_RESULT_UNSUPPORTED)
+            # Unlike a mission item (stored for later, possibly-never-executed
+            # use — see tests/mission/conftest.py's test_command_supported,
+            # which deliberately does NOT record supported=True from upload
+            # acceptance alone), a COMMAND_INT/LONG ACK is the stack acting on
+            # the command now — MAV_RESULT_UNSUPPORTED(3) vs. anything else is
+            # real, immediate evidence either way. No `notes` on the False
+            # branch — the only reason it's reached is MAV_RESULT_UNSUPPORTED,
+            # which `supported: false` already says; a note would just restate it.
+            report.record_command_fact("command", self.SPEC.name, supported=cls._supported)
         if not cls._supported:
             pytest.skip(f"{self.SPEC.name} (cmd={self.SPEC.cmd_id}) is UNSUPPORTED on this platform — test not run")
 
@@ -834,6 +780,8 @@ class Tier1CommandTestBase:
         int_ack, long_ack = await self._probe(gcs_system_cls, **p.sentinel_kwargs)
         result = self._reduce(f"param{p.slot} ({p.label}) = sentinel", int_ack, long_ack)
         description = f"Accepted when param{p.slot} ({p.label}) is sent as its own sentinel (undefined param)"
+        accepted = result is not None and result not in (MAV_RESULT_UNSUPPORTED, MAV_RESULT_DENIED)
+        report.record_compat_fact("command", self.SPEC.name, f"{p.slot}_{p.label}", accept_nan_or_int32max=accepted)
         _check(type(self), request, description, result,
                expect=lambda r: r not in (MAV_RESULT_UNSUPPORTED, MAV_RESULT_DENIED))
 
@@ -844,6 +792,10 @@ class Tier1CommandTestBase:
         int_ack, long_ack = await self._probe(gcs_system_cls, **p.nonsentinel_kwargs)
         result = self._reduce(f"param{p.slot} ({p.label}) = non-sentinel", int_ack, long_ack)
         description = f"Rejected when param{p.slot} ({p.label}) is sent a real (non-sentinel) value (undefined param)"
+        report.record_compat_fact(
+            "command", self.SPEC.name, f"{p.slot}_{p.label}",
+            nacks_on_non_sentinel_value=(result == MAV_RESULT_DENIED),
+        )
         xfail_reason = p.reject_xfail_reason or (
             f"Stack returned {result} for undefined param{p.slot}; expected DENIED — no known "
             "stack validates parameters with no MAVLink definition (spec gap)"
@@ -864,6 +816,10 @@ class Tier1CommandTestBase:
         p = defined_param
         int_ack, long_ack = await self._probe(gcs_system_cls, **p.sentinel_kwargs)
         result = self._reduce(f"param{p.slot} ({p.label}, defined) = sentinel", int_ack, long_ack)
+        report.record_compat_fact(
+            "command", self.SPEC.name, f"{p.slot}_{p.label}",
+            accept_nan_or_int32max=(result is not None and result != MAV_RESULT_DENIED),
+        )
         if p.sentinel_policy == "deny_required":
             description = (
                 f"Denied when param{p.slot} ({p.label}) is sent its sentinel "

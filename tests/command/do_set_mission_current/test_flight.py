@@ -114,6 +114,7 @@ from tests.flight_helpers import (
     _get_home_position,
     _north_of,
     _rtl_and_land,
+    _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome into the combined report
     _wait_armable,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate in this module
 )
@@ -130,6 +131,7 @@ log = logging.getLogger(__name__)
 # Arming (60s) + up to ~7 loop passes (fast, small offsets) + RTL/land (120s) x2 runs + margin.
 pytestmark = pytest.mark.timeout(900)
 
+_CMD_NAME = "DO_SET_MISSION_CURRENT"  # read by tests/flight_helpers.py's _tier2_auto_record
 _CMD_ID = 224  # MAV_CMD_DO_SET_MISSION_CURRENT
 _MISSION_START_CMD_ID = 300  # MAV_CMD_MISSION_START
 

@@ -138,7 +138,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
 
     SPEC = SPEC
 
-    async def test_protocol_param1_pitch_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param1_pitch_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Pitch): specific value round-trips correctly.
 
         Per root CLAUDE.md's "General testing philosophy" rule 4: a defined param
@@ -164,10 +164,10 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param3_flags_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param3_flags_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Flags / NAV_TAKEOFF_FLAGS): bit 0 (HORIZONTAL_POSITION_NOT_REQUIRED) round-trips.
 
-        Same xfail reasoning as test_protocol_param1_pitch_preserved — see its docstring.
+        Same xfail reasoning as test_nav_takeoff_param1_pitch_preserved — see its docstring.
         """
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param3=1.0)
@@ -186,7 +186,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param4_yaw_specific(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw): specific degree value round-trips correctly."""
         try:
             dl = await self._upload_probe(gcs_system_cls, home_item_for_mission, param4=90.0)
@@ -202,7 +202,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param4_yaw_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw): NaN (use current heading) is accepted and returned as NaN.
 
         Unlike the generic test_defined_param_sentinel_tolerated[param4] (which
@@ -224,7 +224,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_location_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_location_preserved(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """params 5/6/7 (Latitude/Longitude/Altitude): location fields round-trip."""
         # Use coordinates offset slightly from home so they are distinct
         lat_int = _LAT_INT + 10000   # ~0.001 deg north
@@ -247,7 +247,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
     # Location sentinel values (hasLocation + isDestination)
     # ------------------------------------------------------------------
 
-    async def test_protocol_location_current_position(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_location_current_position(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """params 5/6 (lat/lon) = INT32_MAX: 'take off from current position' sentinel.
 
         INT32_MAX (0x7FFF_FFFF) is the MISSION_ITEM_INT sentinel meaning "use current
@@ -281,7 +281,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_location_nan_altitude(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_location_nan_altitude(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param 7 (altitude) = NaN: characterise 'use default altitude' sentinel.
 
         NaN is the float sentinel for "use default / unspecified" per MISSION_ITEM_INT.
@@ -310,7 +310,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
     # param3 (Flags bitmask) additional values
     # ------------------------------------------------------------------
 
-    async def test_protocol_param3_flags_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param3_flags_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Flags) = 0.0: no flags set — most common real-world case.
 
         value=0 means no special flags are requested.  This must always be accepted
@@ -329,7 +329,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param3_flags_undefined_bits(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param3_flags_undefined_bits(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param3 (Flags) = 2.0: bit 1 — not defined in NAV_TAKEOFF_FLAGS spec.
 
         The spec currently defines only bit 0 (value=1).  An undefined bit value
@@ -355,7 +355,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
     # param1 (Pitch) additional values
     # ------------------------------------------------------------------
 
-    async def test_protocol_param1_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param1_nan(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Pitch) = NaN: 'no minimum pitch constraint'.
 
         NaN for a defined param means "use default / no constraint".  For param1 this
@@ -380,7 +380,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param1_pitch_very_large(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param1_pitch_very_large(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Pitch) = 180°: well above the implicit [0°, 90°] maximum.
 
         180° is a reversal angle — not meaningful as a takeoff pitch.  Possible outcomes:
@@ -412,7 +412,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
     # param4 (Yaw) edge-case values
     # ------------------------------------------------------------------
 
-    async def test_protocol_param4_yaw_negative(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param4_yaw_negative(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = -90°: characterise storage — raw, normalised, or altered.
 
         A negative yaw is not canonically valid (yaw is [0, 360) by convention) but
@@ -445,7 +445,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_overflow(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param4_yaw_overflow(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = 450°: characterise storage — raw, wrapped, or altered.
 
         450° = 360° + 90°; the canonical normalised form is 90°.  Possible outcomes:
@@ -475,7 +475,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param4_yaw_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param4_yaw_zero(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param4 (Yaw) = 0.0 (due north): must be distinct from NaN.
 
         0.0 is a valid specific heading (due north) and must not be aliased to NaN
@@ -516,7 +516,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
     # param1 (Pitch) edge-case values
     # ------------------------------------------------------------------
 
-    async def test_protocol_param1_pitch_large(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param1_pitch_large(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Pitch) = 89°: characterise storage of a near-maximum value.
 
         For multicopters, pitch at takeoff typically controls climb angle or speed;
@@ -535,7 +535,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
             if abs(dl.param1 - 89.0) < 1e-3:
                 outcome = "PRESERVED raw (89.0°)"
             elif abs(dl.param1) < 1e-3:
-                outcome = "ZEROED — param1 not stored by this stack (same as test_protocol_param1_pitch_preserved), or value clamped to 0"
+                outcome = "ZEROED — param1 not stored by this stack (same as test_nav_takeoff_param1_pitch_preserved), or value clamped to 0"
             else:
                 outcome = f"MODIFIED: stored as {dl.param1:.4f}° (clamped or normalised)"
             log.info(_FMT, _CMD, "param1 (Pitch) 89°", outcome)
@@ -545,7 +545,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
         finally:
             await clear_all_mission_types(gcs_system_cls)
 
-    async def test_protocol_param1_pitch_negative(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
+    async def test_nav_takeoff_param1_pitch_negative(self, gcs_system_cls, mock_stack_cls, home_item_for_mission):
         """param1 (Pitch) = -10°: characterise storage of a negative pitch angle.
 
         Negative pitch is meaningful on fixed-wing (nose-down) but typically invalid
@@ -567,7 +567,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
             elif abs(dl.param1 - 10.0) < 1e-3:
                 outcome = "ABS-NORMALISED to 10.0° on storage"
             elif abs(dl.param1) < 1e-3:
-                outcome = "ZEROED — param1 not stored by this stack (same as test_protocol_param1_pitch_preserved), or negative value treated as invalid"
+                outcome = "ZEROED — param1 not stored by this stack (same as test_nav_takeoff_param1_pitch_preserved), or negative value treated as invalid"
             else:
                 outcome = f"ALTERED to {dl.param1:.4f}° — possible integer storage bug (e.g. uint16 underflow for negative float)"
             log.info(_FMT, _CMD, "param1 (Pitch) -10°", outcome)

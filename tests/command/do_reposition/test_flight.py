@@ -65,6 +65,7 @@ from tests.flight_helpers import (
     _offset_lat_lon,
     _request_position_stream,
     _rtl_and_land,
+    _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome into the combined report
     _wait_for_altitude,
     _wait_for_horizontal_position,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
@@ -77,6 +78,7 @@ pytestmark = pytest.mark.timeout(900)
 
 _CMD    = "DO_REPOSITION"
 _CMD_ID = 192  # MAV_CMD_DO_REPOSITION
+_CMD_NAME = _CMD  # read by tests/flight_helpers.py's _tier2_auto_record
 
 # Takeoff parameters for getting vehicle airborne before reposition tests
 _INITIAL_ALT_M    = 20.0   # relative altitude for initial takeoff

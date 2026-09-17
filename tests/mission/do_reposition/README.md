@@ -75,7 +75,7 @@ Logs:
 - QuadPlane: `logs/mission_do_reposition_protocol_quadplane_20260607.log`
 - Mock: `logs/mission_do_reposition_protocol_mock_20260607.log`
 
-### test_protocol_command_accepted (baseline)
+### test_do_reposition_command_accepted (baseline)
 
 Upload a baseline DO_REPOSITION item (`param1=-1` "use default speed", `param2=0` "no flags", `param3=0` "ignored", `param4=0.0`¹, distinct lat/lon, `z=30.0`); observe whether the upload is accepted or NACKed.
 **Observational — passes either way**; the result *is* the finding.
@@ -92,7 +92,7 @@ Upload a baseline DO_REPOSITION item (`param1=-1` "use default speed", `param2=0
 | ------------------ | ------------------ | ------------------------ | ------------------------------------------------------------------ |
 | all 21 **SKIPPED** | all 21 **SKIPPED** | all 21 **SKIPPED**       | all 21 **PASS** (mock accepts every command and stores params raw) |
 
-Skip reason (identical on every real stack/frame): _"DO_REPOSITION rejected outright as a mission item (UNSUPPORTED); param-level probing is moot — see test_protocol_command_accepted"_.
+Skip reason (identical on every real stack/frame): _"DO_REPOSITION rejected outright as a mission item (UNSUPPORTED); param-level probing is moot — see test_do_reposition_command_accepted"_.
 A class-scoped, cached `do_reposition_mission_support` fixture probes the baseline exactly once per stack run; an `autouse` skip-fixture (`_skip_unsupported_param_tests`) then skips every other test in the class with that single shared message — far clearer than 21 redundant "command rejected" failures.
 
 ### Baseline param4 note
