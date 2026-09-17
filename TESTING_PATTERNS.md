@@ -25,10 +25,22 @@ one stays a blunt status table ("where is it actually adopted yet").
 
 **Mission** (`tests/mission/`): `nav_takeoff`, `do_reposition` (Tier 1 only —
 rejected everywhere, nothing to fly), `condition_gate`, `do_set_actuator`.
-**Command** (`tests/command/`): `nav_takeoff`, `nav_land`, `do_reposition`,
-`do_set_mission_current`, `do_set_global_origin` (Tier 1 only — no Tier 2
-flight semantics), `external_wind_estimate`, `baseline_takeoff` (bespoke,
-predates the shared Tier 1 base), `do_set_actuator`.
+**Command** (`tests/command/`): `nav_takeoff`, `nav_vtol_takeoff`, `nav_land`,
+`do_reposition`, `do_set_mission_current`, `do_set_global_origin` (Tier 1
+only — no Tier 2 flight semantics), `external_wind_estimate`,
+`baseline_takeoff` (bespoke, predates the shared Tier 1 base),
+`do_set_actuator`.
+
+**`nav_vtol_takeoff`** (added 2026-09-17/18) is, like `do_set_actuator`, not
+given its own column below — built on `Tier1CommandTestBase` from day one,
+so every Tier 1 row already applies (shared base ✓, sentinel probes ✓,
+frame validation survey ✓, rule 9 bespoke naming ✓, message-type
+exclusivity ✓ — see the new row below, added specifically because of this
+command: it's the one case in this whole repo where PX4 genuinely enforces
+it, `CommandSpec.has_location=True` and a real `PASS`). See
+`tests/command/nav_vtol_takeoff/CLAUDE.md` for the command-specific
+findings (two PX4 fix commits verified; a still-open, not-yet-root-caused
+instability in one bespoke test; a PX4 checkout branch-switch caveat).
 
 **`do_set_actuator`** (both protocols, added 2026-09-17 to verify PX4 PR
 #28723) is not added as its own column to the two tables below — it was
@@ -56,6 +68,7 @@ simplest happy-path test alone does not).
 | Sentinel + non-sentinel probe for every param, both directions | For each param: does the sentinel round-trip untouched, and does a real non-sentinel value NACK (unsupported) or get accepted (possibly supported)? Baked into the shared base's generic tests where adopted (row above) | ✓ (via shared base) | ✓ (via shared base) | ✓ (via shared base) | ✓ (via shared base) | not audited | not audited | not audited | not audited | ✓ (via shared base) | not audited |
 | Param limits: XML-stated explicit range AND type-inferred implicit range | `tests/mission/CLAUDE.md` § "Ranges for defined float params" — one value just outside an XML `minValue`/`maxValue`, or (no XML bounds) a value outside the *physically implied* range (e.g. yaw outside [0°,360°)) | ✓ (yaw/pitch edge-value tests) | n/a (command rejected outright) | not audited | not audited | not audited | not audited | not audited | not audited | not audited | not audited |
 | Bespoke Tier 1 test naming: `test_<command_dir_name>_<rest>`, never `test_protocol_` (reserved for genuine protocol-mechanics tests in the shared, command-agnostic files) | Root `CLAUDE.md` rule 9 (2026-09-17, corrected from an earlier wrong assumption that `test_protocol_` was just a generic Tier 1 tag) — a shared/inherited `Tier1MissionTestBase`/`Tier1CommandTestBase` test is exempt (class/`SPEC` already establishes the command) | ✓ (2026-09-17 — renamed from `test_protocol_*`) | ✓ (2026-09-17 — renamed from `test_protocol_*`) | ✗ | ✗ | ✓ (2026-09-17 — prefix added) | ✓ (2026-09-17 — prefix added) | ✓ (2026-09-17 — prefix added) | ✓ (2026-09-17 — prefix added) | ✗ | n/a (bespoke `test_baseline.py`, different naming shape) |
+| Message-type exclusivity (`test_hasLocation_rejects_command_long`/`test_float_params5_6_rejects_command_int`, driven by `CommandSpec.has_location`/`float_params5_6`/`message_type_exclusivity_exception`) — a `hasLocation` command sent via COMMAND_LONG must NACK `MAV_RESULT_COMMAND_INT_ONLY(8)`; a non-location float-param5/6 command sent via COMMAND_INT must NACK `MAV_RESULT_COMMAND_LONG_ONLY(7)` | Command-protocol-only concept (no mission-item equivalent). Root `CLAUDE.md`/`tests/command/CLAUDE.md` § Mandatory common tests, check 7 (2026-09-18, user-specified). **Not just theoretical**: PX4 commit `83e7afba56` genuinely enforces it for `NAV_VTOL_TAKEOFF` specifically — the one real `PASS` in this repo; every other command below still `XFAIL`s an equivalent check on the same build. See `tests/command/nav_vtol_takeoff/CLAUDE.md` | n/a | n/a | n/a | ✓ (2026-09-18, via shared base, `has_location=True`) — **XFAIL** against PX4 (spec gap, unlike `nav_vtol_takeoff`) | ✓ (2026-09-18, hand-rolled equivalent) — **XFAIL** against PX4 | ✓ (2026-09-18, hand-rolled equivalent) — **XFAIL** against PX4 | n/a (no location, no params 5-7 use — neither direction applies) | ✓ (2026-09-18, existing `test_do_set_global_origin_command_long_accepted` strengthened into a real, non-xfail assertion) — **PASS**, documented spec exception (this command's own XML text tolerates COMMAND_LONG) | ✓ (2026-09-18, via shared base) — correctly resolves NA (no location, no float in params 5-7) | n/a (bespoke `test_baseline.py`, not migrated onto the shared base) |
 
 ## Tier 2 (execution) patterns
 

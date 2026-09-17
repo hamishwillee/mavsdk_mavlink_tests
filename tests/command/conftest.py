@@ -28,6 +28,8 @@ from mavsdk.mavlink_direct import MavlinkMessage
 from tests import report
 from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
 from tests.mock_flight_stack import (
+    MAV_RESULT_COMMAND_INT_ONLY,
+    MAV_RESULT_COMMAND_LONG_ONLY,
     MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME,
     MAV_RESULT_DENIED,
     MAV_RESULT_UNSUPPORTED,
@@ -467,6 +469,34 @@ class CommandSpec:
     baseline: dict  # probe_dual() kwargs for a valid baseline send
     params: list[ParamSpec]  # all 7 slots
 
+    # -- message-type exclusivity (see CLAUDE.md § Mandatory common tests,
+    # check 7) — driven by the XML's own hasLocation attribute and, for the
+    # opposite direction, an explicit per-command flag rather than one
+    # derived from param5/6 defined-ness, because at least one real command
+    # (DO_SET_ACTUATOR) defines a genuine float in param5/6 *and* its own
+    # XML text documents an explicit dual COMMAND_INT/COMMAND_LONG encoding
+    # for it — the opposite of what this rule expects, so it must be able
+    # to opt out rather than have the rule inferred onto it.
+    has_location: bool = False
+        # Mirrors the XML's hasLocation attribute. True drives
+        # test_hasLocation_rejects_command_long (COMMAND_LONG should NACK
+        # with MAV_RESULT_COMMAND_INT_ONLY(8)); False skips it (NA).
+    float_params5_6: bool = False
+        # True only when param5 and/or param6 carry a genuine float value
+        # with NO documented alternate COMMAND_INT int32-scaled encoding —
+        # must stay False (the default) for a command whose own XML text
+        # documents a dual encoding for that slot (e.g. DO_SET_ACTUATOR),
+        # since the spec itself then makes COMMAND_INT valid too. Drives
+        # test_float_params5_6_rejects_command_int (COMMAND_INT should NACK
+        # with MAV_RESULT_COMMAND_LONG_ONLY(7)); False skips it (NA).
+    message_type_exclusivity_exception: str | None = None
+        # Set when the command's own XML text explicitly documents
+        # tolerance for the "wrong" message type (e.g. DO_SET_GLOBAL_ORIGIN:
+        # "Should be sent in a COMMAND_INT... this should be assumed when
+        # sent in COMMAND_LONG"). When set, test_hasLocation_rejects_
+        # command_long is skipped (NA) with this text instead of asserting
+        # the NACK.
+
     @property
     def undefined_params(self) -> list["ParamSpec"]:
         return [p for p in self.params if not p.defined]
@@ -829,6 +859,70 @@ class Tier1CommandTestBase:
         else:
             description = f"Not denied when param{p.slot} ({p.label}, defined) is sent its sentinel"
             _check(type(self), request, description, result, expect=lambda r: r != MAV_RESULT_DENIED)
+
+    # -------------------------------------------------------------------
+    # Group D — message-type exclusivity (mandatory common test 7): a
+    # hasLocation command's params 5/6 carry lat/lon and must only be sent
+    # via COMMAND_INT (int32 x/y preserves precision); COMMAND_LONG should
+    # NACK with MAV_RESULT_COMMAND_INT_ONLY(8). Symmetrically, a command
+    # whose params 5/6 carry a genuine float value with no location meaning
+    # and no documented alternate COMMAND_INT encoding must only be sent
+    # via COMMAND_LONG; COMMAND_INT should NACK with
+    # MAV_RESULT_COMMAND_LONG_ONLY(7). See CLAUDE.md § Mandatory common
+    # tests, check 7, and § COMMAND_INT vs COMMAND_LONG selection rules.
+    # -------------------------------------------------------------------
+
+    async def test_hasLocation_rejects_command_long(self, gcs_system_cls, mock_stack_cls, request):
+        """A hasLocation command sent via COMMAND_LONG is rejected with MAV_RESULT_COMMAND_INT_ONLY."""
+        spec = self.SPEC
+        if not spec.has_location:
+            pytest.skip("NA: command has no location params (hasLocation=false)")
+        if spec.message_type_exclusivity_exception:
+            pytest.skip(f"NA: {spec.message_type_exclusivity_exception}")
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        description = "COMMAND_LONG for a hasLocation command is rejected with MAV_RESULT_COMMAND_INT_ONLY(8)"
+        kw = spec.baseline
+        acks = await probe_command_long_all_acks(
+            gcs_system_cls, spec.cmd_id, window_s=_ACK_WINDOW_S,
+            param1=kw.get("param1", 0.0), param2=kw.get("param2", 0.0),
+            param3=kw.get("param3", 0.0), param4=kw.get("param4", 0.0),
+            param5=kw.get("long5", 0.0), param6=kw.get("long6", 0.0), param7=kw.get("long7", 0.0),
+        )
+        ack = effective_ack(acks)
+        result = int(ack["result"]) if ack is not None else None
+        log.info(_FMT, spec.name, "COMMAND_LONG (hasLocation command)", f"result={result}")
+        xfail_reason = (
+            f"Stack accepted COMMAND_LONG for a hasLocation command (result={result}); "
+            "expected MAV_RESULT_COMMAND_INT_ONLY(8) — no known stack currently enforces "
+            "this message-type exclusivity rule (spec gap)"
+        )
+        _check(type(self), request, description, result,
+               expect=lambda r: r == MAV_RESULT_COMMAND_INT_ONLY, xfail_reason=xfail_reason)
+
+    async def test_float_params5_6_rejects_command_int(self, gcs_system_cls, mock_stack_cls, request):
+        """A non-location float-param5/6 command sent via COMMAND_INT is rejected with MAV_RESULT_COMMAND_LONG_ONLY."""
+        spec = self.SPEC
+        if not spec.float_params5_6:
+            pytest.skip("NA: command has no non-location float value in param5/6")
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        description = "COMMAND_INT for a float-param5/6 command is rejected with MAV_RESULT_COMMAND_LONG_ONLY(7)"
+        kw = spec.baseline
+        acks = await probe_command_int_all_acks(
+            gcs_system_cls, spec.cmd_id, frame=kw.get("frame", 6), window_s=_ACK_WINDOW_S,
+            param1=kw.get("param1", 0.0), param2=kw.get("param2", 0.0),
+            param3=kw.get("param3", 0.0), param4=kw.get("param4", 0.0),
+            x=kw.get("int_x", 0), y=kw.get("int_y", 0), z=kw.get("int_z", 0.0),
+        )
+        ack = effective_ack(acks)
+        result = int(ack["result"]) if ack is not None else None
+        log.info(_FMT, spec.name, "COMMAND_INT (float-param5/6 command)", f"result={result}")
+        xfail_reason = (
+            f"Stack accepted COMMAND_INT for a float-param5/6 command (result={result}); "
+            "expected MAV_RESULT_COMMAND_LONG_ONLY(7) — no known stack currently enforces "
+            "this message-type exclusivity rule (spec gap)"
+        )
+        _check(type(self), request, description, result,
+               expect=lambda r: r == MAV_RESULT_COMMAND_LONG_ONLY, xfail_reason=xfail_reason)
 
 
 # ---------------------------------------------------------------------------

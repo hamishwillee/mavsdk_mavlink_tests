@@ -64,7 +64,12 @@ from tests.command.conftest import (
     probe_command_long,
     send_command_int,
 )
-from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
+from tests.mock_flight_stack import (
+    MAV_RESULT_ACCEPTED,
+    MAV_RESULT_COMMAND_INT_ONLY,
+    MAV_RESULT_DENIED,
+    MAV_RESULT_UNSUPPORTED,
+)
 from tests import report
 from tests.report import _tier1_auto_record  # noqa: F401 — autouse: records every test's outcome into the combined report
 
@@ -581,11 +586,22 @@ class TestDoSetGlobalOriginCommand:
 
     async def test_do_set_global_origin_command_long_accepted(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """
-        COMMAND_LONG with float degrees — observational.
+        COMMAND_LONG with float degrees is not rejected for being the "wrong" message type.
 
-        The spec says "should be sent as COMMAND_INT" (integer lat/lon preserves
-        precision); this test documents COMMAND_LONG behaviour.  Params 1–4
-        are NaN (reserved).
+        DO_SET_GLOBAL_ORIGIN is hasLocation="true", which per the general
+        message-type-exclusivity rule (root CLAUDE.md / tests/command/CLAUDE.md
+        § Mandatory common tests, check 7) would normally mean COMMAND_LONG
+        should be NACKed with MAV_RESULT_COMMAND_INT_ONLY(8) — but this
+        command's own XML text is an explicit, documented exception: "Should
+        be sent in a COMMAND_INT (Expected frame is MAV_FRAME_GLOBAL, and
+        this should be assumed when sent in COMMAND_LONG)." That sentence
+        only makes sense if COMMAND_LONG is a tolerated fallback, not a
+        rejected message type — so unlike NAV_LAND/DO_REPOSITION/NAV_TAKEOFF/
+        NAV_VTOL_TAKEOFF (which have no such exception and are expected,
+        for now xfail, to reject COMMAND_LONG), this is a real assertion,
+        not an xfail: a stack that NACKs with COMMAND_INT_ONLY here would be
+        contradicting its own command's documented behaviour. Params 1–4 are
+        NaN (reserved).
         """
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         ack = await probe_command_long(
@@ -600,6 +616,11 @@ class TestDoSetGlobalOriginCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "COMMAND_LONG (float degrees)", f"result={result}")
+        assert result != MAV_RESULT_COMMAND_INT_ONLY, (
+            f"DO_SET_GLOBAL_ORIGIN's own XML text explicitly tolerates COMMAND_LONG "
+            f"(assumed frame); a COMMAND_INT_ONLY(8) NACK (got {result}) contradicts "
+            "the command's own documented behaviour"
+        )
 
     async def test_do_set_global_origin_command_long_float_int32max_denied(self, gcs_system_origin_cls, mock_stack_origin_cls):
         """

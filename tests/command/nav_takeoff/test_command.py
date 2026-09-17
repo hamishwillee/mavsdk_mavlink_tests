@@ -60,6 +60,7 @@ _LON_INT = 85456000
 SPEC = CommandSpec(
     cmd_id=_CMD_ID,
     name=_CMD,
+    has_location=True,  # common.xml: hasLocation="true" — drives test_hasLocation_rejects_command_long
     baseline=dict(
         param1=0.0,     # Pitch: 0 deg (use default)
         param3=0.0,     # Flags: none

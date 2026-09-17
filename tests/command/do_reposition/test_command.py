@@ -60,7 +60,12 @@ from tests.command.conftest import (
     INT32_MAX,
     _FMT,
 )
-from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
+from tests.mock_flight_stack import (
+    MAV_RESULT_ACCEPTED,
+    MAV_RESULT_COMMAND_INT_ONLY,
+    MAV_RESULT_DENIED,
+    MAV_RESULT_UNSUPPORTED,
+)
 from tests import report
 from tests.report import _tier1_auto_record  # noqa: F401 — autouse: records every test's outcome into the combined report
 
@@ -784,4 +789,46 @@ class TestDoRepositionCommand:
                 "(PX4 incorrectly rejects it as a protocol error)"
             )
         assert result == MAV_RESULT_ACCEPTED
+
+    # -----------------------------------------------------------------------
+    # Group I — message-type exclusivity (mandatory common test 7, root
+    # CLAUDE.md / tests/command/CLAUDE.md § Mandatory common tests).
+    # DO_REPOSITION is hasLocation="true" with no documented COMMAND_LONG
+    # exception — a hand-rolled equivalent of Tier1CommandTestBase.
+    # test_hasLocation_rejects_command_long, since this file predates that
+    # base class migration.
+    # -----------------------------------------------------------------------
+
+    async def test_do_reposition_command_long_rejected(self, gcs_system_cls, mock_stack_cls):
+        """
+        COMMAND_LONG (baseline params) is rejected with MAV_RESULT_COMMAND_INT_ONLY(8).
+
+        DO_REPOSITION is hasLocation="true"/isDestination="true" — params
+        5/6 carry lat/lon and exist to be sent via COMMAND_INT (int32 ×1e7
+        precision). A COMMAND_LONG send of the same command should be
+        NACKed with MAV_RESULT_COMMAND_INT_ONLY(8) rather than silently
+        accepted through the imprecise float encoding.
+
+        xfail: no known stack currently enforces this message-type
+        exclusivity rule (a genuine, widespread spec gap — see
+        tests/command/CLAUDE.md § Mandatory common tests, check 7).
+        """
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        ack = await probe_command_long(
+            gcs_system_cls, _CMD_ID,
+            param1=-1.0, param2=1.0, param3=0.0, param4=None,
+            param5=float(_LAT_INT), param6=float(_LON_INT), param7=50.0,
+        )
+        result = int(ack["result"]) if ack is not None else None
+        if result is None:
+            log.warning(_FMT, _CMD, "COMMAND_LONG (hasLocation command)", "UNKNOWN — no ACK")
+            return
+        log.info(_FMT, _CMD, "COMMAND_LONG (hasLocation command)", f"result={result}")
+        if result != MAV_RESULT_COMMAND_INT_ONLY:
+            pytest.xfail(
+                f"Stack accepted COMMAND_LONG for a hasLocation command (result={result}); "
+                "expected MAV_RESULT_COMMAND_INT_ONLY(8) — no known stack currently enforces "
+                "this message-type exclusivity rule (spec gap)"
+            )
+        assert result == MAV_RESULT_COMMAND_INT_ONLY
 
