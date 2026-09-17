@@ -15,32 +15,41 @@ Headline finding (source-traced AND empirically confirmed below; see
 README.md § "Ground vs air" for the full writeup and observed values):
 
     PX4's Ekf::resetWindToExternalObservation() (src/modules/ekf2/EKF/wind.cpp)
-    is gated by `if (!_control_status.flags.in_air)` — the wind-state reset is
-    applied ONLY while the vehicle is on the ground, and is a silent no-op
-    while airborne.  The COMMAND_ACK handler in EKF2.cpp has no such gate: it
-    returns ACCEPTED unconditionally in both states.  A GCS therefore cannot
-    tell from the ACK alone whether the estimate was actually applied.
+    is gated by the vehicle's current landed state (originally
+    `!_control_status.flags.in_air`; re-sourced from the `vehicle_land_detected`
+    uORB topic by commit b4a5854c62, same effect) — the wind-state reset is
+    applied ONLY while the vehicle is on the ground, and is rejected while
+    airborne.
 
-This is a DOC DISCREPANCY worth flagging: the command's own description in
-development.xml explicitly describes an *in-flight* use case ("...extending
+As of commit 793d308c53 (branch fix_external_wind_estimate_mavlink,
+2026-09-09), the COMMAND_ACK handler in EKF2.cpp DOES reflect this: it returns
+TEMPORARILY_REJECTED (not ACCEPTED) when the reset was not applied — so a GCS
+CAN now tell from the ACK alone whether the estimate was actually applied.
+(Pre-fix, the handler returned ACCEPTED unconditionally in both states, which
+is what this module originally caught.)
+
+What remains a DOC DISCREPANCY worth flagging: the command's own description
+in development.xml explicitly describes an *in-flight* use case ("...extending
 the time when operating without GPS before position drift builds to an unsafe
 level... the command might reasonably be sent every few minutes when
-operating at altitude") — yet the current PX4 implementation only honours the
-command while landed, silently discarding it in exactly the scenario the spec
-describes. See CLAUDE.md § MAV_CMD_EXTERNAL_WIND_ESTIMATE and README.md for
-the write-up; this looks like a PX4 implementation gap rather than a MAVLink
-spec problem (the spec text is unambiguous; PX4 just doesn't implement the
-in-air half of it).
+operating at altitude") — yet the current PX4 implementation still only
+honours the command while landed; it now correctly REJECTS the in-flight case
+instead of silently discarding it, but still doesn't implement the in-flight
+behaviour the spec describes. See CLAUDE.md § MAV_CMD_EXTERNAL_WIND_ESTIMATE
+and README.md for the write-up; this looks like a PX4 implementation gap
+rather than a MAVLink spec problem (the spec text is unambiguous; PX4 just
+doesn't implement the in-air half of it).
 
 Test 1 (ground) sends the command while disarmed/landed and expects the WIND_COV
-values to move to (approximately) the commanded speed/direction.
+values to move to (approximately) the commanded speed/direction, with ACK
+ACCEPTED.
 Test 2 (air) arms, takes off, and sends the command with a distinguishable
 speed/direction — and expects the WIND_COV values to stay close to whatever
 they already were (i.e. NOT move toward the newly-commanded values), confirming
-the in_air gate empirically rather than by source inspection alone.
-
-Both tests assert on COMMAND_ACK == ACCEPTED (or at least not UNSUPPORTED) —
-consistent in both states, since PX4's ACK path does not check in_air.
+the landed-state gate empirically rather than by source inspection alone. Both
+ACCEPTED and TEMPORARILY_REJECTED are tolerated for the air ACK (this module
+runs against both pre- and post-793d308c53 PX4 checkouts); only UNSUPPORTED
+would indicate the command itself isn't recognised.
 
 Running
 -------
@@ -257,11 +266,12 @@ async def test_ground_wind_estimate_applied(gcs_system, request):
 async def test_air_wind_estimate_ignored(gcs_system, request):
     """
     While airborne, the commanded wind speed/direction is NOT applied to the
-    EKF wind state -- `!_control_status.flags.in_air` is false, so
-    Ekf::resetWindToExternalObservation() returns without doing anything, and
-    `_external_wind_init` is never set. COMMAND_ACK is still ACCEPTED (PX4's
-    ACK path is unconditional) -- this is exactly the "ACK says yes, nothing
-    happened" gap this test exists to catch.
+    EKF wind state -- the vehicle is not landed, so
+    Ekf::resetWindToExternalObservation() returns false without doing
+    anything, and `_external_wind_init` is never set. As of commit
+    793d308c53, COMMAND_ACK correctly reflects this as TEMPORARILY_REJECTED
+    rather than ACCEPTED -- see the module docstring for the pre-fix history
+    of the "ACK says yes, nothing happened" gap this test originally caught.
 
     get_wind_status() (estimator_interface.h) is
     `_control_status.flags.wind || _external_wind_init`. `_external_wind_init`
@@ -307,13 +317,14 @@ async def test_air_wind_estimate_ignored(gcs_system, request):
     )
 
     log.warning(
-        "DOC DISCREPANCY: EXTERNAL_WIND_ESTIMATE ACK=ACCEPTED while airborne, but "
-        "PX4's resetWindToExternalObservation() (wind.cpp) only applies the estimate -- "
-        "and only makes get_wind_status() true, which gates whether WIND_COV is published "
-        "at all (EKF2.cpp PublishWindEstimate / estimator_interface.h) -- when `!in_air`. "
-        "The spec's own description explicitly describes an in-flight ('operating at "
-        "altitude') use case that this implementation silently ignores. "
-        f"baseline={_fmt_wind(baseline)} after={_fmt_wind(after)} "
+        "DOC DISCREPANCY: PX4's resetWindToExternalObservation() (wind.cpp) only applies "
+        "the estimate -- and only makes get_wind_status() true, which gates whether WIND_COV "
+        "is published at all (EKF2.cpp PublishWindEstimate / estimator_interface.h) -- while "
+        "landed. As of commit 793d308c53 the ACK correctly reports TEMPORARILY_REJECTED "
+        "(not ACCEPTED) when this happens, so this is no longer a silent ACK/behaviour "
+        "mismatch -- but the spec's own description explicitly describes an in-flight "
+        "('operating at altitude') use case that PX4 still does not implement at all. "
+        f"ack_result={result} baseline={_fmt_wind(baseline)} after={_fmt_wind(after)} "
         f"commanded-if-applied=(north={expected_north:.2f}, east={expected_east:.2f})"
     )
 
