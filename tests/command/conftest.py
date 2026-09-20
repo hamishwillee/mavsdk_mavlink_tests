@@ -16,7 +16,6 @@ is unsupported.  Log at WARNING level when no ACK is received.
 import asyncio
 import json
 import logging
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +25,7 @@ from mavsdk import System
 from mavsdk.mavlink_direct import MavlinkMessage
 
 from tests import report
+from tests.mavlink_xml import commands_for_context, load_command_defs, require_context
 from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
 from tests.mock_flight_stack import (
     MAV_RESULT_COMMAND_INT_ONLY,
@@ -66,37 +66,15 @@ _FMT = "%-14s | %-44s | %s"
 
 def _load_commands(definitions_dir: Path) -> dict[int, str]:
     """
-    Parse common.xml (recursively following <include> tags) and return a
-    mapping of {cmd_value: cmd_name} for all MAV_CMD entries.
-
-    common.xml is the full superset — it includes standard.xml which includes
-    minimal.xml.  Parsing common.xml with recursive resolution gives all 168+
-    standard commands.
+    Return {cmd_value: cmd_name} for every MAV_CMD in common.xml (recursively
+    following <include>) that the XML tags ``command="true"`` — i.e. usable
+    via the command protocol.  Commands tagged only for mission/fence/rally
+    are excluded.  If the XML predates the tag convention, every command is
+    returned (with a warning) rather than none.  Shared parser:
+    tests/mavlink_xml.py.
     """
-    seen: set[str] = set()
-    commands: dict[int, str] = {}
-
-    def _parse(filename: str) -> None:
-        if filename in seen:
-            return
-        seen.add(filename)
-        filepath = definitions_dir / filename
-        if not filepath.exists():
-            log.warning("MAVLink XML file not found: %s", filepath)
-            return
-        tree = ET.parse(filepath)
-        for inc in tree.findall(".//include"):
-            if inc.text:
-                _parse(inc.text.strip())
-        for enum in tree.findall('.//enum[@name="MAV_CMD"]'):
-            for entry in enum.findall("entry"):
-                val = entry.get("value")
-                name = entry.get("name")
-                if val is not None and name is not None:
-                    commands[int(val)] = name
-
-    _parse("common.xml")
-    return commands
+    cmds = load_command_defs(definitions_dir, roots=("common.xml",))
+    return {i: c.name for i, c in commands_for_context(cmds, "command").items()}
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +611,7 @@ class Tier1CommandTestBase:
         # tests/mission/conftest.py's Tier1MissionTestBase for the mission-
         # protocol analogue of this same registration.
         spec = cls.SPEC
+        require_context(spec.cmd_id, spec.name, "command")
         report.declare_command("command", spec.name, spec.cmd_id)
         report.declare_params("command", spec.name, [f"{p.slot}_{p.label}" for p in spec.params])
         for p in spec.undefined_params:
