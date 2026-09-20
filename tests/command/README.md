@@ -40,7 +40,7 @@ Other stacks/vehicle types: swap `--ardupilot-sitl`/`--px4-model` and `--vehicle
 
 ## Command support survey
 
-Probes all 168 `MAV_CMD` via COMMAND_INT, classified SUPPORTED (any non-UNSUPPORTED result) / UNSUPPORTED (`MAV_RESULT_UNSUPPORTED`) / UNKNOWN (no ACK — a spec violation, not necessarily unsupported). Always passes; observational. Written to `logs/command_survey_<stack>_<timestamp>.log`.
+Probes all 168 `MAV_CMD` twice — once via COMMAND_INT and once via COMMAND_LONG — and combines the two results (reported once when they agree; if one message type gets a real ACK and the other UNSUPPORTED/no ACK, the command is SUPPORTED via that type only, and the row notes the other type should NACK with `COMMAND_INT_ONLY`/`COMMAND_LONG_ONLY`). The table also has a raw `MAV_RESULT` column. Classified SUPPORTED (any non-UNSUPPORTED result) / UNSUPPORTED (`MAV_RESULT_UNSUPPORTED`) / UNKNOWN (no ACK — a spec violation, not necessarily unsupported). Always passes; observational. Written to `logs/command_survey_<stack>_<timestamp>.log`.
 
 ### Survey summary
 

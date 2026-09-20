@@ -50,6 +50,7 @@ import pytest
 from .conftest import (
     _load_commands,
     probe_command_int,
+    probe_command_long,
     INT32_MAX,
 )
 from tests.conftest import _format_autopilot_header
@@ -81,6 +82,61 @@ _SUPPORTED_RESULTS = frozenset({
 })
 
 
+_RESULT_NAMES = {
+    0: "ACCEPTED", 1: "TEMPORARILY_REJECTED", 2: "DENIED", 3: "UNSUPPORTED",
+    4: "FAILED", 5: "IN_PROGRESS", 6: "CANCELLED", 7: "COMMAND_LONG_ONLY",
+    8: "COMMAND_INT_ONLY", 9: "COMMAND_UNSUPPORTED_MAV_FRAME", 10: "NOT_IN_CONTROL",
+}
+
+
+async def _probe_one(probe_fn, system, cmd_id, **kwargs):
+    """Run one probe; return (ack_fields_or_None, error_string_or_None)."""
+    try:
+        return await probe_fn(system, command=cmd_id, timeout_s=_SURVEY_ACK_TIMEOUT_S, **kwargs), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _describe(ack: dict | None, err: str | None) -> str:
+    if err is not None:
+        return f"ERROR({err})"
+    if ack is None:
+        return "NO_ACK"
+    r = int(ack["result"])
+    return _RESULT_NAMES.get(r, f"result={r}")
+
+
+def _combine(int_ack, int_err, long_ack, long_err) -> tuple[str, str]:
+    """
+    Combine the COMMAND_INT and COMMAND_LONG probe outcomes into one row.
+
+    Returns (classification, raw) where raw is the MAV_RESULT column text.
+    - Both agree: reported once, as before.
+    - They disagree and one is a "supported" ACK while the other is
+      UNSUPPORTED/NO_ACK: the command IS supported, but only via one message
+      type.  A stack should NACK the unsupported encoding with the specific
+      COMMAND_INT_ONLY(8)/COMMAND_LONG_ONLY(7) result instead — flagged.
+    - They disagree with both "supported": supported, results differ per type.
+    """
+    i_cls, l_cls = _classify(int_ack) if int_err is None else "ERROR", \
+        _classify(long_ack) if long_err is None else "ERROR"
+    i_raw, l_raw = _describe(int_ack, int_err), _describe(long_ack, long_err)
+    if i_raw == l_raw:
+        return i_cls, i_raw
+    i_ok, l_ok = i_cls == "SUPPORTED", l_cls == "SUPPORTED"
+    if i_ok and l_ok:
+        return "SUPPORTED", f"INT={i_raw} / LONG={l_raw}"
+    if i_ok != l_ok:
+        ok_type, bad_type = ("COMMAND_INT", "COMMAND_LONG") if i_ok else ("COMMAND_LONG", "COMMAND_INT")
+        ok_raw, bad_raw = (i_raw, l_raw) if i_ok else (l_raw, i_raw)
+        want = "COMMAND_INT_ONLY" if bad_type == "COMMAND_LONG" else "COMMAND_LONG_ONLY"
+        return "SUPPORTED", (
+            f"{ok_type}={ok_raw} / {bad_type}={bad_raw} "
+            f"[supported via {ok_type} only; {bad_type} should NACK with {want}, not {bad_raw}]"
+        )
+    return "UNKNOWN", f"INT={i_raw} / LONG={l_raw}"
+
+
 def _classify(ack: dict | None) -> str:
     if ack is None:
         return "UNKNOWN"
@@ -99,7 +155,7 @@ class TestCommandSurvey:
 
     async def test_survey_all_commands(self, gcs_system_cls, mock_stack_cls, request):
         """
-        Probe every MAV_CMD with COMMAND_INT and build a support matrix table.
+        Probe every MAV_CMD with both COMMAND_INT and COMMAND_LONG and build a support matrix table.
 
         Always passes — the goal is to record which commands are supported,
         unsupported, or unknown for the current flight stack.
@@ -112,34 +168,26 @@ class TestCommandSurvey:
 
         log.info("Surveying %d MAV_CMD entries from %s", len(commands), definitions_dir)
 
-        results: dict[int, tuple[str, str]] = {}
+        results: dict[int, tuple[str, str, str]] = {}
         for cmd_id, cmd_name in sorted(commands.items()):
-            try:
-                ack = await probe_command_int(
-                    gcs_system_cls,
-                    command=cmd_id,
-                    frame=6,       # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
-                    param1=0.0,
-                    param2=0.0,
-                    param3=0.0,
-                    param4=0.0,
-                    x=INT32_MAX,   # "use current position" sentinel for lat
-                    y=INT32_MAX,   # "use current position" sentinel for lon
-                    z=0.0,
-                    timeout_s=_SURVEY_ACK_TIMEOUT_S,
-                )
-                classification = _classify(ack)
-                ack_result = int(ack["result"]) if ack is not None else None
-            except Exception as exc:
-                classification = f"ERROR({exc})"
-                ack_result = None
-
-            results[cmd_id] = (cmd_name, classification)
-            log.info(
-                "%-45s (cmd=%4d) → %s%s",
-                cmd_name, cmd_id, classification,
-                f" [result={ack_result}]" if ack_result is not None and classification not in ("SUPPORTED", "UNSUPPORTED") else "",
+            int_ack, int_err = await _probe_one(
+                probe_command_int, gcs_system_cls, cmd_id,
+                frame=6,       # MAV_FRAME_GLOBAL_RELATIVE_ALT_INT
+                param1=0.0, param2=0.0, param3=0.0, param4=0.0,
+                x=INT32_MAX,   # "use current position" sentinel for lat
+                y=INT32_MAX,   # "use current position" sentinel for lon
+                z=0.0,
             )
+            long_ack, long_err = await _probe_one(
+                probe_command_long, gcs_system_cls, cmd_id,
+                param1=0.0, param2=0.0, param3=0.0, param4=0.0,
+                param5=None,   # NaN — COMMAND_LONG equivalent of the lat sentinel
+                param6=None,   # NaN — ... and of the lon sentinel
+                param7=0.0,
+            )
+            classification, raw = _combine(int_ack, int_err, long_ack, long_err)
+            results[cmd_id] = (cmd_name, classification, raw)
+            log.info("%-45s (cmd=%4d) → %s [%s]", cmd_name, cmd_id, classification, raw)
 
         info = getattr(request.config, "_autopilot_info", {})
         drone_address = request.config.getoption("--drone-address")
@@ -149,7 +197,7 @@ class TestCommandSurvey:
 
 
 def _log_survey_table(
-    results: dict[int, tuple[str, str]],
+    results: dict[int, tuple[str, str, str]],
     info: dict,
     drone_address: str | None,
 ) -> None:
@@ -157,12 +205,12 @@ def _log_survey_table(
     table_lines = [
         "Command support survey results",
         "=" * 72,
-        f"{'CMD ID':>6}  {'Result':<12}  {'Command Name'}",
+        f"{'CMD ID':>6}  {'Result':<12}  {'Command Name':<45}  {'MAV_RESULT'}",
         "-" * 72,
     ]
     counts = {"SUPPORTED": 0, "UNSUPPORTED": 0, "UNKNOWN": 0}
-    for cmd_id, (cmd_name, classification) in sorted(results.items()):
-        table_lines.append(f"{cmd_id:>6}  {classification:<12}  {cmd_name}")
+    for cmd_id, (cmd_name, classification, raw) in sorted(results.items()):
+        table_lines.append(f"{cmd_id:>6}  {classification:<12}  {cmd_name:<45}  {raw}")
         key = "UNKNOWN" if classification not in ("SUPPORTED", "UNSUPPORTED") else classification
         counts[key] += 1
 
