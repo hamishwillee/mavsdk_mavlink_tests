@@ -1,0 +1,4963 @@
+{
+ "commands": {
+  "1000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW",
+   "params": [
+    "1:Pitch angle",
+    "2:Yaw angle",
+    "3:Pitch rate",
+    "4:Yaw rate",
+    "5:Gimbal manager flags",
+    "7:Gimbal device ID"
+   ],
+   "wip": false
+  },
+  "10001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_ADSB_OUT_IDENT",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "1001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE",
+   "params": [
+    "1:sysid primary control",
+    "2:compid primary control",
+    "3:sysid secondary control",
+    "4:compid secondary control",
+    "7:Gimbal device ID"
+   ],
+   "wip": false
+  },
+  "112": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONDITION_DELAY",
+   "params": [
+    "1:Delay"
+   ],
+   "wip": false
+  },
+  "113": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONDITION_CHANGE_ALT",
+   "params": [
+    "1:Rate",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "114": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONDITION_DISTANCE",
+   "params": [
+    "1:Distance"
+   ],
+   "wip": false
+  },
+  "115": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONDITION_YAW",
+   "params": [
+    "1:Angle",
+    "2:Angular Speed",
+    "3:Direction",
+    "4:Relative"
+   ],
+   "wip": false
+  },
+  "12900": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_ODID_SET_EMERGENCY",
+   "params": [
+    "1:Number"
+   ],
+   "wip": false
+  },
+  "159": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONDITION_LAST",
+   "params": [],
+   "wip": false
+  },
+  "16": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_WAYPOINT",
+   "params": [
+    "1:Hold",
+    "2:Accept Radius",
+    "3:Pass Radius",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "17": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_LOITER_UNLIM",
+   "params": [
+    "3:Radius",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "176": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_MODE",
+   "params": [
+    "1:Mode",
+    "2:Custom Mode",
+    "3:Custom Submode"
+   ],
+   "wip": false
+  },
+  "177": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_JUMP",
+   "params": [
+    "1:Number",
+    "2:Repeat"
+   ],
+   "wip": false
+  },
+  "178": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_CHANGE_SPEED",
+   "params": [
+    "1:Speed Type",
+    "2:Speed",
+    "3:Throttle"
+   ],
+   "wip": false
+  },
+  "179": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_SET_HOME",
+   "params": [
+    "1:Use Current",
+    "2:Roll",
+    "3:Pitch",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "18": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_LOITER_TURNS",
+   "params": [
+    "1:Turns",
+    "2:Heading Required",
+    "3:Radius",
+    "4:Xtrack Location",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "180": {
+   "contexts": [],
+   "deprecated": true,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_PARAMETER",
+   "params": [
+    "1:Number",
+    "2:Value"
+   ],
+   "wip": false
+  },
+  "181": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_RELAY",
+   "params": [
+    "1:Instance",
+    "2:Setting"
+   ],
+   "wip": false
+  },
+  "182": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_REPEAT_RELAY",
+   "params": [
+    "1:Instance",
+    "2:Count",
+    "3:Time"
+   ],
+   "wip": false
+  },
+  "183": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_SERVO",
+   "params": [
+    "1:Instance",
+    "2:PWM"
+   ],
+   "wip": false
+  },
+  "184": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_REPEAT_SERVO",
+   "params": [
+    "1:Instance",
+    "2:PWM",
+    "3:Count",
+    "4:Time"
+   ],
+   "wip": false
+  },
+  "185": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_FLIGHTTERMINATION",
+   "params": [
+    "1:Terminate"
+   ],
+   "wip": false
+  },
+  "186": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_CHANGE_ALTITUDE",
+   "params": [
+    "1:Altitude",
+    "2:Frame"
+   ],
+   "wip": false
+  },
+  "187": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_ACTUATOR",
+   "params": [
+    "1:Actuator 1",
+    "2:Actuator 2",
+    "3:Actuator 3",
+    "4:Actuator 4",
+    "5:Actuator 5",
+    "6:Actuator 6",
+    "7:Index"
+   ],
+   "wip": false
+  },
+  "188": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_RETURN_PATH_START",
+   "params": [
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": true
+  },
+  "189": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_LAND_START",
+   "params": [
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "19": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_LOITER_TIME",
+   "params": [
+    "1:Time",
+    "2:Heading Required",
+    "3:Radius",
+    "4:Xtrack Location",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "190": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_RALLY_LAND",
+   "params": [
+    "1:Altitude",
+    "2:Speed"
+   ],
+   "wip": false
+  },
+  "191": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_GO_AROUND",
+   "params": [
+    "1:Altitude"
+   ],
+   "wip": false
+  },
+  "192": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_REPOSITION",
+   "params": [
+    "1:Speed",
+    "2:Bitmask",
+    "3:Radius",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "193": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_PAUSE_CONTINUE",
+   "params": [
+    "1:Continue",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "194": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_REVERSE",
+   "params": [
+    "1:Reverse"
+   ],
+   "wip": false
+  },
+  "195": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_SET_ROI_LOCATION",
+   "params": [
+    "1:Gimbal device ID",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "196": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_ROI_WPNEXT_OFFSET",
+   "params": [
+    "1:Gimbal device ID",
+    "5:Pitch Offset",
+    "6:Roll Offset",
+    "7:Yaw Offset"
+   ],
+   "wip": false
+  },
+  "197": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_ROI_NONE",
+   "params": [
+    "1:Gimbal device ID"
+   ],
+   "wip": false
+  },
+  "198": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_ROI_SYSID",
+   "params": [
+    "1:System ID",
+    "2:Gimbal device ID"
+   ],
+   "wip": false
+  },
+  "20": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_RETURN_TO_LAUNCH",
+   "params": [],
+   "wip": false
+  },
+  "200": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_CONTROL_VIDEO",
+   "params": [
+    "1:ID",
+    "2:Transmission",
+    "3:Interval",
+    "4:Recording"
+   ],
+   "wip": false
+  },
+  "2000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_IMAGE_START_CAPTURE",
+   "params": [
+    "1:Target Camera ID",
+    "2:Interval",
+    "3:Total Images",
+    "4:Sequence Number"
+   ],
+   "wip": false
+  },
+  "2001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_IMAGE_STOP_CAPTURE",
+   "params": [
+    "1:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2002": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_CAMERA_IMAGE_CAPTURE",
+   "params": [
+    "1:Number"
+   ],
+   "wip": false
+  },
+  "2003": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_TRIGGER_CONTROL",
+   "params": [
+    "1:Enable",
+    "2:Reset",
+    "3:Pause",
+    "4:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2004": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CAMERA_TRACK_POINT",
+   "params": [
+    "1:Point x",
+    "2:Point y",
+    "3:Radius",
+    "4:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2005": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CAMERA_TRACK_RECTANGLE",
+   "params": [
+    "1:Top left corner x",
+    "2:Top left corner y",
+    "3:Bottom right corner x",
+    "4:Bottom right corner y",
+    "5:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "201": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_SET_ROI",
+   "params": [
+    "1:ROI Mode",
+    "2:WP Index",
+    "3:ROI Index",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "2010": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CAMERA_STOP_TRACKING",
+   "params": [
+    "1:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "202": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_DIGICAM_CONFIGURE",
+   "params": [
+    "1:Mode",
+    "2:Shutter Speed",
+    "3:Aperture",
+    "4:ISO",
+    "5:Exposure",
+    "6:Command Identity",
+    "7:Engine Cut-off"
+   ],
+   "wip": false
+  },
+  "2020": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CAMERA_START_MTI",
+   "params": [
+    "1:Target Camera ID"
+   ],
+   "wip": true
+  },
+  "2021": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CAMERA_STOP_MTI",
+   "params": [
+    "1:Target Camera ID"
+   ],
+   "wip": true
+  },
+  "203": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_DIGICAM_CONTROL",
+   "params": [
+    "1:Session Control",
+    "2:Zoom Absolute",
+    "3:Zoom Relative",
+    "4:Focus",
+    "5:Shoot Command",
+    "6:Command Identity",
+    "7:Shot ID"
+   ],
+   "wip": false
+  },
+  "204": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_MOUNT_CONFIGURE",
+   "params": [
+    "1:Mode",
+    "2:Stabilize Roll",
+    "3:Stabilize Pitch",
+    "4:Stabilize Yaw",
+    "5:Roll Input Mode",
+    "6:Pitch Input Mode",
+    "7:Yaw Input Mode"
+   ],
+   "wip": false
+  },
+  "205": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_MOUNT_CONTROL",
+   "params": [
+    "1:Pitch",
+    "2:Roll",
+    "3:Yaw",
+    "4:Altitude",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Mode"
+   ],
+   "wip": false
+  },
+  "206": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_CAM_TRIGG_DIST",
+   "params": [
+    "1:Distance",
+    "2:Shutter",
+    "3:Trigger",
+    "4:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "207": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_FENCE_ENABLE",
+   "params": [
+    "1:Enable",
+    "2:Types"
+   ],
+   "wip": false
+  },
+  "208": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_PARACHUTE",
+   "params": [
+    "1:Action"
+   ],
+   "wip": false
+  },
+  "209": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_MOTOR_TEST",
+   "params": [
+    "1:Instance",
+    "2:Throttle Type",
+    "3:Throttle",
+    "4:Timeout",
+    "5:Motor Count",
+    "6:Test Order"
+   ],
+   "wip": false
+  },
+  "21": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_LAND",
+   "params": [
+    "1:Abort Alt",
+    "2:Land Mode",
+    "3:Empty",
+    "4:Yaw Angle",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "210": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_INVERTED_FLIGHT",
+   "params": [
+    "1:Inverted"
+   ],
+   "wip": false
+  },
+  "211": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_GRIPPER",
+   "params": [
+    "1:Gripper ID",
+    "2:Action"
+   ],
+   "wip": false
+  },
+  "212": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_AUTOTUNE_ENABLE",
+   "params": [
+    "1:Enable",
+    "2:Axis",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "213": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_SET_YAW_SPEED",
+   "params": [
+    "1:Yaw",
+    "2:Speed",
+    "3:Angle"
+   ],
+   "wip": false
+  },
+  "214": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_CAM_TRIGG_INTERVAL",
+   "params": [
+    "1:Trigger Cycle",
+    "2:Shutter Integration",
+    "3:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "22": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_TAKEOFF",
+   "params": [
+    "1:Pitch",
+    "3:Flags",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "220": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_MOUNT_CONTROL_QUAT",
+   "params": [
+    "1:Q1",
+    "2:Q2",
+    "3:Q3",
+    "4:Q4"
+   ],
+   "wip": false
+  },
+  "221": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_GUIDED_MASTER",
+   "params": [
+    "1:System ID",
+    "2:Component ID"
+   ],
+   "wip": false
+  },
+  "222": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_GUIDED_LIMITS",
+   "params": [
+    "1:Timeout",
+    "2:Min Altitude",
+    "3:Max Altitude",
+    "4:Horiz. Move Limit"
+   ],
+   "wip": false
+  },
+  "223": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_ENGINE_CONTROL",
+   "params": [
+    "1:Start Engine",
+    "2:Cold Start",
+    "3:Height Delay",
+    "4:Options"
+   ],
+   "wip": false
+  },
+  "224": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_MISSION_CURRENT",
+   "params": [
+    "1:Number",
+    "2:Reset Mission"
+   ],
+   "wip": false
+  },
+  "23": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_LAND_LOCAL",
+   "params": [
+    "1:Target",
+    "2:Offset",
+    "3:Descend Rate",
+    "4:Yaw",
+    "5:Y Position",
+    "6:X Position",
+    "7:Z Position"
+   ],
+   "wip": false
+  },
+  "24": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_TAKEOFF_LOCAL",
+   "params": [
+    "1:Pitch",
+    "3:Ascend Rate",
+    "4:Yaw",
+    "5:Y Position",
+    "6:X Position",
+    "7:Z Position"
+   ],
+   "wip": false
+  },
+  "240": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_LAST",
+   "params": [],
+   "wip": false
+  },
+  "241": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PREFLIGHT_CALIBRATION",
+   "params": [
+    "1:Gyro Temperature",
+    "2:Magnetometer",
+    "3:Ground Pressure",
+    "4:Remote Control",
+    "5:Accelerometer",
+    "6:Compmot or Airspeed",
+    "7:ESC or Baro"
+   ],
+   "wip": false
+  },
+  "242": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PREFLIGHT_SET_SENSOR_OFFSETS",
+   "params": [
+    "1:Sensor Type",
+    "2:X Offset",
+    "3:Y Offset",
+    "4:Z Offset",
+    "5:4th Dimension",
+    "6:5th Dimension",
+    "7:6th Dimension"
+   ],
+   "wip": false
+  },
+  "243": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PREFLIGHT_UAVCAN",
+   "params": [
+    "1:Actuator ID",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "245": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PREFLIGHT_STORAGE",
+   "params": [
+    "1:Parameter Storage",
+    "2:Mission Storage",
+    "3:Logging Rate",
+    "4:Empty"
+   ],
+   "wip": false
+  },
+  "246": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN",
+   "params": [
+    "1:Autopilot",
+    "2:Companion",
+    "3:Component Action",
+    "4:Component ID",
+    "5:Empty",
+    "6:Conditions",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "25": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_FOLLOW",
+   "params": [
+    "1:Following",
+    "2:Ground Speed",
+    "3:Radius",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "2500": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_VIDEO_START_CAPTURE",
+   "params": [
+    "1:Stream ID",
+    "2:Status Frequency",
+    "3:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2501": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_VIDEO_STOP_CAPTURE",
+   "params": [
+    "1:Stream ID",
+    "2:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2502": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_VIDEO_START_STREAMING",
+   "params": [
+    "1:Stream ID",
+    "2:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2503": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_VIDEO_STOP_STREAMING",
+   "params": [
+    "1:Stream ID",
+    "2:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "2504": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_VIDEO_STREAM_INFORMATION",
+   "params": [
+    "1:Stream ID"
+   ],
+   "wip": false
+  },
+  "2505": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_VIDEO_STREAM_STATUS",
+   "params": [
+    "1:Stream ID"
+   ],
+   "wip": false
+  },
+  "2510": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_LOGGING_START",
+   "params": [
+    "1:Format",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "2511": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_LOGGING_STOP",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "252": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_OVERRIDE_GOTO",
+   "params": [
+    "1:Continue",
+    "2:Position",
+    "3:Frame",
+    "4:Yaw",
+    "5:Latitude/X",
+    "6:Longitude/Y",
+    "7:Altitude/Z"
+   ],
+   "wip": false
+  },
+  "2520": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_AIRFRAME_CONFIGURATION",
+   "params": [
+    "1:Landing Gear ID",
+    "2:Landing Gear Position"
+   ],
+   "wip": false
+  },
+  "260": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_OBLIQUE_SURVEY",
+   "params": [
+    "1:Distance",
+    "2:Shutter",
+    "3:Min Interval",
+    "4:Positions",
+    "5:Roll Angle",
+    "6:Pitch Angle"
+   ],
+   "wip": false
+  },
+  "2600": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONTROL_HIGH_LATENCY",
+   "params": [
+    "1:Enable"
+   ],
+   "wip": false
+  },
+  "262": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_STANDARD_MODE",
+   "params": [
+    "1:Standard Mode"
+   ],
+   "wip": false
+  },
+  "2800": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PANORAMA_CREATE",
+   "params": [
+    "1:Horizontal Angle",
+    "2:Vertical Angle",
+    "3:Horizontal Speed",
+    "4:Vertical Speed"
+   ],
+   "wip": false
+  },
+  "30": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT",
+   "params": [
+    "1:Action",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "300": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_MISSION_START",
+   "params": [
+    "1:First Item",
+    "2:Last Item"
+   ],
+   "wip": false
+  },
+  "3000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_VTOL_TRANSITION",
+   "params": [
+    "1:State",
+    "2:Immediate"
+   ],
+   "wip": false
+  },
+  "30001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_PAYLOAD_PREPARE_DEPLOY",
+   "params": [
+    "1:Operation Mode",
+    "2:Approach Vector",
+    "3:Ground Speed",
+    "4:Altitude Clearance",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "30002": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_PAYLOAD_CONTROL_DEPLOY",
+   "params": [
+    "1:Operation Mode",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "3001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_ARM_AUTHORIZATION_REQUEST",
+   "params": [
+    "1:System ID"
+   ],
+   "wip": false
+  },
+  "309": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_ACTUATOR_GROUP_TEST",
+   "params": [
+    "1:Group",
+    "2:Value"
+   ],
+   "wip": false
+  },
+  "31": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_LOITER_TO_ALT",
+   "params": [
+    "1:Heading Required",
+    "2:Radius",
+    "4:Xtrack Location",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "310": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_ACTUATOR_TEST",
+   "params": [
+    "1:Value",
+    "2:Timeout",
+    "5:Output Function"
+   ],
+   "wip": false
+  },
+  "31000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_WAYPOINT_USER_1",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_WAYPOINT_USER_2",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31002": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_WAYPOINT_USER_3",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31003": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_WAYPOINT_USER_4",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31004": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_WAYPOINT_USER_5",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31005": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_SPATIAL_USER_1",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31006": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_SPATIAL_USER_2",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31007": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_SPATIAL_USER_3",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31008": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_SPATIAL_USER_4",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31009": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_SPATIAL_USER_5",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "31010": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_USER_1",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "31011": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_USER_2",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "31012": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_USER_3",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "31013": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_USER_4",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "31014": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_USER_5",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "311": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CONFIGURE_ACTUATOR",
+   "params": [
+    "1:Configuration",
+    "5:Output Function"
+   ],
+   "wip": false
+  },
+  "32": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_FOLLOW",
+   "params": [
+    "1:System ID",
+    "2:Empty",
+    "3:Empty",
+    "4:Altitude Mode",
+    "5:Altitude",
+    "6:Empty",
+    "7:Time to Land"
+   ],
+   "wip": false
+  },
+  "32000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_CAN_FORWARD",
+   "params": [
+    "1:bus",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "32100": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_OPERATOR_CONTROL",
+   "params": [
+    "1:Action",
+    "2:Allow takeover",
+    "3:Request timeout",
+    "4:GCS Sysid",
+    "5:GCS Sysid (upper range)"
+   ],
+   "wip": false
+  },
+  "33": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_FOLLOW_REPOSITION",
+   "params": [
+    "1:Camera Q1",
+    "2:Camera Q2",
+    "3:Camera Q3",
+    "4:Camera Q4",
+    "5:Altitude Offset",
+    "6:X Offset",
+    "7:Y Offset"
+   ],
+   "wip": false
+  },
+  "34": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_ORBIT",
+   "params": [
+    "1:Radius",
+    "2:Velocity",
+    "3:Yaw Behavior",
+    "4:Orbits",
+    "5:Latitude/X",
+    "6:Longitude/Y",
+    "7:Altitude/Z"
+   ],
+   "wip": false
+  },
+  "35": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_FIGURE_EIGHT",
+   "params": [
+    "1:Major Radius",
+    "2:Minor Radius",
+    "4:Orientation",
+    "5:Latitude/X",
+    "6:Longitude/Y",
+    "7:Altitude/Z"
+   ],
+   "wip": false
+  },
+  "36": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_ARC_WAYPOINT",
+   "params": [
+    "1:Arc Angle",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "400": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_COMPONENT_ARM_DISARM",
+   "params": [
+    "1:Arm",
+    "2:Force"
+   ],
+   "wip": false
+  },
+  "4000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_GUIDED_SUBMODE_STANDARD",
+   "params": [],
+   "wip": false
+  },
+  "4001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_SET_GUIDED_SUBMODE_CIRCLE",
+   "params": [
+    "1:Radius",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude"
+   ],
+   "wip": false
+  },
+  "401": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_RUN_PREARM_CHECKS",
+   "params": [],
+   "wip": false
+  },
+  "405": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_ILLUMINATOR_ON_OFF",
+   "params": [
+    "1:Enable"
+   ],
+   "wip": false
+  },
+  "406": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_ILLUMINATOR_CONFIGURE",
+   "params": [
+    "1:Mode",
+    "2:Brightness",
+    "3:Strobe Period",
+    "4:Strobe Duty"
+   ],
+   "wip": false
+  },
+  "410": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_GET_HOME_POSITION",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "420": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_INJECT_FAILURE",
+   "params": [
+    "1:Failure unit",
+    "2:Failure type",
+    "3:Instance"
+   ],
+   "wip": false
+  },
+  "42006": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_FIXED_MAG_CAL_YAW",
+   "params": [
+    "1:Yaw",
+    "2:CompassMask",
+    "3:Latitude",
+    "4:Longitude",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "42600": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_WINCH",
+   "params": [
+    "1:Instance",
+    "2:Action",
+    "3:Length",
+    "4:Rate",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "43002": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_GUIDED_CHANGE_HEADING",
+   "params": [
+    "1:Heading Type",
+    "2:Heading Target",
+    "3:Heading Rate of Change"
+   ],
+   "wip": false
+  },
+  "43003": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_EXTERNAL_POSITION_ESTIMATE",
+   "params": [
+    "1:transmission_time",
+    "2:processing_time",
+    "3:accuracy",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "43004": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_EXTERNAL_WIND_ESTIMATE",
+   "params": [
+    "1:Wind speed",
+    "2:Wind speed accuracy",
+    "3:Direction",
+    "4:Direction accuracy"
+   ],
+   "wip": false
+  },
+  "43006": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_ESTIMATOR_SENSOR_ENABLE",
+   "params": [
+    "1:Source",
+    "2:Instance",
+    "3:Enable",
+    "4:Estimator Instance"
+   ],
+   "wip": false
+  },
+  "4501": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_CONDITION_GATE",
+   "params": [
+    "1:Geometry",
+    "2:UseAltitude",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": true
+  },
+  "500": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_START_RX_PAIR",
+   "params": [
+    "1:RC Type",
+    "2:RC Sub Type"
+   ],
+   "wip": false
+  },
+  "5000": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_FENCE_RETURN_POINT",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "5001": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION",
+   "params": [
+    "1:Vertex Count",
+    "2:Inclusion Group",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "5002": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION",
+   "params": [
+    "1:Vertex Count",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "5003": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_FENCE_CIRCLE_INCLUSION",
+   "params": [
+    "1:Radius",
+    "2:Inclusion Group",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "5004": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_FENCE_CIRCLE_EXCLUSION",
+   "params": [
+    "1:Radius",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "5005": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_FENCE_HOME_CIRCLE_INCLUSION",
+   "params": [
+    "1:Radius",
+    "2:Inclusion Group"
+   ],
+   "wip": true
+  },
+  "510": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_GET_MESSAGE_INTERVAL",
+   "params": [
+    "1:Message ID"
+   ],
+   "wip": false
+  },
+  "5100": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_RALLY_POINT",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "511": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_MESSAGE_INTERVAL",
+   "params": [
+    "1:Message ID",
+    "2:Interval",
+    "3:Req Param 3",
+    "4:Req Param 4",
+    "5:Req Param 5",
+    "6:Req Param 6",
+    "7:Response Target"
+   ],
+   "wip": false
+  },
+  "512": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_MESSAGE",
+   "params": [
+    "1:Message ID",
+    "2:Req Param 1",
+    "3:Req Param 2",
+    "4:Req Param 3",
+    "5:Req Param 4",
+    "6:Req Param 5",
+    "7:Response Target"
+   ],
+   "wip": false
+  },
+  "519": {
+   "contexts": [],
+   "deprecated": true,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_PROTOCOL_VERSION",
+   "params": [
+    "1:Protocol",
+    "2:Empty"
+   ],
+   "wip": false
+  },
+  "520": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES",
+   "params": [
+    "1:Version",
+    "2:Empty"
+   ],
+   "wip": false
+  },
+  "5200": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_UAVCAN_GET_NODE_INFO",
+   "params": [
+    "1:Empty",
+    "2:Empty",
+    "3:Empty",
+    "4:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "521": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_CAMERA_INFORMATION",
+   "params": [
+    "1:Capabilities",
+    "2:Empty"
+   ],
+   "wip": false
+  },
+  "522": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_CAMERA_SETTINGS",
+   "params": [
+    "1:Settings",
+    "2:Empty"
+   ],
+   "wip": false
+  },
+  "525": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_STORAGE_INFORMATION",
+   "params": [
+    "1:Storage ID",
+    "2:Information",
+    "3:Empty"
+   ],
+   "wip": false
+  },
+  "526": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_STORAGE_FORMAT",
+   "params": [
+    "1:Storage ID",
+    "2:Format",
+    "3:Reset Image Log",
+    "4:Empty"
+   ],
+   "wip": false
+  },
+  "527": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS",
+   "params": [
+    "1:Capture Status",
+    "2:Empty"
+   ],
+   "wip": false
+  },
+  "528": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_REQUEST_FLIGHT_INFORMATION",
+   "params": [
+    "1:Flight Information",
+    "2:Empty"
+   ],
+   "wip": false
+  },
+  "529": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_RESET_CAMERA_SETTINGS",
+   "params": [
+    "1:Reset",
+    "2:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "530": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_CAMERA_MODE",
+   "params": [
+    "1:id",
+    "2:Camera Mode"
+   ],
+   "wip": false
+  },
+  "5300": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_SAFETY_SWITCH_STATE",
+   "params": [
+    "1:Desired State",
+    "2:Empty",
+    "3:Empty",
+    "5:Empty",
+    "6:Empty",
+    "7:Empty"
+   ],
+   "wip": false
+  },
+  "531": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_CAMERA_ZOOM",
+   "params": [
+    "1:Zoom Type",
+    "2:Zoom Value",
+    "3:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "532": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_CAMERA_FOCUS",
+   "params": [
+    "1:Focus Type",
+    "2:Focus Value",
+    "3:Target Camera ID"
+   ],
+   "wip": false
+  },
+  "533": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_STORAGE_USAGE",
+   "params": [
+    "1:Storage ID",
+    "2:Usage"
+   ],
+   "wip": false
+  },
+  "534": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_SET_CAMERA_SOURCE",
+   "params": [
+    "1:device id",
+    "2:primary source",
+    "3:secondary source"
+   ],
+   "wip": false
+  },
+  "600": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_JUMP_TAG",
+   "params": [
+    "1:Tag"
+   ],
+   "wip": false
+  },
+  "601": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_JUMP_TAG",
+   "params": [
+    "1:Tag",
+    "2:Repeat"
+   ],
+   "wip": false
+  },
+  "610": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_DO_SET_SYS_CMP_ID",
+   "params": [
+    "1:System ID",
+    "2:Component ID",
+    "3:Reboot"
+   ],
+   "wip": false
+  },
+  "611": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_DO_SET_GLOBAL_ORIGIN",
+   "params": [
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "620": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_EXTERNAL_ATTITUDE_ESTIMATE",
+   "params": [
+    "1:Roll",
+    "2:Pitch",
+    "3:Yaw",
+    "4:Tilt accuracy",
+    "7:Yaw accuracy"
+   ],
+   "wip": false
+  },
+  "80": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_ROI",
+   "params": [
+    "1:ROI Mode",
+    "2:WP Index",
+    "3:ROI Index",
+    "5:X",
+    "6:Y",
+    "7:Z"
+   ],
+   "wip": false
+  },
+  "81": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_PATHPLANNING",
+   "params": [
+    "1:Local Ctrl",
+    "2:Global Ctrl",
+    "4:Yaw",
+    "5:Latitude/X",
+    "6:Longitude/Y",
+    "7:Altitude/Z"
+   ],
+   "wip": false
+  },
+  "82": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_SPLINE_WAYPOINT",
+   "params": [
+    "1:Hold",
+    "5:Latitude/X",
+    "6:Longitude/Y",
+    "7:Altitude/Z"
+   ],
+   "wip": false
+  },
+  "84": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_VTOL_TAKEOFF",
+   "params": [
+    "2:Transition Heading",
+    "4:Yaw Angle",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "85": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_VTOL_LAND",
+   "params": [
+    "1:Land Options",
+    "3:Approach Altitude",
+    "4:Yaw",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Ground Altitude"
+   ],
+   "wip": false
+  },
+  "92": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_GUIDED_ENABLE",
+   "params": [
+    "1:Enable"
+   ],
+   "wip": false
+  },
+  "93": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_DELAY",
+   "params": [
+    "1:Delay",
+    "2:Hour",
+    "3:Minute",
+    "4:Second"
+   ],
+   "wip": false
+  },
+  "94": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": true,
+   "name": "MAV_CMD_NAV_PAYLOAD_PLACE",
+   "params": [
+    "1:Max Descent",
+    "5:Latitude",
+    "6:Longitude",
+    "7:Altitude"
+   ],
+   "wip": false
+  },
+  "95": {
+   "contexts": [],
+   "deprecated": false,
+   "hasLocation": false,
+   "name": "MAV_CMD_NAV_LAST",
+   "params": [],
+   "wip": false
+  }
+ },
+ "enums": {
+  "MAV_FRAME": {
+   "MAV_FRAME_BODY_FRD": 12,
+   "MAV_FRAME_BODY_NED": 8,
+   "MAV_FRAME_BODY_OFFSET_NED": 9,
+   "MAV_FRAME_GLOBAL": 0,
+   "MAV_FRAME_GLOBAL_INT": 5,
+   "MAV_FRAME_GLOBAL_RELATIVE_ALT": 3,
+   "MAV_FRAME_GLOBAL_RELATIVE_ALT_INT": 6,
+   "MAV_FRAME_GLOBAL_TERRAIN_ALT": 10,
+   "MAV_FRAME_GLOBAL_TERRAIN_ALT_INT": 11,
+   "MAV_FRAME_LOCAL_ENU": 4,
+   "MAV_FRAME_LOCAL_FLU": 21,
+   "MAV_FRAME_LOCAL_FRD": 20,
+   "MAV_FRAME_LOCAL_NED": 1,
+   "MAV_FRAME_LOCAL_OFFSET_NED": 7,
+   "MAV_FRAME_MISSION": 2,
+   "MAV_FRAME_RESERVED_13": 13,
+   "MAV_FRAME_RESERVED_14": 14,
+   "MAV_FRAME_RESERVED_15": 15,
+   "MAV_FRAME_RESERVED_16": 16,
+   "MAV_FRAME_RESERVED_17": 17,
+   "MAV_FRAME_RESERVED_18": 18,
+   "MAV_FRAME_RESERVED_19": 19
+  },
+  "MAV_MISSION_RESULT": {
+   "MAV_MISSION_ACCEPTED": 0,
+   "MAV_MISSION_DENIED": 14,
+   "MAV_MISSION_ERROR": 1,
+   "MAV_MISSION_INVALID": 5,
+   "MAV_MISSION_INVALID_PARAM1": 6,
+   "MAV_MISSION_INVALID_PARAM2": 7,
+   "MAV_MISSION_INVALID_PARAM3": 8,
+   "MAV_MISSION_INVALID_PARAM4": 9,
+   "MAV_MISSION_INVALID_PARAM5_X": 10,
+   "MAV_MISSION_INVALID_PARAM6_Y": 11,
+   "MAV_MISSION_INVALID_PARAM7": 12,
+   "MAV_MISSION_INVALID_SEQUENCE": 13,
+   "MAV_MISSION_NO_SPACE": 4,
+   "MAV_MISSION_OPERATION_CANCELLED": 15,
+   "MAV_MISSION_UNSUPPORTED": 3,
+   "MAV_MISSION_UNSUPPORTED_FRAME": 2
+  },
+  "MAV_MISSION_TYPE": {
+   "MAV_MISSION_TYPE_ALL": 255,
+   "MAV_MISSION_TYPE_FENCE": 1,
+   "MAV_MISSION_TYPE_MISSION": 0,
+   "MAV_MISSION_TYPE_RALLY": 2
+  },
+  "MAV_PROTOCOL_CAPABILITY": {
+   "MAV_PROTOCOL_CAPABILITY_COMMAND_INT": 8,
+   "MAV_PROTOCOL_CAPABILITY_COMPASS_CALIBRATION": 4096,
+   "MAV_PROTOCOL_CAPABILITY_COMPONENT_ACCEPTS_GCS_CONTROL": 524288,
+   "MAV_PROTOCOL_CAPABILITY_COMPONENT_IMPLEMENTS_GIMBAL_MANAGER": 262144,
+   "MAV_PROTOCOL_CAPABILITY_FLIGHT_TERMINATION": 2048,
+   "MAV_PROTOCOL_CAPABILITY_FTP": 32,
+   "MAV_PROTOCOL_CAPABILITY_GRIPPER": 1048576,
+   "MAV_PROTOCOL_CAPABILITY_MAVLINK2": 8192,
+   "MAV_PROTOCOL_CAPABILITY_MISSION_FENCE": 16384,
+   "MAV_PROTOCOL_CAPABILITY_MISSION_FLOAT": 1,
+   "MAV_PROTOCOL_CAPABILITY_MISSION_INT": 4,
+   "MAV_PROTOCOL_CAPABILITY_MISSION_RALLY": 32768,
+   "MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE": 16,
+   "MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST": 131072,
+   "MAV_PROTOCOL_CAPABILITY_PARAM_FLOAT": 2,
+   "MAV_PROTOCOL_CAPABILITY_RESERVED2": 65536,
+   "MAV_PROTOCOL_CAPABILITY_RESERVED3": 1024,
+   "MAV_PROTOCOL_CAPABILITY_SET_ATTITUDE_TARGET": 64,
+   "MAV_PROTOCOL_CAPABILITY_SET_POSITION_TARGET_GLOBAL_INT": 256,
+   "MAV_PROTOCOL_CAPABILITY_SET_POSITION_TARGET_LOCAL_NED": 128,
+   "MAV_PROTOCOL_CAPABILITY_TERRAIN": 512
+  },
+  "MAV_RESULT": {
+   "MAV_RESULT_ACCEPTED": 0,
+   "MAV_RESULT_CANCELLED": 6,
+   "MAV_RESULT_COMMAND_INT_ONLY": 8,
+   "MAV_RESULT_COMMAND_LONG_ONLY": 7,
+   "MAV_RESULT_COMMAND_UNSUPPORTED_MAV_FRAME": 9,
+   "MAV_RESULT_DENIED": 2,
+   "MAV_RESULT_FAILED": 4,
+   "MAV_RESULT_IN_PROGRESS": 5,
+   "MAV_RESULT_NOT_IN_CONTROL": 10,
+   "MAV_RESULT_TEMPORARILY_REJECTED": 1,
+   "MAV_RESULT_UNSUPPORTED": 3
+  }
+ },
+ "mavlink_commit": "d6c7594f",
+ "messages": {
+  "ACTUATOR_CONTROL_TARGET": [
+   "time_usec:uint64_t",
+   "group_mlx:uint8_t",
+   "controls:float[8]"
+  ],
+  "ACTUATOR_OUTPUT_STATUS": [
+   "time_usec:uint64_t",
+   "active:uint32_t",
+   "actuator:float[32]"
+  ],
+  "ADSB_VEHICLE": [
+   "ICAO_address:uint32_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "altitude_type:uint8_t",
+   "altitude:int32_t",
+   "heading:uint16_t",
+   "hor_velocity:uint16_t",
+   "ver_velocity:int16_t",
+   "callsign:char[9]",
+   "emitter_type:uint8_t",
+   "tslc:uint8_t",
+   "flags:uint16_t",
+   "squawk:uint16_t"
+  ],
+  "AIRSPEED": [
+   "id:uint8_t",
+   "airspeed:float",
+   "temperature:int16_t",
+   "raw_press:float",
+   "flags:uint8_t"
+  ],
+  "AIS_VESSEL": [
+   "MMSI:uint32_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "COG:uint16_t",
+   "heading:uint16_t",
+   "velocity:uint16_t",
+   "turn_rate:int8_t",
+   "navigational_status:uint8_t",
+   "type:uint8_t",
+   "dimension_bow:uint16_t",
+   "dimension_stern:uint16_t",
+   "dimension_port:uint8_t",
+   "dimension_starboard:uint8_t",
+   "callsign:char[7]",
+   "name:char[20]",
+   "tslc:uint16_t",
+   "flags:uint16_t"
+  ],
+  "ALTITUDE": [
+   "time_usec:uint64_t",
+   "altitude_monotonic:float",
+   "altitude_amsl:float",
+   "altitude_local:float",
+   "altitude_relative:float",
+   "altitude_terrain:float",
+   "bottom_clearance:float"
+  ],
+  "ATTITUDE": [
+   "time_boot_ms:uint32_t",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "rollspeed:float",
+   "pitchspeed:float",
+   "yawspeed:float"
+  ],
+  "ATTITUDE_QUATERNION": [
+   "time_boot_ms:uint32_t",
+   "q1:float",
+   "q2:float",
+   "q3:float",
+   "q4:float",
+   "rollspeed:float",
+   "pitchspeed:float",
+   "yawspeed:float",
+   "repr_offset_q:float[4]*"
+  ],
+  "ATTITUDE_QUATERNION_COV": [
+   "time_usec:uint64_t",
+   "q:float[4]",
+   "rollspeed:float",
+   "pitchspeed:float",
+   "yawspeed:float",
+   "covariance:float[9]"
+  ],
+  "ATTITUDE_TARGET": [
+   "time_boot_ms:uint32_t",
+   "type_mask:uint8_t",
+   "q:float[4]",
+   "body_roll_rate:float",
+   "body_pitch_rate:float",
+   "body_yaw_rate:float",
+   "thrust:float"
+  ],
+  "ATT_POS_MOCAP": [
+   "time_usec:uint64_t",
+   "q:float[4]",
+   "x:float",
+   "y:float",
+   "z:float",
+   "covariance:float[21]*"
+  ],
+  "AUTH_KEY": [
+   "key:char[32]"
+  ],
+  "AUTOPILOT_STATE_FOR_GIMBAL_DEVICE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "time_boot_us:uint64_t",
+   "q:float[4]",
+   "q_estimated_delay_us:uint32_t",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "v_estimated_delay_us:uint32_t",
+   "feed_forward_angular_velocity_z:float",
+   "estimator_status:uint16_t",
+   "landed_state:uint8_t",
+   "angular_velocity_z:float*"
+  ],
+  "AUTOPILOT_VERSION": [
+   "capabilities:uint64_t",
+   "flight_sw_version:uint32_t",
+   "middleware_sw_version:uint32_t",
+   "os_sw_version:uint32_t",
+   "board_version:uint32_t",
+   "flight_custom_version:uint8_t[8]",
+   "middleware_custom_version:uint8_t[8]",
+   "os_custom_version:uint8_t[8]",
+   "vendor_id:uint16_t",
+   "product_id:uint16_t",
+   "uid:uint64_t",
+   "uid2:uint8_t[18]*"
+  ],
+  "AVAILABLE_MODES": [
+   "number_modes:uint8_t",
+   "mode_index:uint8_t",
+   "standard_mode:uint8_t",
+   "custom_mode:uint32_t",
+   "properties:uint32_t",
+   "mode_name:char[35]"
+  ],
+  "AVAILABLE_MODES_MONITOR": [
+   "seq:uint8_t"
+  ],
+  "BATTERY_INFO": [
+   "id:uint8_t",
+   "battery_function:uint8_t",
+   "type:uint8_t",
+   "state_of_health:uint8_t",
+   "cells_in_series:uint8_t",
+   "cycle_count:uint16_t",
+   "weight:uint16_t",
+   "discharge_minimum_voltage:float",
+   "charging_minimum_voltage:float",
+   "resting_minimum_voltage:float",
+   "charging_maximum_voltage:float",
+   "charging_maximum_current:float",
+   "nominal_voltage:float",
+   "discharge_maximum_current:float",
+   "discharge_maximum_burst_current:float",
+   "design_capacity:float",
+   "full_charge_capacity:float",
+   "manufacture_date:char[9]",
+   "serial_number:char[32]",
+   "name:char[50]"
+  ],
+  "BATTERY_STATUS": [
+   "id:uint8_t",
+   "battery_function:uint8_t",
+   "type:uint8_t",
+   "temperature:int16_t",
+   "voltages:uint16_t[10]",
+   "current_battery:int16_t",
+   "current_consumed:int32_t",
+   "energy_consumed:int32_t",
+   "battery_remaining:int8_t",
+   "time_remaining:int32_t*",
+   "charge_state:uint8_t*",
+   "voltages_ext:uint16_t[4]*",
+   "mode:uint8_t*",
+   "fault_bitmask:uint32_t*"
+  ],
+  "BATTERY_STATUS_V2": [
+   "id:uint8_t",
+   "temperature:int16_t",
+   "voltage:float",
+   "current:float",
+   "capacity_consumed:float",
+   "capacity_remaining:float",
+   "percent_remaining:uint8_t",
+   "status_flags:uint32_t"
+  ],
+  "BUTTON_CHANGE": [
+   "time_boot_ms:uint32_t",
+   "last_change_ms:uint32_t",
+   "state:uint8_t"
+  ],
+  "CAMERA_CAPTURE_STATUS": [
+   "time_boot_ms:uint32_t",
+   "image_status:uint8_t",
+   "video_status:uint8_t",
+   "image_interval:float",
+   "recording_time_ms:uint32_t",
+   "available_capacity:float",
+   "image_count:int32_t*",
+   "camera_device_id:uint8_t*"
+  ],
+  "CAMERA_FOV_STATUS": [
+   "time_boot_ms:uint32_t",
+   "lat_camera:int32_t",
+   "lon_camera:int32_t",
+   "alt_camera:int32_t",
+   "lat_image:int32_t",
+   "lon_image:int32_t",
+   "alt_image:int32_t",
+   "q:float[4]",
+   "hfov:float",
+   "vfov:float",
+   "camera_device_id:uint8_t*"
+  ],
+  "CAMERA_IMAGE_CAPTURED": [
+   "time_boot_ms:uint32_t",
+   "time_utc:uint64_t",
+   "camera_id:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "relative_alt:int32_t",
+   "q:float[4]",
+   "image_index:int32_t",
+   "capture_result:int8_t",
+   "file_url:char[205]"
+  ],
+  "CAMERA_INFORMATION": [
+   "time_boot_ms:uint32_t",
+   "vendor_name:uint8_t[32]",
+   "model_name:uint8_t[32]",
+   "firmware_version:uint32_t",
+   "focal_length:float",
+   "sensor_size_h:float",
+   "sensor_size_v:float",
+   "resolution_h:uint16_t",
+   "resolution_v:uint16_t",
+   "lens_id:uint8_t",
+   "flags:uint32_t",
+   "cam_definition_version:uint16_t",
+   "cam_definition_uri:char[140]",
+   "gimbal_device_id:uint8_t*",
+   "camera_device_id:uint8_t*"
+  ],
+  "CAMERA_SETTINGS": [
+   "time_boot_ms:uint32_t",
+   "mode_id:uint8_t",
+   "zoomLevel:float*",
+   "focusLevel:float*",
+   "camera_device_id:uint8_t*"
+  ],
+  "CAMERA_THERMAL_RANGE": [
+   "time_boot_ms:uint32_t",
+   "stream_id:uint8_t",
+   "camera_device_id:uint8_t",
+   "max:float",
+   "max_point_x:float",
+   "max_point_y:float",
+   "min:float",
+   "min_point_x:float",
+   "min_point_y:float"
+  ],
+  "CAMERA_TRACKING_GEO_STATUS": [
+   "tracking_status:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:float",
+   "h_acc:float",
+   "v_acc:float",
+   "vel_n:float",
+   "vel_e:float",
+   "vel_d:float",
+   "vel_acc:float",
+   "dist:float",
+   "hdg:float",
+   "hdg_acc:float",
+   "camera_device_id:uint8_t*"
+  ],
+  "CAMERA_TRACKING_IMAGE_STATUS": [
+   "tracking_status:uint8_t",
+   "tracking_mode:uint8_t",
+   "target_data:uint8_t",
+   "point_x:float",
+   "point_y:float",
+   "radius:float",
+   "rec_top_x:float",
+   "rec_top_y:float",
+   "rec_bottom_x:float",
+   "rec_bottom_y:float",
+   "camera_device_id:uint8_t*"
+  ],
+  "CAMERA_TRIGGER": [
+   "time_usec:uint64_t",
+   "seq:uint32_t"
+  ],
+  "CANFD_FRAME": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "bus:uint8_t",
+   "len:uint8_t",
+   "id:uint32_t",
+   "data:uint8_t[64]"
+  ],
+  "CAN_FILTER_MODIFY": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "bus:uint8_t",
+   "operation:uint8_t",
+   "num_ids:uint8_t",
+   "ids:uint16_t[16]"
+  ],
+  "CAN_FRAME": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "bus:uint8_t",
+   "len:uint8_t",
+   "id:uint32_t",
+   "data:uint8_t[8]"
+  ],
+  "CELLULAR_CONFIG": [
+   "enable_lte:uint8_t",
+   "enable_pin:uint8_t",
+   "pin:char[16]",
+   "new_pin:char[16]",
+   "apn:char[32]",
+   "puk:char[16]",
+   "roaming:uint8_t",
+   "response:uint8_t"
+  ],
+  "CELLULAR_STATUS": [
+   "status:uint8_t",
+   "failure_reason:uint8_t",
+   "type:uint8_t",
+   "quality:uint8_t",
+   "mcc:uint16_t",
+   "mnc:uint16_t",
+   "lac:uint16_t",
+   "id:uint8_t*",
+   "link_tx_rate:uint32_t*",
+   "link_rx_rate:uint32_t*",
+   "cell_tower_id:char[9]*",
+   "band_number:uint8_t*",
+   "band_frequency:float*",
+   "channel_number:uint32_t*",
+   "rx_level:float*",
+   "tx_level:float*",
+   "rx_quality:float*",
+   "sinr:float*"
+  ],
+  "CHANGE_OPERATOR_CONTROL": [
+   "target_system:uint8_t",
+   "control_request:uint8_t",
+   "version:uint8_t",
+   "passkey:char[25]"
+  ],
+  "CHANGE_OPERATOR_CONTROL_ACK": [
+   "gcs_system_id:uint8_t",
+   "control_request:uint8_t",
+   "ack:uint8_t"
+  ],
+  "COLLISION": [
+   "src:uint8_t",
+   "id:uint32_t",
+   "action:uint8_t",
+   "threat_level:uint8_t",
+   "time_to_minimum_delta:float",
+   "altitude_minimum_delta:float",
+   "horizontal_minimum_delta:float"
+  ],
+  "COMMAND_ACK": [
+   "command:uint16_t",
+   "result:uint8_t",
+   "progress:uint8_t*",
+   "result_param2:int32_t*",
+   "target_system:uint8_t*",
+   "target_component:uint8_t*"
+  ],
+  "COMMAND_CANCEL": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "command:uint16_t"
+  ],
+  "COMMAND_INT": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "frame:uint8_t",
+   "command:uint16_t",
+   "current:uint8_t",
+   "autocontinue:uint8_t",
+   "param1:float",
+   "param2:float",
+   "param3:float",
+   "param4:float",
+   "x:int32_t",
+   "y:int32_t",
+   "z:float"
+  ],
+  "COMMAND_LONG": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "command:uint16_t",
+   "confirmation:uint8_t",
+   "param1:float",
+   "param2:float",
+   "param3:float",
+   "param4:float",
+   "param5:float",
+   "param6:float",
+   "param7:float"
+  ],
+  "COMPONENT_INFORMATION": [
+   "time_boot_ms:uint32_t",
+   "general_metadata_file_crc:uint32_t",
+   "general_metadata_uri:char[100]",
+   "peripherals_metadata_file_crc:uint32_t",
+   "peripherals_metadata_uri:char[100]"
+  ],
+  "COMPONENT_INFORMATION_BASIC": [
+   "time_boot_ms:uint32_t",
+   "capabilities:uint64_t",
+   "time_manufacture_s:uint32_t",
+   "vendor_name:char[32]",
+   "model_name:char[32]",
+   "software_version:char[24]",
+   "hardware_version:char[24]",
+   "serial_number:char[32]"
+  ],
+  "COMPONENT_METADATA": [
+   "time_boot_ms:uint32_t",
+   "file_crc:uint32_t",
+   "uri:char[100]"
+  ],
+  "CONTROL_STATUS": [
+   "flags:uint8_t",
+   "gcs_main:uint8_t",
+   "gcs_secondary:uint8_t[10]"
+  ],
+  "CONTROL_SYSTEM_STATE": [
+   "time_usec:uint64_t",
+   "x_acc:float",
+   "y_acc:float",
+   "z_acc:float",
+   "x_vel:float",
+   "y_vel:float",
+   "z_vel:float",
+   "x_pos:float",
+   "y_pos:float",
+   "z_pos:float",
+   "airspeed:float",
+   "vel_variance:float[3]",
+   "pos_variance:float[3]",
+   "q:float[4]",
+   "roll_rate:float",
+   "pitch_rate:float",
+   "yaw_rate:float"
+  ],
+  "CURRENT_EVENT_SEQUENCE": [
+   "sequence:uint16_t",
+   "flags:uint8_t"
+  ],
+  "CURRENT_MODE": [
+   "standard_mode:uint8_t",
+   "custom_mode:uint32_t",
+   "intended_custom_mode:uint32_t"
+  ],
+  "DATA_STREAM": [
+   "stream_id:uint8_t",
+   "message_rate:uint16_t",
+   "on_off:uint8_t"
+  ],
+  "DATA_TRANSMISSION_HANDSHAKE": [
+   "type:uint8_t",
+   "size:uint32_t",
+   "width:uint16_t",
+   "height:uint16_t",
+   "packets:uint16_t",
+   "payload:uint8_t",
+   "jpg_quality:uint8_t"
+  ],
+  "DEBUG": [
+   "time_boot_ms:uint32_t",
+   "ind:uint8_t",
+   "value:float"
+  ],
+  "DEBUG_FLOAT_ARRAY": [
+   "time_usec:uint64_t",
+   "name:char[10]",
+   "array_id:uint16_t",
+   "data:float[58]*"
+  ],
+  "DEBUG_VECT": [
+   "name:char[10]",
+   "time_usec:uint64_t",
+   "x:float",
+   "y:float",
+   "z:float"
+  ],
+  "DISTANCE_SENSOR": [
+   "time_boot_ms:uint32_t",
+   "min_distance:uint16_t",
+   "max_distance:uint16_t",
+   "current_distance:uint16_t",
+   "type:uint8_t",
+   "id:uint8_t",
+   "orientation:uint8_t",
+   "covariance:uint8_t",
+   "horizontal_fov:float*",
+   "vertical_fov:float*",
+   "quaternion:float[4]*",
+   "signal_quality:uint8_t*"
+  ],
+  "EFI_STATUS": [
+   "health:uint8_t",
+   "ecu_index:float",
+   "rpm:float",
+   "fuel_consumed:float",
+   "fuel_flow:float",
+   "engine_load:float",
+   "throttle_position:float",
+   "spark_dwell_time:float",
+   "barometric_pressure:float",
+   "intake_manifold_pressure:float",
+   "intake_manifold_temperature:float",
+   "cylinder_head_temperature:float",
+   "ignition_timing:float",
+   "injection_time:float",
+   "exhaust_gas_temperature:float",
+   "throttle_out:float",
+   "pt_compensation:float",
+   "ignition_voltage:float*",
+   "fuel_pressure:float*"
+  ],
+  "ENCAPSULATED_DATA": [
+   "seqnr:uint16_t",
+   "data:uint8_t[253]"
+  ],
+  "ESC_EEPROM": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "firmware:uint8_t",
+   "msg_index:uint8_t",
+   "msg_count:uint8_t",
+   "esc_index:uint8_t",
+   "write_mask:uint32_t[6]",
+   "length:uint8_t",
+   "data:uint8_t[192]"
+  ],
+  "ESC_INFO": [
+   "index:uint8_t",
+   "time_usec:uint64_t",
+   "counter:uint16_t",
+   "count:uint8_t",
+   "connection_type:uint8_t",
+   "info:uint8_t",
+   "failure_flags:uint16_t[4]",
+   "error_count:uint32_t[4]",
+   "temperature:int16_t[4]"
+  ],
+  "ESC_STATUS": [
+   "index:uint8_t",
+   "time_usec:uint64_t",
+   "rpm:int32_t[4]",
+   "voltage:float[4]",
+   "current:float[4]"
+  ],
+  "ESTIMATOR_SENSOR_FUSION_STATUS": [
+   "intended:uint8_t[9]",
+   "active:uint8_t[9]",
+   "test_ratio:float[9]"
+  ],
+  "ESTIMATOR_STATUS": [
+   "time_usec:uint64_t",
+   "flags:uint16_t",
+   "vel_ratio:float",
+   "pos_horiz_ratio:float",
+   "pos_vert_ratio:float",
+   "mag_ratio:float",
+   "hagl_ratio:float",
+   "tas_ratio:float",
+   "pos_horiz_accuracy:float",
+   "pos_vert_accuracy:float"
+  ],
+  "EVENT": [
+   "destination_component:uint8_t",
+   "destination_system:uint8_t",
+   "id:uint32_t",
+   "event_time_boot_ms:uint32_t",
+   "sequence:uint16_t",
+   "log_levels:uint8_t",
+   "arguments:uint8_t[40]"
+  ],
+  "EXTENDED_SYS_STATE": [
+   "vtol_state:uint8_t",
+   "landed_state:uint8_t"
+  ],
+  "FENCE_STATUS": [
+   "breach_status:uint8_t",
+   "breach_count:uint16_t",
+   "breach_type:uint8_t",
+   "breach_time:uint32_t",
+   "breach_mitigation:uint8_t*"
+  ],
+  "FIGURE_EIGHT_EXECUTION_STATUS": [
+   "time_usec:uint64_t",
+   "major_radius:float",
+   "minor_radius:float",
+   "orientation:float",
+   "frame:uint8_t",
+   "x:int32_t",
+   "y:int32_t",
+   "z:float"
+  ],
+  "FILE_TRANSFER_PROTOCOL": [
+   "target_network:uint8_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "payload:uint8_t[251]"
+  ],
+  "FLIGHT_INFORMATION": [
+   "time_boot_ms:uint32_t",
+   "arming_time_utc:uint64_t",
+   "takeoff_time_utc:uint64_t",
+   "flight_uuid:uint64_t",
+   "landing_time:uint32_t*"
+  ],
+  "FOLLOW_TARGET": [
+   "timestamp:uint64_t",
+   "est_capabilities:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:float",
+   "vel:float[3]",
+   "acc:float[3]",
+   "attitude_q:float[4]",
+   "rates:float[3]",
+   "position_cov:float[3]",
+   "custom_state:uint64_t"
+  ],
+  "FUEL_STATUS": [
+   "id:uint8_t",
+   "maximum_fuel:float",
+   "consumed_fuel:float",
+   "remaining_fuel:float",
+   "percent_remaining:uint8_t",
+   "flow_rate:float",
+   "temperature:float",
+   "fuel_type:uint32_t"
+  ],
+  "GENERATOR_STATUS": [
+   "status:uint64_t",
+   "generator_speed:uint16_t",
+   "battery_current:float",
+   "load_current:float",
+   "power_generated:float",
+   "bus_voltage:float",
+   "rectifier_temperature:int16_t",
+   "bat_current_setpoint:float",
+   "generator_temperature:int16_t",
+   "runtime:uint32_t",
+   "time_until_maintenance:int32_t"
+  ],
+  "GIMBAL_DEVICE_ATTITUDE_STATUS": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "time_boot_ms:uint32_t",
+   "flags:uint16_t",
+   "q:float[4]",
+   "angular_velocity_x:float",
+   "angular_velocity_y:float",
+   "angular_velocity_z:float",
+   "failure_flags:uint32_t",
+   "delta_yaw:float*",
+   "delta_yaw_velocity:float*",
+   "gimbal_device_id:uint8_t*"
+  ],
+  "GIMBAL_DEVICE_INFORMATION": [
+   "time_boot_ms:uint32_t",
+   "vendor_name:char[32]",
+   "model_name:char[32]",
+   "custom_name:char[32]",
+   "firmware_version:uint32_t",
+   "hardware_version:uint32_t",
+   "uid:uint64_t",
+   "cap_flags:uint16_t",
+   "custom_cap_flags:uint16_t",
+   "roll_min:float",
+   "roll_max:float",
+   "pitch_min:float",
+   "pitch_max:float",
+   "yaw_min:float",
+   "yaw_max:float",
+   "gimbal_device_id:uint8_t*",
+   "cap_flags2:uint32_t*"
+  ],
+  "GIMBAL_DEVICE_SET_ATTITUDE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "flags:uint16_t",
+   "q:float[4]",
+   "angular_velocity_x:float",
+   "angular_velocity_y:float",
+   "angular_velocity_z:float"
+  ],
+  "GIMBAL_MANAGER_INFORMATION": [
+   "time_boot_ms:uint32_t",
+   "cap_flags:uint32_t",
+   "gimbal_device_id:uint8_t",
+   "roll_min:float",
+   "roll_max:float",
+   "pitch_min:float",
+   "pitch_max:float",
+   "yaw_min:float",
+   "yaw_max:float"
+  ],
+  "GIMBAL_MANAGER_SET_ATTITUDE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "flags:uint32_t",
+   "gimbal_device_id:uint8_t",
+   "q:float[4]",
+   "angular_velocity_x:float",
+   "angular_velocity_y:float",
+   "angular_velocity_z:float"
+  ],
+  "GIMBAL_MANAGER_SET_MANUAL_CONTROL": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "flags:uint32_t",
+   "gimbal_device_id:uint8_t",
+   "pitch:float",
+   "yaw:float",
+   "pitch_rate:float",
+   "yaw_rate:float"
+  ],
+  "GIMBAL_MANAGER_SET_PITCHYAW": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "flags:uint32_t",
+   "gimbal_device_id:uint8_t",
+   "pitch:float",
+   "yaw:float",
+   "pitch_rate:float",
+   "yaw_rate:float"
+  ],
+  "GIMBAL_MANAGER_STATUS": [
+   "time_boot_ms:uint32_t",
+   "flags:uint32_t",
+   "gimbal_device_id:uint8_t",
+   "primary_control_sysid:uint8_t",
+   "primary_control_compid:uint8_t",
+   "secondary_control_sysid:uint8_t",
+   "secondary_control_compid:uint8_t"
+  ],
+  "GLOBAL_POSITION_INT": [
+   "time_boot_ms:uint32_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "relative_alt:int32_t",
+   "vx:int16_t",
+   "vy:int16_t",
+   "vz:int16_t",
+   "hdg:uint16_t"
+  ],
+  "GLOBAL_POSITION_INT_COV": [
+   "time_usec:uint64_t",
+   "estimator_type:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "relative_alt:int32_t",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "covariance:float[36]"
+  ],
+  "GLOBAL_POSITION_SENSOR": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id:uint8_t",
+   "time_usec:uint64_t",
+   "processing_time:uint32_t",
+   "source:uint8_t",
+   "flags:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt_ellipsoid:float",
+   "alt:float",
+   "eph:float",
+   "epv:float"
+  ],
+  "GLOBAL_VISION_POSITION_ESTIMATE": [
+   "usec:uint64_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "covariance:float[21]*",
+   "reset_counter:uint8_t*"
+  ],
+  "GNSS_INTEGRITY": [
+   "id:uint8_t",
+   "system_errors:uint32_t",
+   "authentication_state:uint8_t",
+   "jamming_state:uint8_t",
+   "spoofing_state:uint8_t",
+   "raim_state:uint8_t",
+   "raim_hfom:uint16_t",
+   "raim_vfom:uint16_t",
+   "corrections_quality:uint8_t",
+   "system_status_summary:uint8_t",
+   "gnss_signal_quality:uint8_t",
+   "post_processing_quality:uint8_t"
+  ],
+  "GPS2_RAW": [
+   "time_usec:uint64_t",
+   "fix_type:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "eph:uint16_t",
+   "epv:uint16_t",
+   "vel:uint16_t",
+   "cog:uint16_t",
+   "satellites_visible:uint8_t",
+   "dgps_numch:uint8_t",
+   "dgps_age:uint32_t",
+   "yaw:uint16_t*",
+   "alt_ellipsoid:int32_t*",
+   "h_acc:uint32_t*",
+   "v_acc:uint32_t*",
+   "vel_acc:uint32_t*",
+   "hdg_acc:uint32_t*"
+  ],
+  "GPS2_RTK": [
+   "time_last_baseline_ms:uint32_t",
+   "rtk_receiver_id:uint8_t",
+   "wn:uint16_t",
+   "tow:uint32_t",
+   "rtk_health:uint8_t",
+   "rtk_rate:uint8_t",
+   "nsats:uint8_t",
+   "baseline_coords_type:uint8_t",
+   "baseline_a_mm:int32_t",
+   "baseline_b_mm:int32_t",
+   "baseline_c_mm:int32_t",
+   "accuracy:uint32_t",
+   "iar_num_hypotheses:int32_t"
+  ],
+  "GPS_GLOBAL_ORIGIN": [
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude:int32_t",
+   "time_usec:uint64_t*"
+  ],
+  "GPS_INJECT_DATA": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "len:uint8_t",
+   "data:uint8_t[110]"
+  ],
+  "GPS_INPUT": [
+   "time_usec:uint64_t",
+   "gps_id:uint8_t",
+   "ignore_flags:uint16_t",
+   "time_week_ms:uint32_t",
+   "time_week:uint16_t",
+   "fix_type:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:float",
+   "hdop:float",
+   "vdop:float",
+   "vn:float",
+   "ve:float",
+   "vd:float",
+   "speed_accuracy:float",
+   "horiz_accuracy:float",
+   "vert_accuracy:float",
+   "satellites_visible:uint8_t",
+   "yaw:uint16_t*"
+  ],
+  "GPS_RAW_INT": [
+   "time_usec:uint64_t",
+   "fix_type:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "eph:uint16_t",
+   "epv:uint16_t",
+   "vel:uint16_t",
+   "cog:uint16_t",
+   "satellites_visible:uint8_t",
+   "alt_ellipsoid:int32_t*",
+   "h_acc:uint32_t*",
+   "v_acc:uint32_t*",
+   "vel_acc:uint32_t*",
+   "hdg_acc:uint32_t*",
+   "yaw:uint16_t*"
+  ],
+  "GPS_RTCM_DATA": [
+   "flags:uint8_t",
+   "len:uint8_t",
+   "data:uint8_t[180]"
+  ],
+  "GPS_RTK": [
+   "time_last_baseline_ms:uint32_t",
+   "rtk_receiver_id:uint8_t",
+   "wn:uint16_t",
+   "tow:uint32_t",
+   "rtk_health:uint8_t",
+   "rtk_rate:uint8_t",
+   "nsats:uint8_t",
+   "baseline_coords_type:uint8_t",
+   "baseline_a_mm:int32_t",
+   "baseline_b_mm:int32_t",
+   "baseline_c_mm:int32_t",
+   "accuracy:uint32_t",
+   "iar_num_hypotheses:int32_t"
+  ],
+  "GPS_STATUS": [
+   "satellites_visible:uint8_t",
+   "satellite_prn:uint8_t[20]",
+   "satellite_used:uint8_t[20]",
+   "satellite_elevation:uint8_t[20]",
+   "satellite_azimuth:uint8_t[20]",
+   "satellite_snr:uint8_t[20]"
+  ],
+  "GROUP_END": [
+   "group_id:uint32_t",
+   "mission_checksum:uint32_t",
+   "time_usec:uint64_t"
+  ],
+  "GROUP_START": [
+   "group_id:uint32_t",
+   "mission_checksum:uint32_t",
+   "time_usec:uint64_t"
+  ],
+  "HEARTBEAT": [
+   "type:uint8_t",
+   "autopilot:uint8_t",
+   "base_mode:uint8_t",
+   "custom_mode:uint32_t",
+   "system_status:uint8_t",
+   "mavlink_version:uint8_t_mavlink_version"
+  ],
+  "HIGHRES_IMU": [
+   "time_usec:uint64_t",
+   "xacc:float",
+   "yacc:float",
+   "zacc:float",
+   "xgyro:float",
+   "ygyro:float",
+   "zgyro:float",
+   "xmag:float",
+   "ymag:float",
+   "zmag:float",
+   "abs_pressure:float",
+   "diff_pressure:float",
+   "pressure_alt:float",
+   "temperature:float",
+   "fields_updated:uint16_t",
+   "id:uint8_t*"
+  ],
+  "HIGH_LATENCY": [
+   "base_mode:uint8_t",
+   "custom_mode:uint32_t",
+   "landed_state:uint8_t",
+   "roll:int16_t",
+   "pitch:int16_t",
+   "heading:uint16_t",
+   "throttle:int8_t",
+   "heading_sp:int16_t",
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude_amsl:int16_t",
+   "altitude_sp:int16_t",
+   "airspeed:uint8_t",
+   "airspeed_sp:uint8_t",
+   "groundspeed:uint8_t",
+   "climb_rate:int8_t",
+   "gps_nsat:uint8_t",
+   "gps_fix_type:uint8_t",
+   "battery_remaining:uint8_t",
+   "temperature:int8_t",
+   "temperature_air:int8_t",
+   "failsafe:uint8_t",
+   "wp_num:uint8_t",
+   "wp_distance:uint16_t"
+  ],
+  "HIGH_LATENCY2": [
+   "timestamp:uint32_t",
+   "type:uint8_t",
+   "autopilot:uint8_t",
+   "custom_mode:uint16_t",
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude:int16_t",
+   "target_altitude:int16_t",
+   "heading:uint8_t",
+   "target_heading:uint8_t",
+   "target_distance:uint16_t",
+   "throttle:uint8_t",
+   "airspeed:uint8_t",
+   "airspeed_sp:uint8_t",
+   "groundspeed:uint8_t",
+   "windspeed:uint8_t",
+   "wind_heading:uint8_t",
+   "eph:uint8_t",
+   "epv:uint8_t",
+   "temperature_air:int8_t",
+   "climb_rate:int8_t",
+   "battery:int8_t",
+   "wp_num:uint16_t",
+   "failure_flags:uint16_t",
+   "custom0:int8_t",
+   "custom1:int8_t",
+   "custom2:int8_t"
+  ],
+  "HIL_ACTUATOR_CONTROLS": [
+   "time_usec:uint64_t",
+   "controls:float[16]",
+   "mode:uint8_t",
+   "flags:uint64_t"
+  ],
+  "HIL_CONTROLS": [
+   "time_usec:uint64_t",
+   "roll_ailerons:float",
+   "pitch_elevator:float",
+   "yaw_rudder:float",
+   "throttle:float",
+   "aux1:float",
+   "aux2:float",
+   "aux3:float",
+   "aux4:float",
+   "mode:uint8_t",
+   "nav_mode:uint8_t"
+  ],
+  "HIL_GPS": [
+   "time_usec:uint64_t",
+   "fix_type:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "eph:uint16_t",
+   "epv:uint16_t",
+   "vel:uint16_t",
+   "vn:int16_t",
+   "ve:int16_t",
+   "vd:int16_t",
+   "cog:uint16_t",
+   "satellites_visible:uint8_t",
+   "id:uint8_t*",
+   "yaw:uint16_t*"
+  ],
+  "HIL_OPTICAL_FLOW": [
+   "time_usec:uint64_t",
+   "sensor_id:uint8_t",
+   "integration_time_us:uint32_t",
+   "integrated_x:float",
+   "integrated_y:float",
+   "integrated_xgyro:float",
+   "integrated_ygyro:float",
+   "integrated_zgyro:float",
+   "temperature:int16_t",
+   "quality:uint8_t",
+   "time_delta_distance_us:uint32_t",
+   "distance:float"
+  ],
+  "HIL_RC_INPUTS_RAW": [
+   "time_usec:uint64_t",
+   "chan1_raw:uint16_t",
+   "chan2_raw:uint16_t",
+   "chan3_raw:uint16_t",
+   "chan4_raw:uint16_t",
+   "chan5_raw:uint16_t",
+   "chan6_raw:uint16_t",
+   "chan7_raw:uint16_t",
+   "chan8_raw:uint16_t",
+   "chan9_raw:uint16_t",
+   "chan10_raw:uint16_t",
+   "chan11_raw:uint16_t",
+   "chan12_raw:uint16_t",
+   "rssi:uint8_t"
+  ],
+  "HIL_SENSOR": [
+   "time_usec:uint64_t",
+   "xacc:float",
+   "yacc:float",
+   "zacc:float",
+   "xgyro:float",
+   "ygyro:float",
+   "zgyro:float",
+   "xmag:float",
+   "ymag:float",
+   "zmag:float",
+   "abs_pressure:float",
+   "diff_pressure:float",
+   "pressure_alt:float",
+   "temperature:float",
+   "fields_updated:uint32_t",
+   "id:uint8_t*"
+  ],
+  "HIL_STATE": [
+   "time_usec:uint64_t",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "rollspeed:float",
+   "pitchspeed:float",
+   "yawspeed:float",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "vx:int16_t",
+   "vy:int16_t",
+   "vz:int16_t",
+   "xacc:int16_t",
+   "yacc:int16_t",
+   "zacc:int16_t"
+  ],
+  "HIL_STATE_QUATERNION": [
+   "time_usec:uint64_t",
+   "attitude_quaternion:float[4]",
+   "rollspeed:float",
+   "pitchspeed:float",
+   "yawspeed:float",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "vx:int16_t",
+   "vy:int16_t",
+   "vz:int16_t",
+   "ind_airspeed:uint16_t",
+   "true_airspeed:uint16_t",
+   "xacc:int16_t",
+   "yacc:int16_t",
+   "zacc:int16_t"
+  ],
+  "HOME_POSITION": [
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude:int32_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "q:float[4]",
+   "approach_x:float",
+   "approach_y:float",
+   "approach_z:float",
+   "time_usec:uint64_t*"
+  ],
+  "HYGROMETER_SENSOR": [
+   "id:uint8_t",
+   "temperature:int16_t",
+   "humidity:uint16_t"
+  ],
+  "ILLUMINATOR_STATUS": [
+   "uptime_ms:uint32_t",
+   "enable:uint8_t",
+   "mode_bitmask:uint8_t",
+   "error_status:uint32_t",
+   "mode:uint8_t",
+   "brightness:float",
+   "strobe_period:float",
+   "strobe_duty_cycle:float",
+   "temp_c:float",
+   "min_strobe_period:float",
+   "max_strobe_period:float"
+  ],
+  "ISBD_LINK_STATUS": [
+   "timestamp:uint64_t",
+   "last_heartbeat:uint64_t",
+   "failed_sessions:uint16_t",
+   "successful_sessions:uint16_t",
+   "signal_quality:uint8_t",
+   "ring_pending:uint8_t",
+   "tx_session_pending:uint8_t",
+   "rx_session_pending:uint8_t"
+  ],
+  "LANDING_TARGET": [
+   "time_usec:uint64_t",
+   "target_num:uint8_t",
+   "frame:uint8_t",
+   "angle_x:float",
+   "angle_y:float",
+   "distance:float",
+   "size_x:float",
+   "size_y:float",
+   "x:float*",
+   "y:float*",
+   "z:float*",
+   "q:float[4]*",
+   "type:uint8_t*",
+   "position_valid:uint8_t*"
+  ],
+  "LINK_NODE_STATUS": [
+   "timestamp:uint64_t",
+   "tx_buf:uint8_t",
+   "rx_buf:uint8_t",
+   "tx_rate:uint32_t",
+   "rx_rate:uint32_t",
+   "rx_parse_err:uint16_t",
+   "tx_overflows:uint16_t",
+   "rx_overflows:uint16_t",
+   "messages_sent:uint32_t",
+   "messages_received:uint32_t",
+   "messages_lost:uint32_t"
+  ],
+  "LOCAL_POSITION_NED": [
+   "time_boot_ms:uint32_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "vx:float",
+   "vy:float",
+   "vz:float"
+  ],
+  "LOCAL_POSITION_NED_COV": [
+   "time_usec:uint64_t",
+   "estimator_type:uint8_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "ax:float",
+   "ay:float",
+   "az:float",
+   "covariance:float[45]"
+  ],
+  "LOCAL_POSITION_NED_SYSTEM_GLOBAL_OFFSET": [
+   "time_boot_ms:uint32_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "roll:float",
+   "pitch:float",
+   "yaw:float"
+  ],
+  "LOGGING_ACK": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "sequence:uint16_t"
+  ],
+  "LOGGING_DATA": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "sequence:uint16_t",
+   "length:uint8_t",
+   "first_message_offset:uint8_t",
+   "data:uint8_t[249]"
+  ],
+  "LOGGING_DATA_ACKED": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "sequence:uint16_t",
+   "length:uint8_t",
+   "first_message_offset:uint8_t",
+   "data:uint8_t[249]"
+  ],
+  "LOG_DATA": [
+   "id:uint16_t",
+   "ofs:uint32_t",
+   "count:uint8_t",
+   "data:uint8_t[90]"
+  ],
+  "LOG_ENTRY": [
+   "id:uint16_t",
+   "num_logs:uint16_t",
+   "last_log_num:uint16_t",
+   "time_utc:uint32_t",
+   "size:uint32_t"
+  ],
+  "LOG_ERASE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t"
+  ],
+  "LOG_REQUEST_DATA": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id:uint16_t",
+   "ofs:uint32_t",
+   "count:uint32_t"
+  ],
+  "LOG_REQUEST_END": [
+   "target_system:uint8_t",
+   "target_component:uint8_t"
+  ],
+  "LOG_REQUEST_LIST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "start:uint16_t",
+   "end:uint16_t"
+  ],
+  "MAG_CAL_REPORT": [
+   "compass_id:uint8_t",
+   "cal_mask:uint8_t",
+   "cal_status:uint8_t",
+   "autosaved:uint8_t",
+   "fitness:float",
+   "ofs_x:float",
+   "ofs_y:float",
+   "ofs_z:float",
+   "diag_x:float",
+   "diag_y:float",
+   "diag_z:float",
+   "offdiag_x:float",
+   "offdiag_y:float",
+   "offdiag_z:float",
+   "orientation_confidence:float*",
+   "old_orientation:uint8_t*",
+   "new_orientation:uint8_t*",
+   "scale_factor:float*"
+  ],
+  "MANUAL_CONTROL": [
+   "target:uint8_t",
+   "x:int16_t",
+   "y:int16_t",
+   "z:int16_t",
+   "r:int16_t",
+   "buttons:uint16_t",
+   "buttons2:uint16_t*",
+   "enabled_extensions:uint8_t*",
+   "s:int16_t*",
+   "t:int16_t*",
+   "aux1:int16_t*",
+   "aux2:int16_t*",
+   "aux3:int16_t*",
+   "aux4:int16_t*",
+   "aux5:int16_t*",
+   "aux6:int16_t*"
+  ],
+  "MANUAL_SETPOINT": [
+   "time_boot_ms:uint32_t",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "thrust:float",
+   "mode_switch:uint8_t",
+   "manual_override_switch:uint8_t"
+  ],
+  "MEMORY_VECT": [
+   "address:uint16_t",
+   "ver:uint8_t",
+   "type:uint8_t",
+   "value:int8_t[32]"
+  ],
+  "MESSAGE_INTERVAL": [
+   "message_id:uint16_t",
+   "interval_us:int32_t"
+  ],
+  "MISSION_ACK": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "type:uint8_t",
+   "mission_type:uint8_t*",
+   "opaque_id:uint32_t*"
+  ],
+  "MISSION_CLEAR_ALL": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_COUNT": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "count:uint16_t",
+   "mission_type:uint8_t*",
+   "opaque_id:uint32_t*"
+  ],
+  "MISSION_CURRENT": [
+   "seq:uint16_t",
+   "total:uint16_t*",
+   "mission_state:uint8_t*",
+   "mission_mode:uint8_t*",
+   "mission_id:uint32_t*",
+   "fence_id:uint32_t*",
+   "rally_points_id:uint32_t*"
+  ],
+  "MISSION_ITEM": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "seq:uint16_t",
+   "frame:uint8_t",
+   "command:uint16_t",
+   "current:uint8_t",
+   "autocontinue:uint8_t",
+   "param1:float",
+   "param2:float",
+   "param3:float",
+   "param4:float",
+   "x:float",
+   "y:float",
+   "z:float",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_ITEM_INT": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "seq:uint16_t",
+   "frame:uint8_t",
+   "command:uint16_t",
+   "current:uint8_t",
+   "autocontinue:uint8_t",
+   "param1:float",
+   "param2:float",
+   "param3:float",
+   "param4:float",
+   "x:int32_t",
+   "y:int32_t",
+   "z:float",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_ITEM_REACHED": [
+   "seq:uint16_t"
+  ],
+  "MISSION_REQUEST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "seq:uint16_t",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_REQUEST_INT": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "seq:uint16_t",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_REQUEST_LIST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_REQUEST_PARTIAL_LIST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "start_index:int16_t",
+   "end_index:int16_t",
+   "mission_type:uint8_t*"
+  ],
+  "MISSION_SET_CURRENT": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "seq:uint16_t"
+  ],
+  "MISSION_WRITE_PARTIAL_LIST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "start_index:int16_t",
+   "end_index:int16_t",
+   "mission_type:uint8_t*"
+  ],
+  "MOUNT_ORIENTATION": [
+   "time_boot_ms:uint32_t",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "yaw_absolute:float*"
+  ],
+  "NAMED_VALUE_FLOAT": [
+   "time_boot_ms:uint32_t",
+   "name:char[10]",
+   "value:float"
+  ],
+  "NAMED_VALUE_INT": [
+   "time_boot_ms:uint32_t",
+   "name:char[10]",
+   "value:int32_t"
+  ],
+  "NAV_CONTROLLER_OUTPUT": [
+   "nav_roll:float",
+   "nav_pitch:float",
+   "nav_bearing:int16_t",
+   "target_bearing:int16_t",
+   "wp_dist:uint16_t",
+   "alt_error:float",
+   "aspd_error:float",
+   "xtrack_error:float"
+  ],
+  "OBSTACLE_DISTANCE": [
+   "time_usec:uint64_t",
+   "sensor_type:uint8_t",
+   "distances:uint16_t[72]",
+   "increment:uint8_t",
+   "min_distance:uint16_t",
+   "max_distance:uint16_t",
+   "increment_f:float*",
+   "angle_offset:float*",
+   "frame:uint8_t*"
+  ],
+  "ODOMETRY": [
+   "time_usec:uint64_t",
+   "frame_id:uint8_t",
+   "child_frame_id:uint8_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "q:float[4]",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "rollspeed:float",
+   "pitchspeed:float",
+   "yawspeed:float",
+   "pose_covariance:float[21]",
+   "velocity_covariance:float[21]",
+   "reset_counter:uint8_t*",
+   "estimator_type:uint8_t*",
+   "quality:int8_t*"
+  ],
+  "ONBOARD_COMPUTER_STATUS": [
+   "time_usec:uint64_t",
+   "uptime:uint32_t",
+   "type:uint8_t",
+   "cpu_cores:uint8_t[8]",
+   "cpu_combined:uint8_t[10]",
+   "gpu_cores:uint8_t[4]",
+   "gpu_combined:uint8_t[10]",
+   "temperature_board:int8_t",
+   "temperature_core:int8_t[8]",
+   "fan_speed:int16_t[4]",
+   "ram_usage:uint32_t",
+   "ram_total:uint32_t",
+   "storage_type:uint32_t[4]",
+   "storage_usage:uint32_t[4]",
+   "storage_total:uint32_t[4]",
+   "link_type:uint32_t[6]",
+   "link_tx_rate:uint32_t[6]",
+   "link_rx_rate:uint32_t[6]",
+   "link_tx_max:uint32_t[6]",
+   "link_rx_max:uint32_t[6]",
+   "status_flags:uint16_t*"
+  ],
+  "OPEN_DRONE_ID_ARM_STATUS": [
+   "status:uint8_t",
+   "error:char[50]"
+  ],
+  "OPEN_DRONE_ID_AUTHENTICATION": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "authentication_type:uint8_t",
+   "data_page:uint8_t",
+   "last_page_index:uint8_t",
+   "length:uint8_t",
+   "timestamp:uint32_t",
+   "authentication_data:uint8_t[23]"
+  ],
+  "OPEN_DRONE_ID_BASIC_ID": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "id_type:uint8_t",
+   "ua_type:uint8_t",
+   "uas_id:uint8_t[20]"
+  ],
+  "OPEN_DRONE_ID_LOCATION": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "status:uint8_t",
+   "direction:uint16_t",
+   "speed_horizontal:uint16_t",
+   "speed_vertical:int16_t",
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude_barometric:float",
+   "altitude_geodetic:float",
+   "height_reference:uint8_t",
+   "height:float",
+   "horizontal_accuracy:uint8_t",
+   "vertical_accuracy:uint8_t",
+   "barometer_accuracy:uint8_t",
+   "speed_accuracy:uint8_t",
+   "timestamp:float",
+   "timestamp_accuracy:uint8_t"
+  ],
+  "OPEN_DRONE_ID_MESSAGE_PACK": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "single_message_size:uint8_t",
+   "msg_pack_size:uint8_t",
+   "messages:uint8_t[225]"
+  ],
+  "OPEN_DRONE_ID_OPERATOR_ID": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "operator_id_type:uint8_t",
+   "operator_id:char[20]"
+  ],
+  "OPEN_DRONE_ID_SELF_ID": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "description_type:uint8_t",
+   "description:char[23]"
+  ],
+  "OPEN_DRONE_ID_SYSTEM": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "id_or_mac:uint8_t[20]",
+   "operator_location_type:uint8_t",
+   "classification_type:uint8_t",
+   "operator_latitude:int32_t",
+   "operator_longitude:int32_t",
+   "area_count:uint16_t",
+   "area_radius:uint16_t",
+   "area_ceiling:float",
+   "area_floor:float",
+   "category_eu:uint8_t",
+   "class_eu:uint8_t",
+   "operator_altitude_geo:float",
+   "timestamp:uint32_t"
+  ],
+  "OPEN_DRONE_ID_SYSTEM_UPDATE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "operator_latitude:int32_t",
+   "operator_longitude:int32_t",
+   "operator_altitude_geo:float",
+   "timestamp:uint32_t"
+  ],
+  "OPTICAL_FLOW": [
+   "time_usec:uint64_t",
+   "sensor_id:uint8_t",
+   "flow_x:int16_t",
+   "flow_y:int16_t",
+   "flow_comp_m_x:float",
+   "flow_comp_m_y:float",
+   "quality:uint8_t",
+   "ground_distance:float",
+   "flow_rate_x:float*",
+   "flow_rate_y:float*"
+  ],
+  "OPTICAL_FLOW_RAD": [
+   "time_usec:uint64_t",
+   "sensor_id:uint8_t",
+   "integration_time_us:uint32_t",
+   "integrated_x:float",
+   "integrated_y:float",
+   "integrated_xgyro:float",
+   "integrated_ygyro:float",
+   "integrated_zgyro:float",
+   "temperature:int16_t",
+   "quality:uint8_t",
+   "time_delta_distance_us:uint32_t",
+   "distance:float"
+  ],
+  "ORBIT_EXECUTION_STATUS": [
+   "time_usec:uint64_t",
+   "radius:float",
+   "frame:uint8_t",
+   "x:int32_t",
+   "y:int32_t",
+   "z:float"
+  ],
+  "PARAM_ERROR": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "param_id:char[16]",
+   "param_index:int16_t",
+   "error:uint8_t"
+  ],
+  "PARAM_EXT_ACK": [
+   "param_id:char[16]",
+   "param_value:char[128]",
+   "param_type:uint8_t",
+   "param_result:uint8_t"
+  ],
+  "PARAM_EXT_REQUEST_LIST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t"
+  ],
+  "PARAM_EXT_REQUEST_READ": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "param_id:char[16]",
+   "param_index:int16_t"
+  ],
+  "PARAM_EXT_SET": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "param_id:char[16]",
+   "param_value:char[128]",
+   "param_type:uint8_t"
+  ],
+  "PARAM_EXT_VALUE": [
+   "param_id:char[16]",
+   "param_value:char[128]",
+   "param_type:uint8_t",
+   "param_count:uint16_t",
+   "param_index:uint16_t"
+  ],
+  "PARAM_MAP_RC": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "param_id:char[16]",
+   "param_index:int16_t",
+   "parameter_rc_channel_index:uint8_t",
+   "param_value0:float",
+   "scale:float",
+   "param_value_min:float",
+   "param_value_max:float"
+  ],
+  "PARAM_REQUEST_LIST": [
+   "target_system:uint8_t",
+   "target_component:uint8_t"
+  ],
+  "PARAM_REQUEST_READ": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "param_id:char[16]",
+   "param_index:int16_t"
+  ],
+  "PARAM_SET": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "param_id:char[16]",
+   "param_value:float",
+   "param_type:uint8_t"
+  ],
+  "PARAM_VALUE": [
+   "param_id:char[16]",
+   "param_value:float",
+   "param_type:uint8_t",
+   "param_count:uint16_t",
+   "param_index:uint16_t"
+  ],
+  "PING": [
+   "time_usec:uint64_t",
+   "seq:uint32_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t"
+  ],
+  "PLAY_TUNE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "tune:char[30]",
+   "tune2:char[200]*"
+  ],
+  "PLAY_TUNE_V2": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "format:uint32_t",
+   "tune:char[248]"
+  ],
+  "POSITION_TARGET_GLOBAL_INT": [
+   "time_boot_ms:uint32_t",
+   "coordinate_frame:uint8_t",
+   "type_mask:uint16_t",
+   "lat_int:int32_t",
+   "lon_int:int32_t",
+   "alt:float",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "afx:float",
+   "afy:float",
+   "afz:float",
+   "yaw:float",
+   "yaw_rate:float"
+  ],
+  "POSITION_TARGET_LOCAL_NED": [
+   "time_boot_ms:uint32_t",
+   "coordinate_frame:uint8_t",
+   "type_mask:uint16_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "afx:float",
+   "afy:float",
+   "afz:float",
+   "yaw:float",
+   "yaw_rate:float"
+  ],
+  "POWER_STATUS": [
+   "Vcc:uint16_t",
+   "Vservo:uint16_t",
+   "flags:uint16_t"
+  ],
+  "PROTOCOL_VERSION": [
+   "version:uint16_t",
+   "min_version:uint16_t",
+   "max_version:uint16_t",
+   "spec_version_hash:uint8_t[8]",
+   "library_version_hash:uint8_t[8]"
+  ],
+  "RADIO_RC_CHANNELS": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "time_last_update_ms:uint32_t",
+   "flags:uint16_t",
+   "count:uint8_t",
+   "channels:int16_t[32]*"
+  ],
+  "RADIO_STATUS": [
+   "rssi:uint8_t",
+   "remrssi:uint8_t",
+   "txbuf:uint8_t",
+   "noise:uint8_t",
+   "remnoise:uint8_t",
+   "rxerrors:uint16_t",
+   "fixed:uint16_t"
+  ],
+  "RANGING_BEACON": [
+   "time_usec:uint64_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "beacon_id:uint16_t",
+   "range:uint32_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:float",
+   "alt_type:uint8_t",
+   "hacc_est:uint32_t",
+   "vacc_est:uint32_t",
+   "carrier_freq:uint16_t",
+   "range_accuracy:uint32_t",
+   "sequence:uint8_t",
+   "status:uint8_t"
+  ],
+  "RAW_IMU": [
+   "time_usec:uint64_t",
+   "xacc:int16_t",
+   "yacc:int16_t",
+   "zacc:int16_t",
+   "xgyro:int16_t",
+   "ygyro:int16_t",
+   "zgyro:int16_t",
+   "xmag:int16_t",
+   "ymag:int16_t",
+   "zmag:int16_t",
+   "id:uint8_t*",
+   "temperature:int16_t*"
+  ],
+  "RAW_PRESSURE": [
+   "time_usec:uint64_t",
+   "press_abs:int16_t",
+   "press_diff1:int16_t",
+   "press_diff2:int16_t",
+   "temperature:int16_t"
+  ],
+  "RAW_RPM": [
+   "index:uint8_t",
+   "frequency:float"
+  ],
+  "RC_CHANNELS": [
+   "time_boot_ms:uint32_t",
+   "chancount:uint8_t",
+   "chan1_raw:uint16_t",
+   "chan2_raw:uint16_t",
+   "chan3_raw:uint16_t",
+   "chan4_raw:uint16_t",
+   "chan5_raw:uint16_t",
+   "chan6_raw:uint16_t",
+   "chan7_raw:uint16_t",
+   "chan8_raw:uint16_t",
+   "chan9_raw:uint16_t",
+   "chan10_raw:uint16_t",
+   "chan11_raw:uint16_t",
+   "chan12_raw:uint16_t",
+   "chan13_raw:uint16_t",
+   "chan14_raw:uint16_t",
+   "chan15_raw:uint16_t",
+   "chan16_raw:uint16_t",
+   "chan17_raw:uint16_t",
+   "chan18_raw:uint16_t",
+   "rssi:uint8_t"
+  ],
+  "RC_CHANNELS_OVERRIDE": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "chan1_raw:uint16_t",
+   "chan2_raw:uint16_t",
+   "chan3_raw:uint16_t",
+   "chan4_raw:uint16_t",
+   "chan5_raw:uint16_t",
+   "chan6_raw:uint16_t",
+   "chan7_raw:uint16_t",
+   "chan8_raw:uint16_t",
+   "chan9_raw:uint16_t*",
+   "chan10_raw:uint16_t*",
+   "chan11_raw:uint16_t*",
+   "chan12_raw:uint16_t*",
+   "chan13_raw:uint16_t*",
+   "chan14_raw:uint16_t*",
+   "chan15_raw:uint16_t*",
+   "chan16_raw:uint16_t*",
+   "chan17_raw:uint16_t*",
+   "chan18_raw:uint16_t*"
+  ],
+  "RC_CHANNELS_OVERRIDE_V2": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "active_mask:uint32_t",
+   "channels:int16_t[32]*"
+  ],
+  "RC_CHANNELS_RAW": [
+   "time_boot_ms:uint32_t",
+   "port:uint8_t",
+   "chan1_raw:uint16_t",
+   "chan2_raw:uint16_t",
+   "chan3_raw:uint16_t",
+   "chan4_raw:uint16_t",
+   "chan5_raw:uint16_t",
+   "chan6_raw:uint16_t",
+   "chan7_raw:uint16_t",
+   "chan8_raw:uint16_t",
+   "rssi:uint8_t"
+  ],
+  "RC_CHANNELS_SCALED": [
+   "time_boot_ms:uint32_t",
+   "port:uint8_t",
+   "chan1_scaled:int16_t",
+   "chan2_scaled:int16_t",
+   "chan3_scaled:int16_t",
+   "chan4_scaled:int16_t",
+   "chan5_scaled:int16_t",
+   "chan6_scaled:int16_t",
+   "chan7_scaled:int16_t",
+   "chan8_scaled:int16_t",
+   "rssi:uint8_t"
+  ],
+  "RELAY_STATUS": [
+   "time_boot_ms:uint32_t",
+   "on:uint16_t",
+   "present:uint16_t"
+  ],
+  "REQUEST_DATA_STREAM": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "req_stream_id:uint8_t",
+   "req_message_rate:uint16_t",
+   "start_stop:uint8_t"
+  ],
+  "REQUEST_EVENT": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "first_sequence:uint16_t",
+   "last_sequence:uint16_t"
+  ],
+  "RESOURCE_REQUEST": [
+   "request_id:uint8_t",
+   "uri_type:uint8_t",
+   "uri:uint8_t[120]",
+   "transfer_type:uint8_t",
+   "storage:uint8_t[120]"
+  ],
+  "RESPONSE_EVENT_ERROR": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "sequence:uint16_t",
+   "sequence_oldest_available:uint16_t",
+   "reason:uint8_t"
+  ],
+  "SAFETY_ALLOWED_AREA": [
+   "frame:uint8_t",
+   "p1x:float",
+   "p1y:float",
+   "p1z:float",
+   "p2x:float",
+   "p2y:float",
+   "p2z:float"
+  ],
+  "SAFETY_SET_ALLOWED_AREA": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "frame:uint8_t",
+   "p1x:float",
+   "p1y:float",
+   "p1z:float",
+   "p2x:float",
+   "p2y:float",
+   "p2z:float"
+  ],
+  "SCALED_IMU": [
+   "time_boot_ms:uint32_t",
+   "xacc:int16_t",
+   "yacc:int16_t",
+   "zacc:int16_t",
+   "xgyro:int16_t",
+   "ygyro:int16_t",
+   "zgyro:int16_t",
+   "xmag:int16_t",
+   "ymag:int16_t",
+   "zmag:int16_t",
+   "temperature:int16_t*"
+  ],
+  "SCALED_IMU2": [
+   "time_boot_ms:uint32_t",
+   "xacc:int16_t",
+   "yacc:int16_t",
+   "zacc:int16_t",
+   "xgyro:int16_t",
+   "ygyro:int16_t",
+   "zgyro:int16_t",
+   "xmag:int16_t",
+   "ymag:int16_t",
+   "zmag:int16_t",
+   "temperature:int16_t*"
+  ],
+  "SCALED_IMU3": [
+   "time_boot_ms:uint32_t",
+   "xacc:int16_t",
+   "yacc:int16_t",
+   "zacc:int16_t",
+   "xgyro:int16_t",
+   "ygyro:int16_t",
+   "zgyro:int16_t",
+   "xmag:int16_t",
+   "ymag:int16_t",
+   "zmag:int16_t",
+   "temperature:int16_t*"
+  ],
+  "SCALED_PRESSURE": [
+   "time_boot_ms:uint32_t",
+   "press_abs:float",
+   "press_diff:float",
+   "temperature:int16_t",
+   "temperature_press_diff:int16_t*"
+  ],
+  "SCALED_PRESSURE2": [
+   "time_boot_ms:uint32_t",
+   "press_abs:float",
+   "press_diff:float",
+   "temperature:int16_t",
+   "temperature_press_diff:int16_t*"
+  ],
+  "SCALED_PRESSURE3": [
+   "time_boot_ms:uint32_t",
+   "press_abs:float",
+   "press_diff:float",
+   "temperature:int16_t",
+   "temperature_press_diff:int16_t*"
+  ],
+  "SERIAL_CONTROL": [
+   "device:uint8_t",
+   "flags:uint8_t",
+   "timeout:uint16_t",
+   "baudrate:uint32_t",
+   "count:uint8_t",
+   "data:uint8_t[70]",
+   "target_system:uint8_t*",
+   "target_component:uint8_t*"
+  ],
+  "SERVO_OUTPUT_RAW": [
+   "time_usec:uint32_t",
+   "port:uint8_t",
+   "servo1_raw:uint16_t",
+   "servo2_raw:uint16_t",
+   "servo3_raw:uint16_t",
+   "servo4_raw:uint16_t",
+   "servo5_raw:uint16_t",
+   "servo6_raw:uint16_t",
+   "servo7_raw:uint16_t",
+   "servo8_raw:uint16_t",
+   "servo9_raw:uint16_t*",
+   "servo10_raw:uint16_t*",
+   "servo11_raw:uint16_t*",
+   "servo12_raw:uint16_t*",
+   "servo13_raw:uint16_t*",
+   "servo14_raw:uint16_t*",
+   "servo15_raw:uint16_t*",
+   "servo16_raw:uint16_t*"
+  ],
+  "SETUP_SIGNING": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "secret_key:uint8_t[32]",
+   "initial_timestamp:uint64_t"
+  ],
+  "SET_ACTUATOR_CONTROL_TARGET": [
+   "time_usec:uint64_t",
+   "group_mlx:uint8_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "controls:float[8]"
+  ],
+  "SET_ATTITUDE_TARGET": [
+   "time_boot_ms:uint32_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "type_mask:uint8_t",
+   "q:float[4]",
+   "body_roll_rate:float",
+   "body_pitch_rate:float",
+   "body_yaw_rate:float",
+   "thrust:float",
+   "thrust_body:float[3]*"
+  ],
+  "SET_GPS_GLOBAL_ORIGIN": [
+   "target_system:uint8_t",
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude:int32_t",
+   "time_usec:uint64_t*"
+  ],
+  "SET_HOME_POSITION": [
+   "target_system:uint8_t",
+   "latitude:int32_t",
+   "longitude:int32_t",
+   "altitude:int32_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "q:float[4]",
+   "approach_x:float",
+   "approach_y:float",
+   "approach_z:float",
+   "time_usec:uint64_t*"
+  ],
+  "SET_MODE": [
+   "target_system:uint8_t",
+   "base_mode:uint8_t",
+   "custom_mode:uint32_t"
+  ],
+  "SET_POSITION_TARGET_GLOBAL_INT": [
+   "time_boot_ms:uint32_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "coordinate_frame:uint8_t",
+   "type_mask:uint16_t",
+   "lat_int:int32_t",
+   "lon_int:int32_t",
+   "alt:float",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "afx:float",
+   "afy:float",
+   "afz:float",
+   "yaw:float",
+   "yaw_rate:float"
+  ],
+  "SET_POSITION_TARGET_LOCAL_NED": [
+   "time_boot_ms:uint32_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "coordinate_frame:uint8_t",
+   "type_mask:uint16_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "vx:float",
+   "vy:float",
+   "vz:float",
+   "afx:float",
+   "afy:float",
+   "afz:float",
+   "yaw:float",
+   "yaw_rate:float"
+  ],
+  "SET_VELOCITY_LIMITS": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "horizontal_speed_limit:float",
+   "vertical_speed_limit:float",
+   "yaw_rate_limit:float"
+  ],
+  "SIM_STATE": [
+   "q1:float",
+   "q2:float",
+   "q3:float",
+   "q4:float",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "xacc:float",
+   "yacc:float",
+   "zacc:float",
+   "xgyro:float",
+   "ygyro:float",
+   "zgyro:float",
+   "lat:float",
+   "lon:float",
+   "alt:float",
+   "std_dev_horz:float",
+   "std_dev_vert:float",
+   "vn:float",
+   "ve:float",
+   "vd:float",
+   "lat_int:int32_t*",
+   "lon_int:int32_t*"
+  ],
+  "SMART_BATTERY_INFO": [
+   "id:uint8_t",
+   "battery_function:uint8_t",
+   "type:uint8_t",
+   "capacity_full_specification:int32_t",
+   "capacity_full:int32_t",
+   "cycle_count:uint16_t",
+   "serial_number:char[16]",
+   "device_name:char[50]",
+   "weight:uint16_t",
+   "discharge_minimum_voltage:uint16_t",
+   "charging_minimum_voltage:uint16_t",
+   "resting_minimum_voltage:uint16_t",
+   "charging_maximum_voltage:uint16_t*",
+   "cells_in_series:uint8_t*",
+   "discharge_maximum_current:uint32_t*",
+   "discharge_maximum_burst_current:uint32_t*",
+   "manufacture_date:char[11]*"
+  ],
+  "STATUSTEXT": [
+   "severity:uint8_t",
+   "text:char[50]",
+   "id:uint16_t*",
+   "chunk_seq:uint8_t*"
+  ],
+  "STORAGE_INFORMATION": [
+   "time_boot_ms:uint32_t",
+   "storage_id:uint8_t",
+   "storage_count:uint8_t",
+   "status:uint8_t",
+   "total_capacity:float",
+   "used_capacity:float",
+   "available_capacity:float",
+   "read_speed:float",
+   "write_speed:float",
+   "type:uint8_t*",
+   "name:char[32]*",
+   "storage_usage:uint8_t*"
+  ],
+  "SUPPORTED_TUNES": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "format:uint32_t"
+  ],
+  "SYSTEM_TIME": [
+   "time_unix_usec:uint64_t",
+   "time_boot_ms:uint32_t"
+  ],
+  "SYS_STATUS": [
+   "onboard_control_sensors_present:uint32_t",
+   "onboard_control_sensors_enabled:uint32_t",
+   "onboard_control_sensors_health:uint32_t",
+   "load:uint16_t",
+   "voltage_battery:uint16_t",
+   "current_battery:int16_t",
+   "battery_remaining:int8_t",
+   "drop_rate_comm:uint16_t",
+   "errors_comm:uint16_t",
+   "errors_count1:uint16_t",
+   "errors_count2:uint16_t",
+   "errors_count3:uint16_t",
+   "errors_count4:uint16_t",
+   "onboard_control_sensors_present_extended:uint32_t*",
+   "onboard_control_sensors_enabled_extended:uint32_t*",
+   "onboard_control_sensors_health_extended:uint32_t*"
+  ],
+  "TARGET_ABSOLUTE": [
+   "timestamp:uint64_t",
+   "id:uint8_t",
+   "sensor_capabilities:uint8_t",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:float",
+   "vel:float[3]",
+   "acc:float[3]",
+   "q_target:float[4]",
+   "rates:float[3]",
+   "position_std:float[2]",
+   "vel_std:float[3]",
+   "acc_std:float[3]"
+  ],
+  "TARGET_RELATIVE": [
+   "timestamp:uint64_t",
+   "id:uint8_t",
+   "frame:uint8_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "pos_std:float[3]",
+   "yaw_std:float",
+   "q_target:float[4]",
+   "q_sensor:float[4]",
+   "type:uint8_t"
+  ],
+  "TERRAIN_CHECK": [
+   "lat:int32_t",
+   "lon:int32_t"
+  ],
+  "TERRAIN_DATA": [
+   "lat:int32_t",
+   "lon:int32_t",
+   "grid_spacing:uint16_t",
+   "gridbit:uint8_t",
+   "data:int16_t[16]"
+  ],
+  "TERRAIN_REPORT": [
+   "lat:int32_t",
+   "lon:int32_t",
+   "spacing:uint16_t",
+   "terrain_height:float",
+   "current_height:float",
+   "pending:uint16_t",
+   "loaded:uint16_t"
+  ],
+  "TERRAIN_REQUEST": [
+   "lat:int32_t",
+   "lon:int32_t",
+   "grid_spacing:uint16_t",
+   "mask:uint64_t"
+  ],
+  "TIMESYNC": [
+   "tc1:int64_t",
+   "ts1:int64_t",
+   "target_system:uint8_t*",
+   "target_component:uint8_t*"
+  ],
+  "TIME_ESTIMATE_TO_TARGET": [
+   "safe_return:int32_t",
+   "land:int32_t",
+   "mission_next_item:int32_t",
+   "mission_end:int32_t",
+   "commanded_action:int32_t"
+  ],
+  "TRAJECTORY_REPRESENTATION_BEZIER": [
+   "time_usec:uint64_t",
+   "valid_points:uint8_t",
+   "pos_x:float[5]",
+   "pos_y:float[5]",
+   "pos_z:float[5]",
+   "delta:float[5]",
+   "pos_yaw:float[5]"
+  ],
+  "TRAJECTORY_REPRESENTATION_WAYPOINTS": [
+   "time_usec:uint64_t",
+   "valid_points:uint8_t",
+   "pos_x:float[5]",
+   "pos_y:float[5]",
+   "pos_z:float[5]",
+   "vel_x:float[5]",
+   "vel_y:float[5]",
+   "vel_z:float[5]",
+   "acc_x:float[5]",
+   "acc_y:float[5]",
+   "acc_z:float[5]",
+   "pos_yaw:float[5]",
+   "vel_yaw:float[5]",
+   "command:uint16_t[5]"
+  ],
+  "TUNNEL": [
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "payload_type:uint16_t",
+   "payload_length:uint8_t",
+   "payload:uint8_t[128]"
+  ],
+  "UAVCAN_NODE_INFO": [
+   "time_usec:uint64_t",
+   "uptime_sec:uint32_t",
+   "name:char[80]",
+   "hw_version_major:uint8_t",
+   "hw_version_minor:uint8_t",
+   "hw_unique_id:uint8_t[16]",
+   "sw_version_major:uint8_t",
+   "sw_version_minor:uint8_t",
+   "sw_vcs_commit:uint32_t"
+  ],
+  "UAVCAN_NODE_STATUS": [
+   "time_usec:uint64_t",
+   "uptime_sec:uint32_t",
+   "health:uint8_t",
+   "mode:uint8_t",
+   "sub_mode:uint8_t",
+   "vendor_specific_status_code:uint16_t"
+  ],
+  "UTM_GLOBAL_POSITION": [
+   "time:uint64_t",
+   "uas_id:uint8_t[18]",
+   "lat:int32_t",
+   "lon:int32_t",
+   "alt:int32_t",
+   "relative_alt:int32_t",
+   "vx:int16_t",
+   "vy:int16_t",
+   "vz:int16_t",
+   "h_acc:uint16_t",
+   "v_acc:uint16_t",
+   "vel_acc:uint16_t",
+   "next_lat:int32_t",
+   "next_lon:int32_t",
+   "next_alt:int32_t",
+   "update_rate:uint16_t",
+   "flight_state:uint8_t",
+   "flags:uint8_t"
+  ],
+  "V2_EXTENSION": [
+   "target_network:uint8_t",
+   "target_system:uint8_t",
+   "target_component:uint8_t",
+   "message_type:uint16_t",
+   "payload:uint8_t[249]"
+  ],
+  "VELOCITY_LIMITS": [
+   "horizontal_speed_limit:float",
+   "vertical_speed_limit:float",
+   "yaw_rate_limit:float"
+  ],
+  "VFR_HUD": [
+   "airspeed:float",
+   "groundspeed:float",
+   "heading:int16_t",
+   "throttle:uint16_t",
+   "alt:float",
+   "climb:float"
+  ],
+  "VIBRATION": [
+   "time_usec:uint64_t",
+   "vibration_x:float",
+   "vibration_y:float",
+   "vibration_z:float",
+   "clipping_0:uint32_t",
+   "clipping_1:uint32_t",
+   "clipping_2:uint32_t"
+  ],
+  "VICON_POSITION_ESTIMATE": [
+   "usec:uint64_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "covariance:float[21]*"
+  ],
+  "VIDEO_STREAM_INFORMATION": [
+   "stream_id:uint8_t",
+   "count:uint8_t",
+   "type:uint8_t",
+   "flags:uint16_t",
+   "framerate:float",
+   "resolution_h:uint16_t",
+   "resolution_v:uint16_t",
+   "bitrate:uint32_t",
+   "rotation:uint16_t",
+   "hfov:uint16_t",
+   "name:char[32]",
+   "uri:char[160]",
+   "encoding:uint8_t*",
+   "camera_device_id:uint8_t*"
+  ],
+  "VIDEO_STREAM_STATUS": [
+   "stream_id:uint8_t",
+   "flags:uint16_t",
+   "framerate:float",
+   "resolution_h:uint16_t",
+   "resolution_v:uint16_t",
+   "bitrate:uint32_t",
+   "rotation:uint16_t",
+   "hfov:uint16_t",
+   "camera_device_id:uint8_t*"
+  ],
+  "VISION_POSITION_ESTIMATE": [
+   "usec:uint64_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "roll:float",
+   "pitch:float",
+   "yaw:float",
+   "covariance:float[21]*",
+   "reset_counter:uint8_t*"
+  ],
+  "VISION_SPEED_ESTIMATE": [
+   "usec:uint64_t",
+   "x:float",
+   "y:float",
+   "z:float",
+   "covariance:float[9]*",
+   "reset_counter:uint8_t*"
+  ],
+  "WHEEL_DISTANCE": [
+   "time_usec:uint64_t",
+   "count:uint8_t",
+   "distance:double[16]"
+  ],
+  "WIFI_CONFIG_AP": [
+   "ssid:char[32]",
+   "password:char[64]",
+   "mode:int8_t*",
+   "response:int8_t*"
+  ],
+  "WINCH_STATUS": [
+   "time_usec:uint64_t",
+   "line_length:float",
+   "speed:float",
+   "tension:float",
+   "voltage:float",
+   "current:float",
+   "temperature:int16_t",
+   "status:uint32_t"
+  ],
+  "WIND_COV": [
+   "time_usec:uint64_t",
+   "wind_x:float",
+   "wind_y:float",
+   "wind_z:float",
+   "var_horiz:float",
+   "var_vert:float",
+   "wind_alt:float",
+   "horiz_accuracy:float",
+   "vert_accuracy:float"
+  ]
+ }
+}

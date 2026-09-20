@@ -17,6 +17,7 @@ from mavsdk.mavlink_direct import MavlinkMessage
 import mavsdk.mission_raw_server_pb2 as _mrs_pb2
 
 from tests import report
+from tests.mavlink_xml import require_context
 from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
 from tests.mock_flight_stack import MockFlightStack
 from tests.param_spec import MAV_FRAME_CATALOGUE, ParamSpec
@@ -772,6 +773,7 @@ class Tier1MissionTestBase:
         # this declaration even without Tier 1 running in the same session
         # (Tier 2 files import SPEC from their sibling test_protocol.py).
         spec = cls.SPEC
+        require_context(spec.cmd_id, spec.name, "mission")
         report.declare_command("mission", spec.name, spec.cmd_id)
         report.declare_params("mission", spec.name, [f"{p.slot}_{p.label}" for p in spec.params])
         # Undefined ("Empty") params have nothing to functionally support —
@@ -831,7 +833,7 @@ class Tier1MissionTestBase:
     # Baseline: is this command accepted as a mission item at all?
     # Cached per class so every param-level test below can be skipped with
     # one clear reason once the whole item is rejected (do_reposition's
-    # original pattern, generalised — see tests/mission/do_reposition/CLAUDE.md).
+    # original pattern, generalised — see tests/mission/condition_gate/CLAUDE.md and nav_takeoff/CLAUDE.md).
     # -------------------------------------------------------------------
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
