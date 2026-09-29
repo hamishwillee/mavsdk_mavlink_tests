@@ -10,14 +10,14 @@ from typing import Literal
 
 import pytest
 import pytest_asyncio
-from mavsdk import System
-from mavsdk.mission_raw import MissionItem, MissionRawError
-from mavsdk.mission_raw_server import MissionItem as ServerMissionItem
-from mavsdk.mavlink_direct import MavlinkMessage
-import mavsdk.mission_raw_server_pb2 as _mrs_pb2
+from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
+from mavsdk.plugins.mission_raw import MissionItem, MissionRawError
+from mavsdk.plugins.mission_raw_server import MissionItem as ServerMissionItem
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
 
 from tests import report
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
+from tests.conftest import _wait_for_connection
 from tests.mock_flight_stack import MockFlightStack
 from tests.param_spec import MAV_FRAME_CATALOGUE, ParamSpec
 
@@ -205,8 +205,8 @@ async def _send_clear_all(system, mission_type: int) -> None:
     try:
         await system.mavlink_direct.send_message(MavlinkMessage(
             message_name="MISSION_CLEAR_ALL",
-            system_id=255,
-            component_id=1,
+            system_id=GCS_SYSID,
+            component_id=GCS_COMPID,
             target_system_id=1,
             target_component_id=1,
             fields_json=json.dumps({
@@ -232,26 +232,23 @@ async def collect_incoming_mission(
     """
     Wait for a GCS upload and return the received mission items.
 
-    Uses the raw gRPC stub instead of ``mission_raw_server.incoming_mission()``
-    because MAVSDK-Python v3.15.x sends result=SUCCESS (not NEXT) when
-    delivering the mission plan.  The high-level helper discards the plan on
-    SUCCESS and returns an empty generator, so we bypass it here.
+    MAVSDK 4's incoming-mission stream yields (MissionRawServerResult,
+    MissionPlan) tuples, so the plan is available directly. (The old gRPC
+    MAVSDK-Python v3.x helper discarded the plan when result=SUCCESS, which
+    this function used to work around via the raw gRPC stub.)
     """
-    from mavsdk.mission_raw_server import MissionPlan
-
-    stub = drone_system.mission_raw_server._stub
-
     async def _inner():
-        req = _mrs_pb2.SubscribeIncomingMissionRequest()
-        stream = stub.SubscribeIncomingMission(req)
+        stream = drone_system.mission_raw_server.incoming_mission()
         try:
-            async for response in stream:
-                plan = MissionPlan.translate_from_rpc(response.mission_plan)
-                stream.cancel()
+            async for result, plan in stream:
+                log.debug("incoming_mission event: result=%s items=%d", getattr(result, "name", result), len(plan.mission_items))
                 return list(plan.mission_items)
             return []
         finally:
-            stream.cancel()
+            # Close explicitly: returning from inside `async for` leaves the
+            # generator suspended, and its native subscription would outlive
+            # this test's event loop.
+            await stream.aclose()
 
     return await asyncio.wait_for(_inner(), timeout=timeout_s)
 
@@ -347,8 +344,7 @@ async def mock_stack_cls(request):
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
+    system = await open_paired_drone()
 
     stack = MockFlightStack()
     task = asyncio.create_task(stack.run(system))
@@ -365,8 +361,7 @@ async def mock_stack_cls(request):
 async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
     """Class-scoped GCS System for mission protocol tests."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, int(request.config.getoption("--connection-timeout")))
     await _wait_for_connection(system, timeout_s)
     if request.config.getoption("--drone-address") is not None:
         await asyncio.sleep(3.0)
@@ -397,8 +392,7 @@ async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
 # that conversion at the boundary so callers keep working with plain
 # mavsdk.mission_raw.MissionItem objects carrying real float('nan') fields.
 
-_RAW_GCS_SYSID = 255
-_RAW_GCS_COMPID = 1
+from tests.mavsdk_compat import GCS_COMPID as _RAW_GCS_COMPID, GCS_SYSID as _RAW_GCS_SYSID  # MAVSDK GROUND_STATION identity
 _RAW_DRONE_SYSID = 1
 _RAW_DRONE_COMPID = 1
 _RAW_TRANSFER_TIMEOUT_S = 30.0
@@ -711,25 +705,24 @@ _FMT = "%-14s | %-44s | %s"
 TRANSFER_TIMEOUT_S = 30.0
 
 
-def _check(cls, request, description: str, outcome: str, *, expect, xfail_reason: str | None = None) -> None:
+def _check(cls, request, description: str, outcome: str, *, expect, fail_reason: str | None = None) -> None:
     """
     Record this test's outcome into the shared report (tests/report.py), then
-    perform the actual pytest assertion/xfail.
+    pass or fail.
 
     `outcome`: "ACCEPTED" (upload succeeded) or a MAV_MISSION_RESULT reason
     name extracted from a caught NACK (e.g. "UNSUPPORTED", "DENIED").
-    `expect`: predicate(outcome:str) -> bool. `xfail_reason`: if given and
-    the predicate fails, xfail with this reason instead of hard-failing.
+    `expect`: predicate(outcome:str) -> bool. Every Tier 1 check measures
+    spec compliance, so a failed check is a compatibility error
+    (report.compat_fail); `fail_reason` explains a known, documented gap and
+    becomes the failure detail.
     """
     name = cls.SPEC.name
     if expect(outcome):
         report.record_tier1_result("mission", name, request.node.name, "PASS", description, outcome)
         return
-    if xfail_reason:
-        report.record_tier1_result("mission", name, request.node.name, "XFAIL", description, outcome)
-        pytest.xfail(xfail_reason)
-    report.record_tier1_result("mission", name, request.node.name, "FAIL", description, outcome)
-    pytest.fail(f"{description} (got: {outcome})")
+    report.record_tier1_result("mission", name, request.node.name, "FAIL", fail_reason or description, outcome, True)
+    report.compat_fail(f"{fail_reason or description} (got: {outcome})")
 
 
 @pytest.fixture(scope="class", autouse=True)
@@ -801,14 +794,24 @@ class Tier1MissionTestBase:
         probe = MissionItem(**kw)
         items, probe_seq = _with_home_prepend(home_item, probe)
 
-        if spec.transport == "raw":
-            await raw_upload_mission_items(system, items, mission_type=spec.mission_type)
-            downloaded = await raw_download_mission_items(system, mission_type=spec.mission_type)
-        else:
+        async def _round_trip():
+            if spec.transport == "raw":
+                await raw_upload_mission_items(system, items, mission_type=spec.mission_type)
+                return await raw_download_mission_items(system, mission_type=spec.mission_type)
             async with asyncio.timeout(TRANSFER_TIMEOUT_S):
                 await system.mission_raw.upload_mission(items)
             async with asyncio.timeout(TRANSFER_TIMEOUT_S):
-                downloaded = await system.mission_raw.download_mission()
+                return await system.mission_raw.download_mission()
+
+        downloaded = await _round_trip()
+        if not downloaded:
+            # Known MAVSDK 4 transport flake (root CLAUDE.md § MAVSDK 4): about 1
+            # full-file run in 3 against PX4 v1.17, one random test's download
+            # after an ACCEPTED upload came back empty; never under MAVSDK 3 on
+            # the same build, never in isolation. Retry the round trip once —
+            # an accepted-then-lost mission twice in a row still fails below.
+            log.warning(_FMT, spec.name, "empty download after accepted upload", "retrying round trip once (MAVSDK 4 flake)")
+            downloaded = await _round_trip()
 
         dl = next((d for d in downloaded if d.seq == probe_seq), None)
         assert dl is not None, (
@@ -911,12 +914,12 @@ class Tier1MissionTestBase:
         report.record_compat_fact(
             "mission", self.SPEC.name, f"{p.slot}_{p.label}", nacks_on_non_sentinel_value=(outcome != "ACCEPTED"),
         )
-        xfail_reason = p.reject_xfail_reason or (
-            f"Stack returned {outcome!r} for undefined param{p.slot}; expected a NACK — no "
-            "known stack validates parameters with no MAVLink definition (spec gap)"
+        fail_reason = p.reject_fail_reason or (
+            f"Stack accepted a real value ({outcome!r}) for undefined (Empty) param{p.slot}; "
+            "expected a NACK — a value it can't act on must be rejected"
         )
         _check(type(self), request, description, outcome, expect=lambda o: o != "ACCEPTED",
-               xfail_reason=xfail_reason)
+               fail_reason=fail_reason)
 
     # -------------------------------------------------------------------
     # Defined (used) params tolerate their sentinel, except a
@@ -940,7 +943,7 @@ class Tier1MissionTestBase:
         else:
             description = f"Not rejected when param{p.slot} ({p.label}, defined) is sent its sentinel"
             _check(type(self), request, description, outcome, expect=lambda o: o == "ACCEPTED",
-                   xfail_reason=p.sentinel_xfail_reason)
+                   fail_reason=p.sentinel_fail_reason)
 
     # -------------------------------------------------------------------
     # Frame validation survey — mirrors Tier1CommandTestBase's own

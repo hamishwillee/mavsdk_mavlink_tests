@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from mavsdk import System
-from mavsdk.mavlink_direct import MavlinkMessage
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
 
 from tests import report
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
+from tests.conftest import _wait_for_connection
 from tests.mock_flight_stack import (
     MAV_RESULT_COMMAND_INT_ONLY,
     MAV_RESULT_COMMAND_LONG_ONLY,
@@ -52,8 +52,7 @@ RETRY_TIMEOUT_S = 30.0  # total timeout for the retry loop
 # test_ack_uniqueness.py for the same reason.
 _ACK_WINDOW_S = 1.5
 
-_GCS_SYSID = 255
-_GCS_COMPID = 1
+from tests.mavsdk_compat import GCS_COMPID as _GCS_COMPID, GCS_SYSID as _GCS_SYSID  # MAVSDK GROUND_STATION identity
 _DRONE_SYSID = 1
 _DRONE_COMPID = 1
 
@@ -532,13 +531,13 @@ def pytest_generate_tests(metafunc):
 # ---------------------------------------------------------------------------
 
 
-def _record(cls, request, outcome: str, description: str, result: int | None) -> None:
+def _record(cls, request, outcome: str, description: str, result: int | None, compat: bool = False) -> None:
     """
     Record this test's outcome into the shared report (tests/report.py).
     Public-ish (some command test files import it directly, e.g.
     external_wind_estimate/test_command.py) — keep this signature stable.
     """
-    report.record_tier1_result("command", cls.SPEC.name, request.node.name, outcome, description, result)
+    report.record_tier1_result("command", cls.SPEC.name, request.node.name, outcome, description, result, compat)
 
 
 def _record_detail(cls, text: str) -> None:
@@ -546,14 +545,15 @@ def _record_detail(cls, text: str) -> None:
     report.record_tier1_detail("command", cls.SPEC.name, text)
 
 
-def _check(cls, request, description: str, result: int | None, *, expect, xfail_reason: str | None = None) -> None:
+def _check(cls, request, description: str, result: int | None, *, expect, fail_reason: str | None = None) -> None:
     """
-    Record this test's outcome into the shared report, then perform the
-    actual pytest assertion/xfail.
+    Record this test's outcome into the shared report, then pass or fail.
 
     `expect`: predicate(result:int) -> bool, only called when result is not
-    None. `xfail_reason`: if given and the predicate fails, xfail with this
-    reason (a known, documented stack gap) instead of hard-failing.
+    None. Every Tier 1 check measures spec compliance, so a failed check is a
+    compatibility error (report.compat_fail). `fail_reason` explains a known,
+    documented gap and becomes the failure detail instead of the generic
+    description.
     """
     if result is None:
         _record(cls, request, "UNKNOWN", description, None)
@@ -561,11 +561,8 @@ def _check(cls, request, description: str, result: int | None, *, expect, xfail_
     if expect(result):
         _record(cls, request, "PASS", description, result)
         return
-    if xfail_reason:
-        _record(cls, request, "XFAIL", description, result)
-        pytest.xfail(xfail_reason)
-    _record(cls, request, "FAIL", description, result)
-    pytest.fail(description)
+    _record(cls, request, "FAIL", fail_reason or description, result, compat=True)
+    report.compat_fail(f"{fail_reason or description} (result={result})")
 
 
 def _reduce_dual(cmd_name: str, label: str, int_ack: dict | None, long_ack: dict | None) -> int | None:
@@ -732,7 +729,7 @@ class Tier1CommandTestBase:
                 _record(type(self), request, "FAIL", description, None)
                 pytest.fail(f"Got more than one ACK per send in mock mode: {offenders}")
             _record(type(self), request, "XFAIL", description, None)
-            pytest.xfail(
+            report.compat_fail(
                 f"Got more than one COMMAND_ACK for a single send ({offenders}) — see this "
                 "command's own module docstring / CLAUDE.md for any documented stack-specific cause"
             )
@@ -826,12 +823,12 @@ class Tier1CommandTestBase:
             "command", self.SPEC.name, f"{p.slot}_{p.label}",
             nacks_on_non_sentinel_value=(result == MAV_RESULT_DENIED),
         )
-        xfail_reason = p.reject_xfail_reason or (
-            f"Stack returned {result} for undefined param{p.slot}; expected DENIED — no known "
-            "stack validates parameters with no MAVLink definition (spec gap)"
+        fail_reason = p.reject_fail_reason or (
+            f"Stack accepted a real value ({result}) for undefined (Empty) param{p.slot}; "
+            "expected DENIED — a value it can't act on must be rejected"
         )
         _check(type(self), request, description, result, expect=lambda r: r == MAV_RESULT_DENIED,
-               xfail_reason=xfail_reason)
+               fail_reason=fail_reason)
 
     # -------------------------------------------------------------------
     # Group C — defined (used) params tolerate their sentinel (mandatory
@@ -891,13 +888,13 @@ class Tier1CommandTestBase:
         ack = effective_ack(acks)
         result = int(ack["result"]) if ack is not None else None
         log.info(_FMT, spec.name, "COMMAND_LONG (hasLocation command)", f"result={result}")
-        xfail_reason = (
+        fail_reason = (
             f"Stack accepted COMMAND_LONG for a hasLocation command (result={result}); "
             "expected MAV_RESULT_COMMAND_INT_ONLY(8) — no known stack currently enforces "
             "this message-type exclusivity rule (spec gap)"
         )
         _check(type(self), request, description, result,
-               expect=lambda r: r == MAV_RESULT_COMMAND_INT_ONLY, xfail_reason=xfail_reason)
+               expect=lambda r: r == MAV_RESULT_COMMAND_INT_ONLY, fail_reason=fail_reason)
 
     async def test_float_params5_6_rejects_command_int(self, gcs_system_cls, mock_stack_cls, request):
         """A non-location float-param5/6 command sent via COMMAND_INT is rejected with MAV_RESULT_COMMAND_LONG_ONLY."""
@@ -916,13 +913,13 @@ class Tier1CommandTestBase:
         ack = effective_ack(acks)
         result = int(ack["result"]) if ack is not None else None
         log.info(_FMT, spec.name, "COMMAND_INT (float-param5/6 command)", f"result={result}")
-        xfail_reason = (
+        fail_reason = (
             f"Stack accepted COMMAND_INT for a float-param5/6 command (result={result}); "
             "expected MAV_RESULT_COMMAND_LONG_ONLY(7) — no known stack currently enforces "
             "this message-type exclusivity rule (spec gap)"
         )
         _check(type(self), request, description, result,
-               expect=lambda r: r == MAV_RESULT_COMMAND_LONG_ONLY, xfail_reason=xfail_reason)
+               expect=lambda r: r == MAV_RESULT_COMMAND_LONG_ONLY, fail_reason=fail_reason)
 
 
 # ---------------------------------------------------------------------------
@@ -1005,8 +1002,7 @@ async def mock_stack_cls(request) -> MockFlightStack | None:
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
+    system = await open_paired_drone()
 
     stack = MockFlightStack()
     task = asyncio.create_task(stack.run(system))
@@ -1023,8 +1019,7 @@ async def mock_stack_cls(request) -> MockFlightStack | None:
 async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request) -> System:
     """Class-scoped GCS System for command protocol tests."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, int(request.config.getoption("--connection-timeout")))
     await _wait_for_connection(system, timeout_s)
     if request.config.getoption("--drone-address") is not None:
         await asyncio.sleep(3.0)

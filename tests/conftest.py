@@ -1,62 +1,53 @@
 """
 Shared fixtures for all tests.
 
-Event-loop strategy
--------------------
-pytest-asyncio gives each test function its own asyncio event loop.  gRPC
-channels (used by MAVSDK) are tied to the event loop that created them, so a
-session-scoped *async* fixture that creates gRPC channels cannot be safely
-shared across test functions.
-
-Solution: start ``mavsdk_server`` once as a *synchronous* session fixture
-(no event-loop ownership), then create a fresh ``System`` object per test.
-Each System connects to the already-running server over gRPC, establishing
-channels in the test's own event loop.  The MAVLink connection to the drone
-is maintained by mavsdk_server for the whole session.
+MAVSDK
+------
+The suite runs on MAVSDK 4 (the native, in-process binding) through
+tests/mavsdk_compat.py: an ``Endpoint`` is one MAVSDK instance with one MAVLink
+identity and one connection; a ``SystemShim`` gives tests the old
+``system.telemetry.position()`` call style. Endpoints are session-lifetime and
+synchronous to create; v4 subscriptions capture whichever event loop is running
+when they start, so one endpoint serves every test's (function- or
+class-scoped) pytest-asyncio loop. There are no ``mavsdk_server`` processes.
 
 Connection strategy
 -------------------
-* ``--drone-address`` supplied → standalone mode: GCS mavsdk_server connects
-  to that address (e.g. a PX4 SITL).  All client tests run against the real
+* ``--drone-address`` supplied → standalone mode: the GCS endpoint connects to
+  that address (e.g. a PX4 SITL). All client tests run against the real
   flight stack.
 * ``--drone-address`` omitted  → paired mode: client tests run against
-  MockFlightStack over loopback.  Server tests also run (they always use the
-  paired loopback independently of this flag).
+  MockFlightStack over loopback.
 
 Fixture sets
 ------------
 ``gcs_mavsdk_server`` / ``gcs_system`` / ``mock_stack``
-    Mode-aware GCS for client tests.
-    Standalone: ``gcs_mavsdk_server`` starts a dedicated server pointing to
-    ``--drone-address``; ``mock_stack`` is a no-op.
-    Paired: ``gcs_mavsdk_server`` reuses ``paired_gcs_server``; ``mock_stack``
-    starts MockFlightStack against the paired drone mavsdk_server.
+    Mode-aware GCS for client tests (names kept from the gRPC era).
+    Standalone: ``gcs_mavsdk_server`` is an endpoint on ``--drone-address``;
+    ``mock_stack`` is a no-op.
+    Paired: ``gcs_mavsdk_server`` is ``paired_gcs_server``; ``mock_stack``
+    runs MockFlightStack on the paired drone endpoint.
 
 ``paired_gcs_server`` / ``paired_drone_server``
 ``paired_gcs_system`` / ``paired_drone_system``
-    Loopback-only pair — always started, regardless of ``--drone-address``.
-    Used by server tests and ``TestDeprecatedMessageHandling``.  Port 14560
-    is used deliberately (not 14540) to avoid interference from PX4 SITL.
+    Loopback pair, created on first use (session-scoped). Used by client tests
+    in paired mode and by server tests. Port 14560 is used deliberately (not
+    14540) to avoid interference from PX4 SITL.
 
 Ports
 -----
-  GCS_GRPC_PORT         = 50051  (gRPC — standalone GCS mavsdk_server)
-  PAIRED_GCS_GRPC_PORT  = 50053  (gRPC — paired GCS mavsdk_server)
-  DRONE_GRPC_PORT       = 50052  (gRPC — paired drone mavsdk_server)
   GCS_MAVLINK_PORT      = 14560  (MAVLink UDP — paired loopback;
                                   deliberately NOT 14540 to avoid interference
                                   from a concurrently running PX4 SITL)
 
 Identity
 --------
-  GCS:   sysid=255, compid=1 — GCS must have compid=1 (autopilot-class) so the
-         drone's mavsdk_server fires "System discovered" and starts its gRPC
-         server.  If the GCS uses compid=190 (ground station), the drone's gRPC
-         never starts.
+  GCS:   MAVSDK GROUND_STATION (sysid=245, compid=190) — see mavsdk_compat.GCS_SYSID
   Drone: sysid=1,   compid=1
 """
 
 import re
+import shutil
 import signal
 import subprocess
 import logging
@@ -68,7 +59,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
-from mavsdk import System
+from tests.mavsdk_compat import ENDPOINTS, GCS_COMPID, GCS_SYSID, Endpoint, SystemShim as System, open_system, open_paired_drone
 
 from tests.mock_flight_stack import MockFlightStack
 
@@ -183,22 +174,19 @@ _MAV_FIRMWARE_TYPE = _load_mavlink_enum(
 # ---------------------------------------------------------------------------
 
 
-async def _probe_autopilot_async(grpc_port: int, timeout_s: int) -> dict:
+async def _probe_autopilot_async(endpoint: Endpoint, timeout_s: int) -> dict:
     """
-    Connect to an already-running mavsdk_server on *grpc_port* and probe the
-    connected flight stack: reads one HEARTBEAT for autopilot/vehicle-type,
+    Probe the flight stack connected to *endpoint* (the session's GCS
+    tests/mavsdk_compat.Endpoint): reads one HEARTBEAT for autopilot/vehicle-type,
     then requests AUTOPILOT_VERSION for firmware version and git hash.
 
     Returns a dict with keys: autopilot, vehicle_type, firmware_version,
     git_hash, capabilities (int).
     """
-    from mavsdk.mavlink_direct import MavlinkMessage
-
-    system = System(mavsdk_server_address="localhost", port=grpc_port)
-    await system.connect()
+    from mavsdk.plugins.mavlink_direct import MavlinkMessage
 
     try:
-        await asyncio.wait_for(_wait_for_connection(system, timeout_s), timeout=timeout_s + 5)
+        system = await open_system(endpoint, timeout_s)
     except asyncio.TimeoutError:
         return {
             "autopilot": "TIMEOUT", "vehicle_type": "TIMEOUT",
@@ -211,7 +199,13 @@ async def _probe_autopilot_async(grpc_port: int, timeout_s: int) -> dict:
     # system.info.get_version() internally requests AUTOPILOT_VERSION and decodes it.
     try:
         ver = await asyncio.wait_for(system.info.get_version(), timeout=10.0)
-        fw_type = _MAV_FIRMWARE_TYPE.get(int(ver.flight_sw_version_type), f"type{ver.flight_sw_version_type}")
+        # MAVSDK 4 reports its own enum (UNKNOWN/DEV/ALPHA/BETA/RC/RELEASE), not
+        # MAVLink's raw FIRMWARE_VERSION_TYPE value — map it onto the same
+        # labels the raw-message fallback below produces.
+        vt = ver.flight_sw_version_type
+        fw_type = {"DEV": "dev", "ALPHA": "alpha", "BETA": "beta", "RC": "rc", "RELEASE": "official"}.get(
+            getattr(vt, "name", ""), _MAV_FIRMWARE_TYPE.get(int(vt), f"type{int(vt)}"),
+        )
         info["firmware_version"] = (
             f"{ver.flight_sw_major}.{ver.flight_sw_minor}.{ver.flight_sw_patch}-{fw_type}"
         )
@@ -377,9 +371,6 @@ def suggest_log_filename(info: dict, config=None) -> str:
     ts = time.strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{ap}_{vt}{ver}_{ts}.log"
 
-GCS_GRPC_PORT = 50051
-PAIRED_GCS_GRPC_PORT = 50053
-DRONE_GRPC_PORT = 50052
 GCS_MAVLINK_PORT = 14560  # not 14540 — avoids PX4 SITL interference
 
 
@@ -635,11 +626,12 @@ def _px4_cmdline_instance(cmdline: str) -> int:
 @pytest.fixture(scope="session", autouse=True)
 def _manage_px4_sitl(request):
     """
-    Start and stop PX4 SIH SITL when ``--px4-sitl`` is given.
+    Start and stop PX4 SITL when ``--px4-sitl`` is given.
 
     ``--px4-sitl`` must point to the PX4-Autopilot repository root containing
     ``build/px4_sitl_default/bin/px4``.  ``--px4-model`` sets PX4_SIM_MODEL
-    (default: sihsim_quadx).  ``--sitl-instance`` (default 0) selects which
+    (default: sihsim_quadx).  A ``gz_``-prefixed model (e.g. gz_standard_vtol)
+    runs Gazebo instead of SIH — see _start_px4_process().  ``--sitl-instance`` (default 0) selects which
     PX4 SIH instance to run — see root CLAUDE.md's CI section for the full
     multi-instance design (port formula, working-directory isolation, etc.).
 
@@ -679,13 +671,23 @@ def _start_px4_process(request) -> dict:
     px4_path = Path(px4_dir).expanduser()
     model = request.config.getoption("--px4-model") or "sihsim_quadx"
     instance = request.config.getoption("--sitl-instance") or 0
+    # Gazebo (gz sim) instead of the built-in SIH simulator, selected purely by
+    # model name — the same PX4_SIM_MODEL value `make px4_sitl <model>` uses.
+    # PX4's own px4-rc.gzsim startup script does the rest: it launches a
+    # headless gz server if no world is running yet (or attaches to one that
+    # is, which is how a non-zero --sitl-instance joins instance 0's world),
+    # waits for the world, and spawns the model. SIH stays the default.
+    gz = model.startswith("gz_")
 
-    binary = px4_path / "build/px4_sitl_default/bin/px4"
-    rcS = px4_path / "build/px4_sitl_default/etc/init.d-posix/rcS"
-    px4_bin_dir = px4_path / "build/px4_sitl_default/bin"
+    build_dir = px4_path / "build/px4_sitl_default"
+    binary = build_dir / "bin/px4"
+    rcS = build_dir / "etc/init.d-posix/rcS"
+    px4_bin_dir = build_dir / "bin"
 
     if not binary.exists():
         pytest.fail(f"--px4-sitl: px4 binary not found at {binary}")
+    if gz and shutil.which("gz") is None:
+        pytest.fail(f"--px4-model={model} needs Gazebo, but `gz` is not on PATH")
 
     # Kill any running PX4 *for this instance only* — pgrep -x (exact name
     # "px4", not a substring match) so this never matches our own pytest
@@ -704,10 +706,19 @@ def _start_px4_process(request) -> dict:
             killed_any = True
     if killed_any:
         time.sleep(2)
+    if gz and instance == 0:
+        # A gz server left over from an earlier (crashed/killed) run would be
+        # re-used by px4-rc.gzsim, still holding that run's spawned model, and
+        # the new spawn would collide with it. Instance 0 owns the world; a
+        # non-zero instance deliberately joins it, so never kill it there.
+        _kill_gz_servers(px4_path)
 
     # PX4 rootfs: the directory that contains etc/init.d-posix/airframes/.
-    # Using the build directory ensures PX4 finds its airframe files.
-    rootfs = px4_path / "build/px4_sitl_default"
+    # SIH: the build directory itself. Gazebo: build/.../rootfs, the same
+    # working directory `make px4_sitl gz_*` uses — px4-rc.gzsim sources
+    # ./gz_env.sh (or ../gz_env.sh from an instance_N subdirectory) for the
+    # model/world resource paths, and that file only exists there.
+    rootfs = build_dir / "rootfs" if gz else build_dir
 
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
@@ -717,10 +728,20 @@ def _start_px4_process(request) -> dict:
 
     env = _os.environ.copy()
     env["PX4_SIM_MODEL"] = model
+    if gz:
+        env["HEADLESS"] = "1"  # server only, no gz GUI
+        env.setdefault("GZ_IP", "127.0.0.1")  # as `make px4_sitl gz_*` sets it
     # Ensure px4-alias.sh is findable via PATH
     env["PATH"] = str(px4_bin_dir) + ":" + env.get("PATH", "")
 
-    if instance == 0:
+    if instance == 0 and gz:
+        # rootfs/etc doesn't exist in a fresh build (only after something has
+        # run PX4 there once). Passing the shared etc/ as the positional
+        # <rootfs_directory> makes PX4's create_symlinks_if_needed() create
+        # rootfs/etc -> build/etc itself — same mechanism as the non-zero
+        # instance branch below.
+        cmd = [str(binary), "-s", str(rcS), str(build_dir / "etc"), "-w", str(rootfs)]
+    elif instance == 0:
         # Byte-identical to pre-multi-instance behaviour: runtime state
         # (dataman, eeprom, logs) lives directly in the shared build dir, no
         # -i flag passed (PX4 defaults to instance 0 either way).
@@ -744,7 +765,7 @@ def _start_px4_process(request) -> dict:
         # rc.mavlink startup script (px4-rc.mavlink) derive every MAVLink
         # port as base+N — see the CI section in root CLAUDE.md for the
         # full port table this produces.
-        etc_dir = rootfs / "etc"
+        etc_dir = build_dir / "etc"
         instance_dir = rootfs / f"instance_{instance}"
         instance_dir.mkdir(parents=True, exist_ok=True)
         cmd = [str(binary), "-i", str(instance), "-s", str(rcS), str(etc_dir), "-w", str(instance_dir)]
@@ -819,8 +840,11 @@ def _start_px4_process(request) -> dict:
     # its UDP address, which means MAVLink is up and listening on port 14540.
     # Read only the first 64 KB of the log to avoid blocking on the growing
     # pxh> shell prompt loop that PX4 enters after startup (can reach GB/s).
+    # Gazebo needs longer: gz server start + world load (px4-rc.gzsim itself
+    # waits up to 30 s for the world) + model spawn, all before mavlink starts.
+    ready_timeout_s = 120 if gz else 60
     ready = False
-    for _ in range(60):
+    for _ in range(ready_timeout_s):
         time.sleep(1)
         if proc.poll() is not None:
             stop_cap_thread.set()
@@ -843,7 +867,7 @@ def _start_px4_process(request) -> dict:
         log_fh.close()
         pytest.fail(
             f"PX4 SITL (model={model}, instance={instance}) did not reach mavlink "
-            f"startup within 45 s. Check {log_path}"
+            f"startup within {ready_timeout_s} s. Check {log_path}"
         )
 
     # Additional stabilisation: SIH needs a moment after mavlink starts
@@ -854,8 +878,38 @@ def _start_px4_process(request) -> dict:
     return {
         "proc": proc, "log_fh": log_fh, "log_path": log_path,
         "stop_cap_thread": stop_cap_thread, "cap_thread": cap_thread,
-        "model": model, "instance": instance,
+        "model": model, "instance": instance, "gz": gz, "px4_path": px4_path,
     }
+
+
+def _gz_server_pids(px4_path: Path) -> list[int]:
+    """
+    PIDs of gz sim processes launched from this PX4 checkout — matched on the
+    checkout's own worlds path in the cmdline (px4-rc.gzsim passes
+    <px4>/Tools/simulation/gz/worlds/<world>.sdf), so an unrelated Gazebo
+    session, or one from a different PX4 checkout, is never touched.
+    """
+    worlds = str(px4_path / "Tools/simulation/gz/worlds")
+    result = subprocess.run(["pgrep", "-fa", "gz sim"], capture_output=True, text=True)
+    pids = []
+    for line in result.stdout.splitlines():
+        pid_str, _, cmdline = line.partition(" ")
+        if worlds in cmdline:
+            pids.append(int(pid_str))
+    return pids
+
+
+def _kill_gz_servers(px4_path: Path) -> None:
+    pids = _gz_server_pids(px4_path)
+    for pid in pids:
+        log.warning("Killing Gazebo server PID %d", pid)
+        subprocess.run(["kill", str(pid)], check=False)
+    for _ in range(20):
+        if not _gz_server_pids(px4_path):
+            return
+        time.sleep(0.5)
+    for pid in _gz_server_pids(px4_path):
+        subprocess.run(["kill", "-9", str(pid)], check=False)
 
 
 def _stop_px4_process(state: dict) -> None:
@@ -871,67 +925,11 @@ def _stop_px4_process(state: dict) -> None:
         proc.kill()
         proc.wait()
     state["log_fh"].close()
-
-
-def _mavsdk_server_cmdline_port(cmdline: str) -> int | None:
-    """Parse the `-p <port>` gRPC port argument out of a mavsdk_server process's cmdline."""
-    tokens = cmdline.split()
-    for i, tok in enumerate(tokens):
-        if tok == "-p" and i + 1 < len(tokens):
-            try:
-                return int(tokens[i + 1])
-            except ValueError:
-                pass
-    return None
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _clear_stale_mavsdk_servers(request):
-    """
-    Kill stale mavsdk_server processes bound to *this session's own* gRPC
-    ports before starting a new test session.
-
-    Stale processes accumulate when a previous test run was interrupted (e.g. by
-    pytest-timeout) without running session-level teardown.  Port-scanning with
-    ``ss -tlnp`` only catches processes in the LISTEN state; a stale server that
-    lost its port (or is in the process of reconnecting to the drone) does not
-    appear in the listen table and can steal the MAVLink connection from the new
-    server, causing ``_wait_for_connection`` to hang indefinitely.
-
-    Scoped to this session's own ports (not every mavsdk_server on the
-    machine) so that a concurrently-running *other* SITL instance's
-    mavsdk_server — a deliberate, live process, not a stale leftover — is
-    never killed. See root CLAUDE.md's CI section: ALL three ports are
-    offset by ``--sitl-instance``, including the paired-mode ones — those
-    fixtures start unconditionally every session (see paired_drone_server's
-    own docstring for why), so two concurrent standalone sessions would
-    otherwise collide on them despite neither being in paired mode.
-    """
-    instance = request.config.getoption("--sitl-instance") or 0
-    my_ports = {
-        GCS_GRPC_PORT + 10 * instance,
-        DRONE_GRPC_PORT + 10 * instance,
-        PAIRED_GCS_GRPC_PORT + 10 * instance,
-    }
-
-    result = subprocess.run(
-        ["pgrep", "-xa", "mavsdk_server"], capture_output=True, text=True
-    )
-    killed = []
-    for line in result.stdout.splitlines():
-        pid_str, _, cmdline = line.partition(" ")
-        port = _mavsdk_server_cmdline_port(cmdline)
-        if port in my_ports:
-            subprocess.run(["kill", "-9", pid_str], check=False)
-            killed.append(pid_str)
-    if killed:
-        log.warning(
-            "Killing %d stale mavsdk_server process(es) on this session's own ports "
-            "(PIDs: %s) from a previous interrupted test session.",
-            len(killed), ", ".join(killed),
-        )
-        # Brief pause to let the kernel release the ports before we start new servers.
-        time.sleep(1.0)
+    # px4-rc.gzsim backgrounds the gz server, so it outlives PX4. Instance 0
+    # owns (and started, or restarted) the world; a non-zero instance only
+    # joined it, so leave it running for instance 0.
+    if state.get("gz") and state["instance"] == 0:
+        _kill_gz_servers(state["px4_path"])
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -975,43 +973,6 @@ def _clear_px4_if_paired(request):
     for pid in pids:
         subprocess.run(["kill", pid], check=False)
     time.sleep(1.5)
-
-
-def _find_mavsdk_server() -> Path:
-    """Return the path to the mavsdk_server binary bundled with MAVSDK-Python."""
-    import mavsdk as _m
-    candidate = Path(_m.__file__).parent / "bin" / "mavsdk_server"
-    if candidate.exists():
-        return candidate
-    raise FileNotFoundError(f"mavsdk_server not found at {candidate}")
-
-
-def _start_mavsdk_server(
-    grpc_port: int,
-    mavlink_url: str,
-    sysid: int = 245,
-    compid: int = 190,
-) -> subprocess.Popen:
-    binary = _find_mavsdk_server()
-    cmd = [
-        str(binary),
-        "-p", str(grpc_port),
-        "--sysid", str(sysid),
-        "--compid", str(compid),
-        mavlink_url,
-    ]
-    log.info("Starting mavsdk_server: %s", " ".join(cmd))
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    # Give the server a moment to bind its ports.
-    time.sleep(1.5)
-    if proc.poll() is not None:
-        out = proc.stdout.read().decode(errors="replace")
-        raise RuntimeError(f"mavsdk_server exited immediately:\n{out}")
-    return proc
 
 
 async def _wait_for_connection(system: System, timeout_s: int) -> None:
@@ -1125,58 +1086,40 @@ def _autopilot_header(gcs_mavsdk_server, request):
 @pytest.fixture(scope="session")
 def gcs_mavsdk_server(
     request,
-    paired_gcs_server,
     _manage_ardupilot_sitl,
     _manage_px4_sitl,
 ):
     """
-    GCS mavsdk_server for client tests.
+    The session's GCS MAVSDK endpoint (tests/mavsdk_compat.Endpoint) —
+    MAVSDK 4 runs in-process, so this is a connection, not a server process
+    (the name is kept so fixture signatures didn't change).
 
-    Standalone mode (``--drone-address`` given): starts a dedicated
-    mavsdk_server on port 50051+10*``--sitl-instance`` connected to the real
-    drone — the offset is what lets a second concurrent pytest process
-    (targeting a different SITL instance) run its own mavsdk_server without
-    a port clash. See root CLAUDE.md's CI section.
+    Standalone mode (``--drone-address`` given): its own endpoint connected to
+    the real drone, as MAVSDK's GROUND_STATION identity (see
+    tests/mavsdk_compat.GCS_SYSID for why not the old 255/1). Paired mode (no ``--drone-address``): the paired GCS
+    endpoint talking to the MockFlightStack loopback.
 
-    Paired mode (no ``--drone-address``): reuses the already-started
-    ``paired_gcs_server`` (port 50053+10*``--sitl-instance``) — that
-    fixture's own port is instance-offset (see its docstring for why),
-    so use its actual yielded value here rather than the raw constant.
-
-    Explicitly depends on ``_manage_ardupilot_sitl`` and ``_manage_px4_sitl``
-    so the flight stack is guaranteed to be up before the GCS connects.
+    Depends on ``_manage_ardupilot_sitl`` and ``_manage_px4_sitl`` so the
+    flight stack is guaranteed to be up before the GCS connects.
     """
     drone_address = request.config.getoption("--drone-address")
     if drone_address is None:
-        yield paired_gcs_server
+        yield request.getfixturevalue("paired_gcs_server")
         return
 
-    instance = request.config.getoption("--sitl-instance") or 0
-    grpc_port = GCS_GRPC_PORT + 10 * instance
-    proc = _start_mavsdk_server(
-        grpc_port=grpc_port,
-        mavlink_url=drone_address,
-        sysid=255,
-        compid=1,
-    )
-    # Stashed on request.config (not just this closure's local `proc`) so
-    # restart_flight_stack() can replace it with a fresh Popen mid-session —
-    # teardown below then kills whatever is CURRENTLY stashed, not
-    # necessarily this original process.
-    request.config._standalone_mavsdk_server_proc = proc
-    yield grpc_port
-    final_proc = getattr(request.config, "_standalone_mavsdk_server_proc", proc)
-    final_proc.kill()
-    final_proc.wait()
-    log.info("Standalone GCS mavsdk_server stopped (instance=%d)", instance)
+    endpoint = Endpoint("gcs", GCS_SYSID, GCS_COMPID, drone_address)
+    ENDPOINTS["gcs"] = endpoint
+    yield endpoint
+    endpoint.close()
+    log.info("Standalone GCS MAVSDK endpoint closed")
 
 
 @pytest.fixture(scope="session")
 def restart_flight_stack(request, _manage_px4_sitl, _manage_ardupilot_sitl, gcs_mavsdk_server):
     """
     Returns a synchronous callable that kills and restarts whichever SITL
-    process is active (PX4 or ArduPilot, instance-aware) plus its bridging
-    mavsdk_server, for Tier 2 flight tests to call instead of forcing a
+    process is active (PX4 or ArduPilot, instance-aware) and reconnects the
+    GCS endpoint, for Tier 2 flight tests to call instead of forcing a
     disarm when RTL doesn't reliably ground the vehicle.
 
     Why this exists (root CLAUDE.md's 2026-09-15 ArduPlane finding):
@@ -1194,12 +1137,11 @@ def restart_flight_stack(request, _manage_px4_sitl, _manage_ardupilot_sitl, gcs_
     faster than RTL_LAND_TIMEOUT_S=120s of waiting for a landing that will
     never come).
 
-    Also restarts the bridging mavsdk_server on the same port: PX4's UDP
-    connection self-heals once the new process starts broadcasting
-    heartbeats again, but ArduPilot's TCP connection does not reliably
-    redial a closed peer (see this file's own documented CLOSE-WAIT
-    pitfalls) — restarting the bridge unconditionally is simpler and safer
-    than branching on transport.
+    Also reopens the GCS MAVSDK endpoint: PX4's UDP connection self-heals
+    once the new process starts broadcasting heartbeats again, but
+    ArduPilot's TCP connection does not reliably redial a closed peer (see
+    this file's own documented CLOSE-WAIT pitfalls) — reconnecting
+    unconditionally is simpler and safer than branching on transport.
 
     No-op in mock/paired mode (nothing to restart).
     """
@@ -1220,16 +1162,10 @@ def restart_flight_stack(request, _manage_px4_sitl, _manage_ardupilot_sitl, gcs_
             _manage_ardupilot_sitl.clear()
             _manage_ardupilot_sitl.update(new_state)
 
-        result = subprocess.run(["pgrep", "-xa", "mavsdk_server"], capture_output=True, text=True)
-        for line in result.stdout.splitlines():
-            pid_str, _, cmdline = line.partition(" ")
-            if _mavsdk_server_cmdline_port(cmdline) == gcs_mavsdk_server:
-                subprocess.run(["kill", "-9", pid_str], check=False)
-        time.sleep(1.0)
-        new_proc = _start_mavsdk_server(
-            grpc_port=gcs_mavsdk_server, mavlink_url=drone_address, sysid=255, compid=1,
-        )
-        request.config._standalone_mavsdk_server_proc = new_proc
+        # Reconnect the GCS endpoint too: ArduPilot's TCP link doesn't reliably
+        # redial a closed peer, so a fresh connection is simpler than branching
+        # on transport.
+        gcs_mavsdk_server.reopen()
         log.info(
             "Flight stack restarted (instance=%d)",
             request.config.getoption("--sitl-instance") or 0,
@@ -1239,7 +1175,7 @@ def restart_flight_stack(request, _manage_px4_sitl, _manage_ardupilot_sitl, gcs_
 
 
 @pytest.fixture
-async def mock_stack(request, paired_drone_server):
+async def mock_stack(request):
     """
     Start MockFlightStack on the paired drone in paired mode.
 
@@ -1255,15 +1191,11 @@ async def mock_stack(request, paired_drone_server):
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=paired_drone_server)
-    await system.connect()
+    system = await open_paired_drone()
 
     stack = MockFlightStack()
     task = asyncio.create_task(stack.run(system))
-    # Give the gRPC subscriptions a moment to establish before the test starts.
-    # _wait_for_connection is intentionally skipped on the drone System: the
-    # MAVLink session-level servers may already be connected (connection_state()
-    # only fires on *changes*), so waiting for it would hang.
+    # Give the subscriptions a moment to establish before the test starts.
     await asyncio.sleep(0.5)
     yield stack
     task.cancel()
@@ -1283,8 +1215,7 @@ async def gcs_system(gcs_mavsdk_server, mock_stack, request):
     loopback).
     """
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, timeout_s)
     await _wait_for_connection(system, timeout_s)
     yield system
 
@@ -1294,85 +1225,53 @@ async def gcs_system(gcs_mavsdk_server, mock_stack, request):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def paired_drone_server(request, _clear_stale_mavsdk_servers):
+def paired_drone_server(request):
     """
-    Drone-side mavsdk_server for paired-mode tests.
-
-    Always started — regardless of whether ``--drone-address`` is supplied,
-    since ``gcs_mavsdk_server`` depends on ``paired_gcs_server`` (which
-    depends on this) unconditionally in its own fixture signature, even
-    though standalone mode never actually uses the port it yields. This is
-    exactly why its port is instance-offset the same as the standalone SITL
-    ports (``--sitl-instance``, ``+= 10*instance``): two concurrent
-    standalone sessions (different SITL instances) each still start their
-    own paired_drone_server on this fixed-by-default port, and would
-    otherwise collide even though neither is in paired mode. Confirmed by a
-    real collision running two concurrent standalone sessions before this
-    fix — see root CLAUDE.md's CI section.
-
-    Depends on ``_clear_stale_mavsdk_servers`` to guarantee the cleanup runs
-    before we bind the gRPC ports — not after.
+    The paired-mode mock drone's MAVSDK endpoint (sysid 1 / compid 1, sending
+    to the paired GCS over UDP loopback). MockFlightStack runs on top of it.
+    Paired mode only — created lazily by gcs_mavsdk_server, so a standalone
+    session never opens the loopback at all. The port is instance-offset
+    (``--sitl-instance``) so concurrent sessions don't collide.
     """
     instance = request.config.getoption("--sitl-instance") or 0
-    grpc_port = DRONE_GRPC_PORT + 10 * instance
     mavlink_port = GCS_MAVLINK_PORT + 10 * instance
-    proc = _start_mavsdk_server(
-        grpc_port=grpc_port,
-        mavlink_url=f"udpout://127.0.0.1:{mavlink_port}",
-        sysid=1,
-        compid=1,
-    )
-    yield grpc_port
-    proc.kill()
-    proc.wait()
-    log.info("Drone mavsdk_server stopped (instance=%d)", instance)
+    endpoint = Endpoint("paired_drone", 1, 1, f"udpout://127.0.0.1:{mavlink_port}")
+    ENDPOINTS["paired_drone"] = endpoint
+    yield endpoint
+    endpoint.close()
+    log.info("Paired drone MAVSDK endpoint closed (instance=%d)", instance)
 
 
 @pytest.fixture(scope="session")
 def paired_gcs_server(request, paired_drone_server):
     """
-    GCS-side mavsdk_server for paired-mode tests.
-
-    Started after the drone server so the peer is already sending heartbeats
-    when the GCS begins listening. Instance-offset for the same reason as
-    ``paired_drone_server`` — see that fixture's docstring.
+    The paired-mode GCS MAVSDK endpoint (GROUND_STATION identity, listening on
+    the loopback). Created after the drone endpoint so the peer is already
+    sending heartbeats when the GCS starts listening.
     """
     instance = request.config.getoption("--sitl-instance") or 0
-    grpc_port = PAIRED_GCS_GRPC_PORT + 10 * instance
     mavlink_port = GCS_MAVLINK_PORT + 10 * instance
-    proc = _start_mavsdk_server(
-        grpc_port=grpc_port,
-        mavlink_url=f"udpin://0.0.0.0:{mavlink_port}",
-        sysid=255,
-        compid=1,
-    )
-    yield grpc_port
-    proc.kill()
-    proc.wait()
-    log.info("Paired GCS mavsdk_server stopped (instance=%d)", instance)
+    endpoint = Endpoint("paired_gcs", GCS_SYSID, GCS_COMPID, f"udpin://0.0.0.0:{mavlink_port}")
+    ENDPOINTS["paired_gcs"] = endpoint
+    yield endpoint
+    endpoint.close()
+    log.info("Paired GCS MAVSDK endpoint closed (instance=%d)", instance)
 
 
 @pytest.fixture
 async def paired_gcs_system(paired_gcs_server, request):
-    """
-    A fresh MAVSDK System (GCS side) for each paired-mode test.
-    """
+    """A MAVSDK System (GCS side) for each paired-mode test."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=paired_gcs_server)
-    await system.connect()
+    system = await open_system(paired_gcs_server, timeout_s)
     await _wait_for_connection(system, timeout_s)
     yield system
 
 
 @pytest.fixture
 async def paired_drone_system(paired_drone_server, request):
-    """
-    A fresh MAVSDK System (drone side) for each paired-mode test.
-    """
+    """A MAVSDK System (drone side — its view of the GCS) for each paired-mode test."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=paired_drone_server)
-    await system.connect()
-    await _wait_for_connection(system, timeout_s)
+    system = await open_system(paired_drone_server, timeout_s)
     yield system
 
 
@@ -1391,3 +1290,30 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     setattr(item, f"_report_{rep.when}", rep)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """
+    End-of-session param-coverage check (tests/report.py's param_coverage()):
+    list every command report written this session that still has a param
+    with no explicit verdict — supported/not supported/not applicable/
+    untestable. General requirement: no param may end a run silently unknown.
+    """
+    from tests import report
+
+    gaps = report.coverage_gaps()
+    if not gaps:
+        return
+    terminalreporter.section("Param coverage gaps")
+    for (protocol, cmd_name), params in sorted(gaps.items()):
+        terminalreporter.write_line(
+            f"{protocol} MAV_CMD_{cmd_name}: no verdict for {', '.join(params)} "
+            "— needs an ACK result, an execution test, or a recorded untestable reason"
+        )
+
+
+def pytest_configure(config):
+    """Tell tests/report.py whether this session has a real flight stack (see report.compat_fail)."""
+    from tests import report
+
+    report.MOCK_MODE = config.getoption("--drone-address") is None

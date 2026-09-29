@@ -28,11 +28,12 @@ import math
 import time as _time_m
 
 import pytest
-from mavsdk.mavlink_direct import MavlinkMessage
-from mavsdk.telemetry import LandedState
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
+from mavsdk.plugins.telemetry import LandedState
 
+from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
 from tests import report
-from tests.command.conftest import probe_command_long, send_command_int
+from tests.command.conftest import probe_command_int, probe_command_long, send_command_int
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ async def _request_home_position(system) -> None:
     """
     await system.mavlink_direct.send_message(MavlinkMessage(
         message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
+        system_id=GCS_SYSID, component_id=GCS_COMPID,
         target_system_id=1, target_component_id=0,
         fields_json=json.dumps({
             "target_system": 1, "target_component": 0,
@@ -111,7 +112,7 @@ async def _request_position_stream(system, rate_hz: float = 5.0) -> None:
     interval_us = int(1_000_000 / rate_hz)
     await system.mavlink_direct.send_message(MavlinkMessage(
         message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
+        system_id=GCS_SYSID, component_id=GCS_COMPID,
         target_system_id=1, target_component_id=0,
         fields_json=json.dumps({
             "target_system": 1, "target_component": 0,
@@ -154,7 +155,7 @@ async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
     """Return current flight mode name as a string."""
     async with asyncio.timeout(timeout_s):
         async for fm in system.telemetry.flight_mode():
-            return str(fm)
+            return fm.name  # MAVSDK 4: str() of an enum is its int value
     raise TimeoutError("Flight mode not received")
 
 
@@ -226,6 +227,56 @@ async def _wait_for_altitude(system, threshold_m: float, timeout_s: float = TAKE
     raise TimeoutError(
         f"Relative altitude {threshold_m:.1f} m not reached within {timeout_s:.0f} s"
     )
+
+
+async def _wait_for_climb_complete(
+    system, target_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S,
+    plateau_s: float = 5.0, plateau_tol_m: float = 0.3,
+):
+    """
+    Block until the takeoff climb is actually over, and return the Position.
+
+    Over = at >= 85% of `target_m`, or airborne (AIRBORNE_THRESHOLD_M) with
+    altitude no longer rising (< `plateau_tol_m` gained in `plateau_s`) — the
+    second case covers a stack that ignores the commanded altitude and stops at
+    its own default, without gating on vehicle type. For measuring a param's
+    effect once the takeoff has finished rather than part-way through it (a
+    heading sampled at 2 m can simply not have converged yet — 2026-09-29
+    mavlink-compat-data review of the NAV_TAKEOFF yaw result).
+    """
+    loop = asyncio.get_running_loop()
+    history: list[tuple[float, float]] = []
+    async with asyncio.timeout(timeout_s):
+        async for pos in system.telemetry.position():
+            now, alt = loop.time(), pos.relative_altitude_m
+            if alt >= 0.85 * target_m:
+                return pos
+            history.append((now, alt))
+            history = [(t, a) for t, a in history if now - t <= plateau_s]
+            if (
+                alt >= AIRBORNE_THRESHOLD_M
+                and now - history[0][0] >= plateau_s * 0.9
+                and alt - history[0][1] < plateau_tol_m
+            ):
+                return pos
+    raise TimeoutError(f"Climb toward {target_m:.1f} m did not complete within {timeout_s:.0f} s")
+
+
+async def _climb_with_peak_pitch(system, target_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S):
+    """_wait_for_climb_complete(), also returning the max |pitch| sampled over the whole climb."""
+    peak_pitch: float = 0.0
+
+    async def _sample_pitch() -> None:
+        nonlocal peak_pitch
+        async for att in system.telemetry.attitude_euler():
+            peak_pitch = max(peak_pitch, abs(att.pitch_deg))
+
+    pitch_task = asyncio.create_task(_sample_pitch())
+    try:
+        pos = await _wait_for_climb_complete(system, target_m, timeout_s)
+    finally:
+        pitch_task.cancel()  # not awaited — see _wait_for_altitude_with_peak_pitch
+    return pos, peak_pitch
 
 
 async def _wait_for_altitude_with_peak_pitch(
@@ -372,6 +423,24 @@ async def _rtl_and_land(system, restart_flight_stack=None, timeout_s: float | No
     """
     if timeout_s is None:
         timeout_s = RTL_LAND_TIMEOUT_WITH_RESTART_S if restart_flight_stack is not None else RTL_LAND_TIMEOUT_S
+
+    # Nothing to bring home if the vehicle is already disarmed (e.g. a takeoff
+    # that never left the ground and was auto-disarmed). Sending RTL anyway is
+    # actively harmful: on PX4 v1.17 (gz_standard_vtol, 2026-09-29) it switched
+    # a disarmed, landed vehicle into RETURN_TO_LAUNCH and left it there with
+    # is_armable=False for good — every later test in the session then failed
+    # at _wait_armable(). Reproduced directly: armable in HOLD after the
+    # auto-disarm, not armable from the moment RTL was sent.
+    try:
+        async with asyncio.timeout(5.0):
+            async for armed in system.telemetry.armed():
+                break
+        if not armed:
+            log.info("Vehicle already disarmed — skipping RTL/land")
+            return
+    except Exception as exc:
+        log.warning("Could not read armed state before RTL (%s) — sending RTL anyway", exc)
+
     landed = False
     try:
         await system.action.return_to_launch()
@@ -509,9 +578,14 @@ def _takeoff_cmd(**overrides) -> dict:
     return defaults
 
 
-async def _arm_and_send_takeoff(system, **overrides) -> None:
+async def _arm_and_send_takeoff(system, *, return_ack: bool = False, **overrides) -> dict | None:
     """
     Wait for armable -> arm -> send NAV_TAKEOFF COMMAND_INT.
+
+    `return_ack=True` sends via probe_command_int() instead and returns the
+    COMMAND_ACK fields dict (None if no ACK) — for an "is it honoured" test
+    that must tell a NACK (legitimately not supported, rule 4a) apart from
+    accepted-but-ignored. Default (False) keeps the fire-and-forget send.
 
     PX4 treats the z field in COMMAND_INT as absolute AMSL altitude (it
     ignores the frame field). The caller passes z as a RELATIVE altitude
@@ -549,7 +623,10 @@ async def _arm_and_send_takeoff(system, **overrides) -> None:
     await system.action.arm()
     await asyncio.sleep(0.5)  # brief settle after arm before command
     kw = _takeoff_cmd(**merged)
+    if return_ack:
+        return await probe_command_int(system, **kw)
     await send_command_int(system, **kw)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -706,33 +783,17 @@ def _tier2_auto_record(request):
     if rep is None:
         return  # e.g. collection error before any phase ran
 
-    if getattr(rep, "skipped", False):
-        outcome = "XFAIL" if hasattr(rep, "wasxfail") else "SKIP"
-    elif getattr(rep, "passed", False):
-        outcome = "XPASS" if hasattr(rep, "wasxfail") else "PASS"
-    else:
-        outcome = "FAIL"
-
-    detail = _TIER2_DETAILS.pop(node.nodeid, None)
-    if detail is None:
-        if outcome == "SKIP" and isinstance(rep.longrepr, tuple) and len(rep.longrepr) == 3:
-            # Skip reason reprs as (path, lineno, "Skipped: <reason>") — take just the reason.
-            reason = str(rep.longrepr[2]).removeprefix("Skipped: ")
-            if reason.startswith("NA: "):
-                outcome = "NA"
-                reason = reason.removeprefix("NA: ")
-            detail = reason[:160]
-        elif outcome in ("FAIL", "XFAIL") and rep.longrepr:
-            detail = str(rep.longrepr).strip().splitlines()[-1][:160]
-        else:
-            doc = (node.function.__doc__ or "").strip()
-            detail = doc.splitlines()[0].strip() if doc else ""
+    doc = (node.function.__doc__ or "").strip()
+    outcome, compat, detail = report.classify_report(rep, doc.splitlines()[0].strip() if doc else "")
+    explicit = _TIER2_DETAILS.pop(node.nodeid, None)
+    if explicit is not None:
+        detail = explicit
 
     key = _tier2_key(node.module)
     if key is None:
         return
     protocol, cmd_name = key
-    report.record_tier2_result(protocol, cmd_name, node.name, outcome, detail)
+    report.record_tier2_result(protocol, cmd_name, node.name, outcome, detail, compat)
     cmd_id = getattr(node.module, "_CMD_ID", None)
     if cmd_id is None:
         return

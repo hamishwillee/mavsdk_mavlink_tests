@@ -62,7 +62,7 @@ import logging
 from pathlib import Path
 
 import pytest
-from mavsdk.telemetry import LandedState, VtolState
+from mavsdk.plugins.telemetry import LandedState, VtolState
 
 from tests.command.conftest import (
     probe_command_int,
@@ -909,7 +909,7 @@ async def test_vtol_landing_behaviour(gcs_system, request):
         async for vs in gcs_system.telemetry.vtol_state():
             if not vtol_states or vtol_states[-1] != vs:
                 vtol_states.append(vs)
-                log.info(_FMT, _CMD, "vtol_state change", str(vs))
+                log.info(_FMT, _CMD, "vtol_state change", vs.name)
 
     sample_task = asyncio.create_task(_sample_pos())
     vtol_task = asyncio.create_task(_sample_vtol_state())

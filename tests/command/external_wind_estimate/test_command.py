@@ -125,6 +125,8 @@ import logging
 
 import pytest
 
+from tests import report
+
 from tests.command.conftest import (
     CommandSpec,
     INT32_MAX,
@@ -164,11 +166,11 @@ SPEC = CommandSpec(
         ParamSpec(3, "Direction", defined=True),
         ParamSpec(4, "Direction accuracy", defined=True),
         ParamSpec(5, "Empty", defined=False,
-                  reject_xfail_reason=_PX4_NEVER_READS.format(slot=5, wire="x")),
+                  reject_fail_reason=_PX4_NEVER_READS.format(slot=5, wire="x")),
         ParamSpec(6, "Empty", defined=False,
-                  reject_xfail_reason=_PX4_NEVER_READS.format(slot=6, wire="y")),
+                  reject_fail_reason=_PX4_NEVER_READS.format(slot=6, wire="y")),
         ParamSpec(7, "Empty", defined=False,
-                  reject_xfail_reason=_PX4_NEVER_READS.format(slot=7, wire="z")),
+                  reject_fail_reason=_PX4_NEVER_READS.format(slot=7, wire="z")),
     ],
 )
 
@@ -252,7 +254,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
                 _record(type(self), request, "FAIL", description, None)
                 pytest.fail(f"Got more than one ACK per send in mock mode: {offenders}")
             _record(type(self), request, "XFAIL", description, None)
-            pytest.xfail(
+            report.compat_fail(
                 f"Got more than one COMMAND_ACK for a single send ({offenders}) — confirmed "
                 "PX4 bug: Commander::handle_command() is missing VEHICLE_CMD_EXTERNAL_WIND_ESTIMATE "
                 "from its 'handled elsewhere' ignore-list (Commander.cpp), unlike its EKF2 "
@@ -288,7 +290,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         """
         Denied for param1 (Wind speed) = -1.0 m/s (below minValue=0).
 
-        xfail: PX4 clamps via `math::max(wind_speed, 0.0f)` in
+        Known result (FAIL): PX4 clamps via `math::max(wind_speed, 0.0f)` in
         Ekf::resetWindToExternalObservation() rather than rejecting the command
         (src/modules/ekf2/EKF/wind.cpp) — reasonable defensive behaviour, but
         the wrong result code (an out-of-range input should be DENIED, not
@@ -300,7 +302,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         _check(
             type(self), request, "Denied for param1 (Wind speed) = -1.0 m/s (below minValue=0)",
             result, expect=lambda r: r == MAV_RESULT_DENIED,
-            xfail_reason=(f"Stack returned {result} for param1=-1.0 (below minValue=0); expected DENIED — "
+            fail_reason=(f"Stack returned {result} for param1=-1.0 (below minValue=0); expected DENIED — "
                           "PX4 clamps negative wind speed to 0 instead of rejecting it (wind.cpp)"),
         )
 
@@ -320,7 +322,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         """
         Denied for param2 (Wind speed accuracy) = -1.0 (negative accuracy is physically meaningless).
 
-        xfail: PX4 squares the value unconditionally
+        Known result (FAIL): PX4 squares the value unconditionally
         (`wind_speed_var = sq(wind_speed_accuracy)`) without validating sign —
         a negative accuracy is silently accepted (spec gap).
         """
@@ -330,7 +332,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         _check(
             type(self), request, "Denied for param2 (Wind speed accuracy) = -1.0 (negative accuracy is physically meaningless)",
             result, expect=lambda r: r == MAV_RESULT_DENIED,
-            xfail_reason=(f"Stack returned {result} for negative param2 accuracy; expected DENIED — "
+            fail_reason=(f"Stack returned {result} for negative param2 accuracy; expected DENIED — "
                           "PX4 squares the value unconditionally without sign validation (wind.cpp)"),
         )
 
@@ -366,7 +368,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         """
         Denied for param3 (Direction) = -10.0 deg (below minValue=0).
 
-        xfail: PX4 wraps the value unconditionally via `wrap_pi()` (EKF2.cpp)
+        Known result (FAIL): PX4 wraps the value unconditionally via `wrap_pi()` (EKF2.cpp)
         with no range check — an out-of-range azimuth is silently accepted.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
@@ -375,7 +377,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         _check(
             type(self), request, "Denied for param3 (Direction) = -10.0 deg (below minValue=0)",
             result, expect=lambda r: r == MAV_RESULT_DENIED,
-            xfail_reason=(f"Stack returned {result} for param3=-10.0 (below minValue=0); expected DENIED — "
+            fail_reason=(f"Stack returned {result} for param3=-10.0 (below minValue=0); expected DENIED — "
                           "PX4 wraps the azimuth unconditionally with no range check (EKF2.cpp)"),
         )
 
@@ -383,7 +385,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         """
         Denied for param3 (Direction) = 370.0 deg (above maxValue=360).
 
-        xfail: same reason as test_param3_negative_denied — PX4 wraps
+        Known result (FAIL): same reason as test_param3_negative_denied — PX4 wraps
         unconditionally with no range check.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
@@ -392,7 +394,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         _check(
             type(self), request, "Denied for param3 (Direction) = 370.0 deg (above maxValue=360)",
             result, expect=lambda r: r == MAV_RESULT_DENIED,
-            xfail_reason=(f"Stack returned {result} for param3=370.0 (above maxValue=360); expected DENIED — "
+            fail_reason=(f"Stack returned {result} for param3=370.0 (above maxValue=360); expected DENIED — "
                           "PX4 wraps the azimuth unconditionally with no range check (EKF2.cpp)"),
         )
 
@@ -412,7 +414,7 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
         """
         Denied for param4 (Direction accuracy) = -5.0 (negative accuracy is physically meaningless).
 
-        xfail: PX4 does not validate sign before converting to radians and
+        Known result (FAIL): PX4 does not validate sign before converting to radians and
         squaring (EKF2.cpp / wind.cpp).
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
@@ -422,6 +424,6 @@ class TestExternalWindEstimateCommand(Tier1CommandTestBase):
             type(self), request,
             "Denied for param4 (Direction accuracy) = -5.0 (negative accuracy is physically meaningless)",
             result, expect=lambda r: r == MAV_RESULT_DENIED,
-            xfail_reason=(f"Stack returned {result} for negative param4 accuracy; expected DENIED — "
+            fail_reason=(f"Stack returned {result} for negative param4 accuracy; expected DENIED — "
                           "PX4 does not validate sign before use (wind.cpp)"),
         )

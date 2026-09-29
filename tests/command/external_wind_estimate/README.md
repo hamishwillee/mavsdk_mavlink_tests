@@ -1,5 +1,7 @@
 # MAV_CMD_EXTERNAL_WIND_ESTIMATE (cmd=43004) — command protocol tests
 
+> **Outcome labels (2026-09-30):** results recorded before 2026-09-29 used pytest XFAIL/XPASS. They're relabelled here under root `CLAUDE.md` rule 11 — FAIL (compat) = compatibility error, FAIL (harness) = not a compatibility error, PASS (observation) = a spec gap recorded rather than asserted, NA = compatibility check against the mock — not re-run.
+
 Sets an external estimate of wind speed/direction on the EKF wind estimator, intended to extend GPS-denied dead-reckoning time.
 
 **Spec reference**: `mavlink/message_definitions/v1.0/development.xml`, `value=43004`. Not in `common.xml`, so not covered by `test_survey.py`.
@@ -18,7 +20,7 @@ Sets an external estimate of wind speed/direction on the EKF wind estimator, int
 
 ## Test coverage
 
-The six mandatory common checks (CLAUDE.md) plus, per used param (1–4): a nominal value, boundary values where the spec defines one, and an out-of-range value (expect `DENIED`; XFAIL on PX4 — it clamps/wraps instead of rejecting). See the results table below for per-test outcomes and pass cases.
+The six mandatory common checks (CLAUDE.md) plus, per used param (1–4): a nominal value, boundary values where the spec defines one, and an out-of-range value (expect `DENIED`; FAIL (compat) on PX4 — it clamps/wraps instead of rejecting). See the results table below for per-test outcomes and pass cases.
 
 Every run writes `logs/command_external_wind_estimate_tier1_<autopilot>_<vehicle>_<version>_<timestamp>.log`, always, regardless of pass/fail.
 
@@ -40,16 +42,16 @@ default:
 
 `VEHICLE_CMD_EXTERNAL_WIND_ESTIMATE` — added to EKF2 in the same family of work as the three siblings above — is missing from this list. Commander falls through to `default:` and answers `UNSUPPORTED(3)` for every send (either message type — both funnel into the same `vehicle_command_s` topic), racing EKF2's own unconditional `ACCEPTED(0)`. Whichever reaches the GCS first is non-deterministic — observed flipping between consecutive sends, and independently between COMMAND_INT and COMMAND_LONG in the same run (e.g. `COMMAND_INT: results=[0, 3]`, `COMMAND_LONG: results=[3, 0]` moments apart). A naive "wait for first ACK" client — exactly what `probe_command_long()`/`probe_command_int()` do — sees this command as randomly unsupported roughly half the time, despite EKF2 genuinely implementing and executing it every time.
 
-**Test design**: `effective_ack()` collects all ACKs in a 1.5s window per message type and prefers a non-`UNSUPPORTED` one when present, testing EKF2's real handling rather than which racing module answered first. The race itself is asserted as a hard `xfail` (both message types) in `test_exactly_one_ack`, reliably reproducing pre-fix.
+**Test design**: `effective_ack()` collects all ACKs in a 1.5s window per message type and prefers a non-`UNSUPPORTED` one when present, testing EKF2's real handling rather than which racing module answered first. The race itself is asserted — a FAIL (compat) (both message types) — in `test_exactly_one_ack`, reliably reproducing pre-fix.
 
-**Fixed** in commit `793d308c53` (branch `fix_external_wind_estimate_mavlink`): adds the missing `case` to `Commander.cpp`, and makes `Ekf::resetWindToExternalObservation()` return `bool` (`false` when `in_air`), with `EKF2.cpp`'s ACK now `TEMPORARILY_REJECTED` instead of `ACCEPTED` when the reset wasn't applied. Verified: `test_exactly_one_ack` now PASSES; every other Tier 1 result unchanged; Mock and PX4 MC agree on all 18 PASS / 8 XFAIL.
+**Fixed** in commit `793d308c53` (branch `fix_external_wind_estimate_mavlink`): adds the missing `case` to `Commander.cpp`, and makes `Ekf::resetWindToExternalObservation()` return `bool` (`false` when `in_air`), with `EKF2.cpp`'s ACK now `TEMPORARILY_REJECTED` instead of `ACCEPTED` when the reset wasn't applied. Verified: `test_exactly_one_ack` now PASSES; every other Tier 1 result unchanged; Mock and PX4 MC agree on the 18 PASS; the other 8 are FAIL (compat) on PX4 MC and NA against the mock.
 
 **Follow-up commits on the same branch** (from PR review, 2026-09-17), re-verified against a fresh build at HEAD `ae61d09f9a`:
 - `b4a5854c62` — re-sources the landed/in-air gate from `_control_status.flags.in_air` (an EKF-internal flag) to the `vehicle_land_detected` uORB topic directly (with a 3s staleness check), renaming the `resetWindToExternalObservation()` parameter to an explicit `vehicle_landed bool` passed in from `EKF2.cpp`. Behaviourally equivalent for this test suite's purposes — see the updated "Ground vs air" section below.
 - `73bcd5fb67` — gates `COMMAND_ACK` publication for this command (and its `SET_GPS_GLOBAL_ORIGIN`/`DO_SET_GLOBAL_ORIGIN` siblings) to only the primary EKF2 instance (`!_multi_mode || (_instance == 0)`) in a multi-EKF configuration, avoiding a second, redundant ACK from a non-primary instance.
 - `ae61d09f9a` — pure `astyle` formatting fix (CI `check_format`), no behaviour change.
 
-Re-running the full Tier 1 + Tier 2 suite against this HEAD (single-EKF SIH, so the multi-EKF gating change is not exercised) reproduces the identical 18 PASS / 8 XFAIL Tier 1 result and both Tier 2 tests PASS — see below for the one Tier 2 behavioural difference this HEAD introduces at the ACK level.
+Re-running the full Tier 1 + Tier 2 suite against this HEAD (single-EKF SIH, so the multi-EKF gating change is not exercised) reproduces the identical 18 PASS / 8 FAIL (compat) Tier 1 result and both Tier 2 tests PASS — see below for the one Tier 2 behavioural difference this HEAD introduces at the ACK level.
 
 ## Ground vs air — DOC DISCREPANCY
 
@@ -98,38 +100,38 @@ Logs: `logs/command_external_wind_estimate_ground_px4_quadcopter_20260917_160432
 
 ## Tier 1 results (PX4 MC HEAD `793d308c53`, fix branch, and Mock — 2026-09-09)
 
-Pre-fix (`main` HEAD `c1808fb4`), `test_exactly_one_ack` was XFAIL on PX4 (the dual-ACK race); every other row was identical pre/post-fix. `test_frame_validation_survey` is COMMAND_INT-only (COMMAND_LONG has no `frame` field) — result: **INCONCLUSIVE** on both Mock and PX4, all 22 `MAV_FRAME` values ACKed, none returned `UNSUPPORTED_MAV_FRAME(9)` — expected, since EKF2's handler never reads `frame` at all.
+Pre-fix (`main` HEAD `c1808fb4`), `test_exactly_one_ack` was FAIL (compat) on PX4 (the dual-ACK race); every other row was identical pre/post-fix. `test_frame_validation_survey` is COMMAND_INT-only (COMMAND_LONG has no `frame` field) — result: **INCONCLUSIVE** on both Mock and PX4, all 22 `MAV_FRAME` values ACKed, none returned `UNSUPPORTED_MAV_FRAME(9)` — expected, since EKF2's handler never reads `frame` at all.
 
 | Test | Mock | PX4 MC | Pass case |
 |------|------|--------|-----------|
 | `test_command_ack_received` | PASS | PASS | ACKs (both message types) for a baseline, valid send |
 | `test_command_supported` | PASS | PASS | Not UNSUPPORTED for a baseline, valid send |
-| `test_exactly_one_ack` | PASS | PASS | Exactly one terminal ACK per send, per message type (XFAIL pre-fix) |
+| `test_exactly_one_ack` | PASS | PASS | Exactly one terminal ACK per send, per message type (FAIL (compat) pre-fix) |
 | `test_frame_validation_survey` | INCONCLUSIVE | INCONCLUSIVE | Any MAV_FRAME returns UNSUPPORTED_MAV_FRAME(9) — observational |
 | `test_param5_undefined_int32max_accepted` | PASS | PASS | Accepted when param5/x is sent as its own sentinel |
-| `test_param5_undefined_nonsentinel_rejected` | XFAIL | XFAIL | Rejected when param5/x is sent a real value — PX4 never reads it |
+| `test_param5_undefined_nonsentinel_rejected` | NA | FAIL (compat) | Rejected when param5/x is sent a real value — PX4 never reads it |
 | `test_param6_undefined_int32max_accepted` | PASS | PASS | Accepted when param6/y is sent as its own sentinel |
-| `test_param6_undefined_nonsentinel_rejected` | XFAIL | XFAIL | Rejected when param6/y is sent a real value — PX4 never reads it |
+| `test_param6_undefined_nonsentinel_rejected` | NA | FAIL (compat) | Rejected when param6/y is sent a real value — PX4 never reads it |
 | `test_param7_undefined_nan_accepted` | PASS | PASS | Accepted when param7/z is sent as NaN |
-| `test_param7_undefined_nonsentinel_rejected` | XFAIL | XFAIL | Rejected when param7/z is sent a real value — PX4 never reads it |
+| `test_param7_undefined_nonsentinel_rejected` | NA | FAIL (compat) | Rejected when param7/z is sent a real value — PX4 never reads it |
 | `test_param1_defined_nan_not_denied` | PASS | PASS | Not denied when param1 (Wind speed) is sent as NaN |
 | `test_param2_defined_nan_not_denied` | PASS | PASS | Not denied when param2 (Wind speed accuracy) is sent as NaN — spec-documented sentinel |
 | `test_param3_defined_nan_not_denied` | PASS | PASS | Not denied when param3 (Direction) is sent as NaN |
 | `test_param4_defined_nan_not_denied` | PASS | PASS | Not denied when param4 (Direction accuracy) is sent as NaN — spec-documented sentinel |
 | `test_param1_nominal` | PASS | PASS | Not UNSUPPORTED at 8.0 m/s |
 | `test_param1_zero_boundary` | PASS | PASS | Not UNSUPPORTED at 0.0 m/s (minValue) |
-| `test_param1_negative_denied` | XFAIL | XFAIL | Denied at −1.0 m/s (below minValue) — PX4 clamps via `math::max(speed, 0)` |
+| `test_param1_negative_denied` | NA | FAIL (compat) | Denied at −1.0 m/s (below minValue) — PX4 clamps via `math::max(speed, 0)` |
 | `test_param2_specific` | PASS | PASS | Not UNSUPPORTED at 1.5 m/s |
-| `test_param2_negative_denied` | XFAIL | XFAIL | Denied at −1.0 (meaningless accuracy) — PX4 squares unconditionally |
+| `test_param2_negative_denied` | NA | FAIL (compat) | Denied at −1.0 (meaningless accuracy) — PX4 squares unconditionally |
 | `test_param3_nominal` | PASS | PASS | Not UNSUPPORTED at 90.0 deg |
 | `test_param3_zero_boundary` | PASS | PASS | Not UNSUPPORTED at 0.0 deg (minValue) |
 | `test_param3_max_boundary` | PASS | PASS | Not UNSUPPORTED at 360.0 deg (maxValue) |
-| `test_param3_negative_denied` | XFAIL | XFAIL | Denied at −10.0 deg (below minValue) — PX4 wraps via `wrap_pi()` unconditionally |
-| `test_param3_over_max_denied` | XFAIL | XFAIL | Denied at 370.0 deg (above maxValue) — same reason |
+| `test_param3_negative_denied` | NA | FAIL (compat) | Denied at −10.0 deg (below minValue) — PX4 wraps via `wrap_pi()` unconditionally |
+| `test_param3_over_max_denied` | NA | FAIL (compat) | Denied at 370.0 deg (above maxValue) — same reason |
 | `test_param4_specific` | PASS | PASS | Not UNSUPPORTED at 5.0 deg |
-| `test_param4_negative_denied` | XFAIL | XFAIL | Denied at −5.0 (meaningless accuracy) — no sign validation |
+| `test_param4_negative_denied` | NA | FAIL (compat) | Denied at −5.0 (meaningless accuracy) — no sign validation |
 
-18 PASS / 8 XFAIL on both Mock and PX4 MC (post-fix); at the pytest level (`INCONCLUSIVE` reports PASSED) that's 18 passed, 8 xfailed. Every PX4 XFAIL is consistent with source: EKF2 never validates param1–4 range or sign — anything short of a malformed COMMAND_LONG is silently ACCEPTED.
+18 PASS / 8 FAIL (compat) on PX4 MC post-fix (the same 8 are NA against the mock); at the pytest level (`INCONCLUSIVE` reports PASSED) that's 18 passed, 8 failed. Every PX4 FAIL is consistent with source: EKF2 never validates param1–4 range or sign — anything short of a malformed COMMAND_LONG is silently ACCEPTED.
 
 ## Tier 2 results (`test_flight.py`)
 

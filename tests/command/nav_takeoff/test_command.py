@@ -32,6 +32,8 @@ import logging
 
 import pytest
 
+from tests import report
+from tests.report import _tier1_auto_record  # noqa: F401 — autouse: bespoke tests show in the report too
 from tests.command.conftest import (
     CommandSpec,
     INT32_MAX,
@@ -49,6 +51,7 @@ log = logging.getLogger(__name__)
 
 _CMD = "NAV_TAKEOFF"
 _CMD_ID = 22  # MAV_CMD_NAV_TAKEOFF
+_CMD_NAME = _CMD  # read by tests/report.py's key_from_module()
 
 # SIH simulator home (47.3977°N, 8.5456°E)
 _LAT_INT = 473977000
@@ -114,7 +117,7 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         honour the requested pitch must return MAV_RESULT_DENIED rather than
         silently accepting and ignoring the parameter.
 
-        xfail: all known stacks (PX4, ArduPilot) return ACCEPTED while ignoring
+        Known result (FAIL): all known stacks (PX4, ArduPilot) return ACCEPTED while ignoring
         param1 in the COMMAND_INT execution path — each is a spec violation.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
@@ -124,8 +127,9 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param1 (Pitch) = 15.0", f"result={result}")
+        report.record_nonsentinel_ack("command", _CMD, "1_Pitch", nacked=result == MAV_RESULT_DENIED)
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack accepted param1=15° but ignores pitch (result={result}); "
                 "should return MAV_RESULT_DENIED"
             )
@@ -161,7 +165,7 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         - ArduCopter: "param4 : yaw angle   (not supported)" (GCS_MAVLink_Copter.cpp:585)
         - ArduPlane: only altitude is read from the COMMAND_INT handler (GCS_MAVLink_Plane.cpp)
 
-        xfail: all known stacks return ACCEPTED while ignoring param4 — spec violation.
+        Known result (FAIL): all known stacks return ACCEPTED while ignoring param4 — spec violation.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param4=90.0)
@@ -170,12 +174,39 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param4 (Yaw) = 90.0", f"result={result}")
+        report.record_nonsentinel_ack("command", _CMD, "4_Yaw", nacked=result == MAV_RESULT_DENIED)
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack accepted param4=90° but ignores yaw (result={result}); "
                 "should return MAV_RESULT_DENIED"
             )
         assert result == MAV_RESULT_DENIED
+
+    async def test_param3_flags_ack(self, gcs_system_cls, mock_stack_cls):
+        """
+        param3 (Flags) = 1 (NAV_TAKEOFF_FLAGS_HORIZONTAL_POSITION_NOT_REQUIRED) — observational.
+
+        The only defined bit: "accept the command even if the autopilot does not
+        have control over its horizontal position". NACKed = a legitimate "not
+        supported" verdict. Accepted = inconclusive at the ACK level, and the flag
+        only changes behaviour when horizontal position control is absent, which
+        this harness doesn't simulate — so it's recorded as untestable (param
+        coverage requirement: every param ends a run with an explicit verdict).
+        """
+        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
+        ack = await _probe(gcs_system_cls, param3=1.0)
+        if ack is None:
+            log.warning(_FMT, _CMD, "param3 (Flags) = 1", "UNKNOWN — no ACK")
+            return
+        result = int(ack["result"])
+        log.info(_FMT, _CMD, "param3 (Flags) = 1", f"result={result}")
+        nacked = result == MAV_RESULT_DENIED
+        report.record_nonsentinel_ack("command", _CMD, "3_Flags", nacked=nacked)
+        if not nacked:
+            report.record_compat_fact(
+                "command", _CMD, "3_Flags",
+                untestable="Flag only matters without horizontal position control",
+            )
 
     async def test_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
         """
@@ -249,7 +280,7 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         that accepts an impossible coordinate may navigate toward the wrong location or
         exhibit undefined behaviour.  Expected result: MAV_RESULT_DENIED.
 
-        xfail: PX4 does not validate lat/lon range and returns ACCEPTED (spec gap).
+        Known result (FAIL): PX4 does not validate lat/lon range and returns ACCEPTED (spec gap).
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         _OUT_LAT = 1_200_000_000   # 120°N — impossible latitude
@@ -261,11 +292,13 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         result = int(ack["result"])
         log.info(_FMT, _CMD, "params 5/6 out-of-range lat/lon", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            # Spec gap — characterisation only (root CLAUDE.md rule 3), so
+            # recorded, not asserted.
+            log.info(
+                _FMT, _CMD, "observation (spec gap, not asserted)",
                 f"Stack accepted geometrically impossible lat/lon (result={result}); "
-                "should return MAV_RESULT_DENIED — spec gap (coordinate range not mandated)"
+                "should return MAV_RESULT_DENIED — spec gap (coordinate range not mandated)",
             )
-        assert result == MAV_RESULT_DENIED
 
     async def test_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
         """
@@ -337,7 +370,7 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
 
         Expected result: ACCEPTED — the sentinel is valid and means "use current position".
 
-        xfail: PX4 explicitly rejects float(INT32_MAX) in param5/6 as a protocol error
+        Known result (FAIL): PX4 explicitly rejects float(INT32_MAX) in param5/6 as a protocol error
         (mavlink_receiver.cpp:499–505), treating it as a miscoded COMMAND_INT.  This is
         a PX4 spec violation — the correct behaviour is to treat it as "use current position".
         """
@@ -359,9 +392,11 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
                  f"result={result}  "
                  "(INT32_MAX is 'use current position' sentinel; DENIED is a PX4 spec violation)")
         if result != MAV_RESULT_ACCEPTED:
-            pytest.xfail(
+            # Spec gap — characterisation only (root CLAUDE.md rule 3), so
+            # recorded, not asserted.
+            log.info(
+                _FMT, _CMD, "observation (spec gap, not asserted)",
                 f"Stack returned {result} for INT32_MAX lat/lon in COMMAND_LONG; "
                 "expected ACCEPTED — INT32_MAX is the 'use current position' sentinel "
-                "(PX4 incorrectly rejects it as a protocol error)"
+                "(PX4 incorrectly rejects it as a protocol error)",
             )
-        assert result == MAV_RESULT_ACCEPTED

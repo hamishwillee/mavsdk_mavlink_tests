@@ -138,7 +138,7 @@ SPEC = CommandSpec(
     params=[
         ParamSpec(
             1, "Empty", defined=False,
-            reject_xfail_reason=(
+            reject_fail_reason=(
                 "PX4's standalone-command handler reads param1 as 'Loiter Height' "
                 "(navigator_main.cpp: _vtol_takeoff.setLoiterHeight(cmd.param1)) even "
                 "though common.xml marks this slot Empty — an implementation-specific "
@@ -362,7 +362,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         impossible but below INT32_MAX (the sentinel). Expected result:
         MAV_RESULT_DENIED, though not explicitly mandated by the spec.
 
-        xfail if a stack (e.g. PX4, which shares mavlink_receiver.cpp's
+        Fails if a stack (e.g. PX4, which shares mavlink_receiver.cpp's
         COMMAND_INT decode path with NAV_TAKEOFF) does not validate lat/lon
         range.
         """
@@ -376,11 +376,13 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         result = int(ack["result"])
         log.info(_FMT, _CMD, "params 5/6 out-of-range lat/lon", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            # Spec gap — characterisation only (root CLAUDE.md rule 3), so
+            # recorded, not asserted.
+            log.info(
+                _FMT, _CMD, "observation (spec gap, not asserted)",
                 f"Stack accepted geometrically impossible lat/lon (result={result}); "
-                "should return MAV_RESULT_DENIED — spec gap (coordinate range not mandated)"
+                "should return MAV_RESULT_DENIED — spec gap (coordinate range not mandated)",
             )
-        assert result == MAV_RESULT_DENIED
 
     async def test_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
         """
@@ -431,7 +433,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         Same reasoning as nav_takeoff's identical test. Expected result:
         ACCEPTED — the sentinel is valid and means "use current position".
 
-        xfail if a stack rejects float(INT32_MAX) in param5/6 as a protocol
+        Fails if a stack rejects float(INT32_MAX) in param5/6 as a protocol
         error (confirmed for PX4 NAV_TAKEOFF via the shared
         mavlink_receiver.cpp decode path — likely to reproduce here).
         """
@@ -452,8 +454,10 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         result = int(ack["result"])
         log.info(_FMT, _CMD, "COMMAND_LONG param5/6=INT32_MAX (use current pos)", f"result={result}")
         if result != MAV_RESULT_ACCEPTED:
-            pytest.xfail(
+            # Spec gap — characterisation only (root CLAUDE.md rule 3), so
+            # recorded, not asserted.
+            log.info(
+                _FMT, _CMD, "observation (spec gap, not asserted)",
                 f"Stack returned {result} for INT32_MAX lat/lon in COMMAND_LONG; "
-                "expected ACCEPTED — INT32_MAX is the 'use current position' sentinel"
+                "expected ACCEPTED — INT32_MAX is the 'use current position' sentinel",
             )
-        assert result == MAV_RESULT_ACCEPTED

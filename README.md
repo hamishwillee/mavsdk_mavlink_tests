@@ -7,7 +7,7 @@ The test suite validates both the **client (GCS)** and **server (drone)** sides 
 ## Requirements
 
 - Python 3.10+
-- `mavsdk >= 2.0.0` (includes `mavsdk_server` binary)
+- `mavsdk >= 4.0.1, < 5` — the native, in-process MAVSDK binding (the suite adapts it via `tests/mavsdk_compat.py`; no `mavsdk_server` process)
 - `pytest >= 8.0.0`
 - `pytest-asyncio >= 0.23.0`
 
@@ -31,14 +31,14 @@ To load a custom dialect that includes common.xml, pass its XML to `mavlink_dire
 pytest tests/
 ```
 
-Starts two local `mavsdk_server` processes over loopback UDP and runs `MockFlightStack` as the drone-side handler.
+Opens two in-process MAVSDK endpoints (GCS and mock drone) over loopback UDP and runs `MockFlightStack` as the drone-side handler.
 All tests run without any external simulator (the skips are Tier 2 execution tests and stack-specific probes that require a real flight stack).
 
-**Known scaling limitation**: at the current test count (~345, up from 242 tests when this suite was smaller), a single `pytest tests/` session accumulates enough function-scoped `System`/gRPC channels over its ~13-minute run that connections in the last few files reliably start erroring out (confirmed: the exact same tests pass cleanly when their file/subtree is run on its own — this is a resource-accumulation artifact of one very long combined session, not a code defect). Root `CLAUDE.md`'s design decision #3 already documents the same class of issue for `test_frame_types.py`'s 65 tests alone. Until the client-test fixtures are revisited for this scale (tracked as future work, not yet done), verify cleanly by running the two top-level subtrees separately:
+**Known scaling limitation** *(observed with the gRPC-based MAVSDK 3; not re-checked since the 2026-09-29 move to MAVSDK 4, which has no gRPC channels)*: at the current test count (~345, up from 242 tests when this suite was smaller), a single `pytest tests/` session accumulated enough function-scoped `System`/gRPC channels over its ~13-minute run that connections in the last few files reliably start erroring out (confirmed: the exact same tests pass cleanly when their file/subtree is run on its own — this is a resource-accumulation artifact of one very long combined session, not a code defect). Root `CLAUDE.md`'s design decision #3 already documents the same class of issue for `test_frame_types.py`'s 65 tests alone. Until the client-test fixtures are revisited for this scale (tracked as future work, not yet done), verify cleanly by running the two top-level subtrees separately:
 
 ```bash
-pytest tests/command/   # expect 110 passed, 58 skipped, 22 xfailed (verified 2026-09-14 — nav_takeoff Tier 2 grew 5 new characterisation/honoured tests; occasional single-test flakiness in do_set_global_origin's GPS_GLOBAL_ORIGIN dedup check — unrelated, pre-existing, a genuinely intermittent timing race, not a regression; re-run in isolation if seen)
-pytest tests/mission/   # expect 153 passed, 16 skipped, 3 xfailed (verified 2026-09-14 — nav_takeoff Tier 2 grew 4 new characterisation tests)
+pytest tests/command/   # expect 146 passed, 102 skipped (verified 2026-09-29, MAVSDK 4 — skips include compatibility checks reported NA in mock mode; occasional single-test flakiness in do_set_global_origin's GPS_GLOBAL_ORIGIN dedup check — unrelated, pre-existing, a genuinely intermittent timing race; re-run in isolation if seen)
+pytest tests/mission/   # expect 170 passed, 28 skipped (verified 2026-09-29, MAVSDK 4)
 ```
 
 ### Against a real drone or simulator
@@ -46,6 +46,11 @@ pytest tests/mission/   # expect 153 passed, 16 skipped, 3 xfailed (verified 202
 ```bash
 # PX4 SITL (UDP port 14540 — start PX4 with PX4_SIM_MODEL=sihsim_quadx first)
 pytest tests/ --drone-address=udp://:14540
+
+# Let the suite start/stop PX4 itself — SIH by default, or Gazebo (headless) for any gz_* model
+pytest tests/command/nav_takeoff/ --drone-address=udp://:14540 \
+  --px4-sitl=~/github/px4/PX4-Autopilot --px4-model=gz_standard_vtol \
+  --vehicle-type=vtol --autopilot=px4
 
 # ArduCopter SITL (TCP port 5760 — requires --home-lat/lon for the SITL home position)
 pytest tests/ \
@@ -176,17 +181,19 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
 
 Results below are from the current test suite run against each stack.
 
+**Outcomes** (since 2026-09-29 — root `CLAUDE.md` rule 11): a test is **PASS** or **FAIL**; whether a FAIL is a **compatibility error** (the stack contradicts the MAVLink XML) is recorded separately — "FAIL (compat)" below. A FAIL that isn't a compatibility error ("FAIL (harness)") is a test/harness limitation or an inconclusive precondition. Characterisation tests of behaviour the spec leaves undefined PASS and record what they saw. Older results in these tables that were recorded as XFAIL/XPASS have been relabelled under these rules, not re-run.
+
 ### PX4 (mainline, SIH simulator)
 
 | Test group | Result |
 |------------|--------|
 | Capability | PASS |
 | Flight mission upload/download | PASS |
-| Flight mission roundtrip | XFAIL — PX4 converts frame on storage |
+| Flight mission roundtrip | FAIL (harness) — PX4 converts frame on storage; the comparison isn't frame-aware yet |
 | Geofence upload/download | PASS |
-| Geofence roundtrip | XFAIL — PX4 converts frame=0→5 on storage |
+| Geofence roundtrip | FAIL (harness) — PX4 converts frame=0→5 on storage; the comparison isn't frame-aware yet |
 | Rally upload/download | PASS |
-| Rally roundtrip | XFAIL — PX4 converts frame=0→5 on storage |
+| Rally roundtrip | FAIL (harness) — PX4 converts frame=0→5 on storage; the comparison isn't frame-aware yet |
 | Clear mission | PASS |
 | Protocol conformance (no home slot required) | PASS |
 | Frame support — flight/rally | All accepted frames preserve altitude category |
@@ -204,7 +211,7 @@ Geofence shares the same accepted set but frames 3 and 6 are stored incorrectly 
 |------------|--------|
 | Capability | PASS |
 | Flight mission upload/download | PASS |
-| Flight mission roundtrip | XFAIL — ArduCopter converts all frames to GLOBAL on storage |
+| Flight mission roundtrip | FAIL (harness) — ArduCopter converts all frames to GLOBAL on storage; the comparison isn't frame-aware yet |
 | Geofence upload/download | PASS |
 | Geofence roundtrip | PASS — ArduCopter preserves frame |
 | Rally upload/download | PASS |
@@ -228,7 +235,7 @@ Full per-param tables, source verification, and Tier 2 results live in each comm
 
 | Command | PX4 | ArduCopter/ArduPlane | Details |
 |---------|-----|----------------------|---------|
-| `MAV_CMD_NAV_TAKEOFF` (22) | Stores Yaw + location; never stores Pitch/Flags (v1.17.0, confirmed 2026-09-14) — a newer 1.18.0-beta dev build (2026-09-13) instead actively rejects non-default Pitch/Flags/unused values, so this appears to be a version-dependent validation change, not settled behaviour. MC takes off correctly via mission upload (v1.17.0); **fixed-wing does not** — accepts the mission but never climbs within 90 s, a genuine spec-compliance FAIL, not yet root-caused (v1.17.0, 2026-09-14). VTOL untested — blocked by a sandbox resource issue, see root `CLAUDE.md` item #10 | Stores Pitch + location only; rejects NaN in any param but Yaw and rejects the `INT32_MAX` location sentinel (spec violations) | [`nav_takeoff/README.md`](tests/mission/nav_takeoff/README.md) |
+| `MAV_CMD_NAV_TAKEOFF` (22) | Stores Yaw + location; never stores Pitch/Flags (v1.17.0, confirmed 2026-09-14) — a newer 1.18.0-beta dev build (2026-09-13) instead actively rejects non-default Pitch/Flags/unused values, so this appears to be a version-dependent validation change, not settled behaviour. MC takes off correctly via mission upload (v1.17.0); **fixed-wing does not** — accepts the mission but never climbs within 90 s, a genuine spec-compliance FAIL, not yet root-caused (v1.17.0, 2026-09-14). VTOL (Gazebo `gz_standard_vtol`, v1.17.0, 2026-09-29): same storage result — Pitch and Flags accepted then zeroed are FAIL (compat), and a real value in the Empty param2 is accepted, also FAIL (compat); mission-item Tier 2 flight not yet run on Gazebo (SIH VTOL can't fly — root `CLAUDE.md` item #10) | Stores Pitch + location only; rejects NaN in any param but Yaw and rejects the `INT32_MAX` location sentinel (spec violations) | [`nav_takeoff/README.md`](tests/mission/nav_takeoff/README.md) |
 | `MAV_CMD_DO_REPOSITION` (192) | `UNSUPPORTED` — rejected outright as a mission item, on every vehicle type | Same | [`do_reposition/README.md`](tests/mission/do_reposition/README.md) |
 | `MAV_CMD_CONDITION_GATE` (4501) | Accepted (`<wip/>` tag needs the raw `mavlink_direct` transport — `mission_raw` blocks it client-side); never stores Geometry/UseAltitude; Tier 2 confirms mavlink-devguide PR #761's crossing-point claims | `UNSUPPORTED` — not implemented ([ardupilot#13778](https://github.com/ArduPilot/ardupilot/issues/13778)) | [`condition_gate/README.md`](tests/mission/condition_gate/README.md) |
 | `MAV_CMD_DO_SET_ACTUATOR` (187) | Accepted **only** under `MAV_FRAME_MISSION` (frame=2), rejected as `UNSUPPORTED` under location frames like GLOBAL_INT; param5/param6 (x/y) correctly round-trip at 1e7 scaling with independently-preserved sentinels ([PX4 PR #28723](https://github.com/PX4/PX4-Autopilot/pull/28723), verified 2026-09-17). Not tested against ArduCopter/ArduPlane this session | — | [`do_set_actuator/README.md`](tests/mission/do_set_actuator/README.md) |
@@ -250,7 +257,7 @@ NAV_TAKEOFF storage behaviour mirrors ArduCopter: param1 (Pitch) preserved; para
 
 ### Mock (MockFlightStack, no external drone)
 
-The mock accepts every command and frame, stores items exactly as received, and serves them unchanged on download — use it to verify protocol-level interactions without a real autopilot. See "Known scaling limitation" above for current pass/skip/xfail counts (skips are Tier 2/stack-specific probes needing a real flight stack).
+The mock accepts every command and frame, stores items exactly as received, and serves them unchanged on download — use it to verify protocol-level interactions without a real autopilot. See "Known scaling limitation" above for current pass/skip counts (skips are Tier 2/stack-specific probes needing a real flight stack, and compatibility checks, which report NA against the mock).
 
 ## Spec violations
 
