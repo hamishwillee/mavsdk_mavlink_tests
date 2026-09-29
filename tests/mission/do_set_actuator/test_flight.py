@@ -35,7 +35,7 @@ import json
 import logging
 
 import pytest
-from mavsdk.mission_raw import MissionItem
+from mavsdk.plugins.mission_raw import MissionItem
 
 from tests import report
 from tests.command.conftest import probe_command_int

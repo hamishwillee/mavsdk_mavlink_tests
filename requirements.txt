@@ -1,4 +1,4 @@
-mavsdk>=2.0.0
+mavsdk>=4.0.1,<5  # native binding (MAVSDK 4); tests/mavsdk_compat.py adapts it to the suite
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-timeout>=2.2.0

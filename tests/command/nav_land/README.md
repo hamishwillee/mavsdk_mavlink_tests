@@ -1,5 +1,7 @@
 # MAV_CMD_NAV_LAND (cmd=21) — Command Protocol (COMMAND_INT) Test Results
 
+> **Outcome labels (2026-09-30):** results recorded before 2026-09-29 used pytest XFAIL/XPASS. They're relabelled here under root `CLAUDE.md` rule 11 — FAIL (compat) = compatibility error, FAIL (harness) = not a compatibility error, PASS (observation) = a spec gap recorded rather than asserted, NA = compatibility check against the mock — not re-run.
+
 Command protocol only (COMMAND_INT → COMMAND_ACK) — NAV_LAND has no mission-protocol test directory, unlike NAV_TAKEOFF.
 
 ## Parameter definition (common.xml)
@@ -37,11 +39,11 @@ Tier 1 tests below are scoped to "was the value accepted", never "was it interpr
 | B — param1 (Abort Alt) | `_zero/_specific/_negative/_nan` | `zero` asserts not UNSUPPORTED (spec-defined sentinel); rest observational |
 | C — param2 (Land Mode) | `_disabled/_opportunistic/_required/_undefined` | `disabled` asserts not UNSUPPORTED; rest observational — precision-landing *engagement* needs a simulated beacon (out of scope) |
 | D — param4 (Yaw) | `_specific_ack`, `_nan_ack` | Both observational (see below) |
-| E — Location (5/6/7) | `_specific_ack/_int32max_ack/_out_of_range_latlon_ack`, `_altitude_specific_ack/_nan_ack`, `_wrong_frame_ack` | `specific`/`altitude_specific` assert not UNSUPPORTED; `out_of_range_latlon` asserts DENIED (xfail, mirrors NAV_TAKEOFF's tracked PX4 gap); rest observational |
+| E — Location (5/6/7) | `_specific_ack/_int32max_ack/_out_of_range_latlon_ack`, `_altitude_specific_ack/_nan_ack`, `_wrong_frame_ack` | `specific`/`altitude_specific` assert not UNSUPPORTED; `out_of_range_latlon` records the result as an observation (spec gap, mirrors NAV_TAKEOFF); rest observational |
 | F — COMMAND_LONG sentinels | `_latlon_nan_command_long_ack`, `_latlon_int32max_command_long` | Mirror NAV_TAKEOFF's; real-stack only |
 | G — Message-type exclusivity | `test_nav_land_command_long_rejected` | Hand-rolled equivalent of `Tier1CommandTestBase.test_hasLocation_rejects_command_long` (this file predates that base class migration) — see `../CLAUDE.md` § Mandatory common tests, check 7 |
 
-**Message-type exclusivity result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`)**: `test_nav_land_command_long_rejected` **XFAIL** — COMMAND_LONG for NAV_LAND returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
+**Message-type exclusivity result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`)**: `test_nav_land_command_long_rejected` **FAIL (compat)** — COMMAND_LONG for NAV_LAND returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
 
 **param4 (Yaw) is observational here, unlike NAV_TAKEOFF's assertion**: NAV_TAKEOFF asserts DENIED because prior surveys established every stack ignores param4 there. No equivalent evidence exists for landing — a heading-on-touchdown preference is plausible enough to honour that it isn't assumed ignored. Convert to an assertion once real-stack evidence shows otherwise.
 
@@ -87,7 +89,7 @@ Mock ACCEPTs everything except out-of-range lat/lon (generic COMMAND_INT validat
 
 ### PX4 — MC/FW/VTOL/Rover (standalone)
 
-Tested against PX4 1.18.0-alpha (`0000006d67dc8571`), SIH. **18 PASS, 1 XFAIL, byte-identical across all four vehicle types.** NAV_LAND is SUPPORTED on every PX4 vehicle type (PX4 doesn't gate by vehicle type — same pattern as NAV_TAKEOFF).
+Tested against PX4 1.18.0-alpha (`0000006d67dc8571`), SIH. **19 PASS, byte-identical across all four vehicle types** (the former XFAIL, INT32_MAX via COMMAND_LONG, is a PASS observation). NAV_LAND is SUPPORTED on every PX4 vehicle type (PX4 doesn't gate by vehicle type — same pattern as NAV_TAKEOFF).
 
 | Test | Param | Result |
 |------|-------|--------|
@@ -109,13 +111,13 @@ Tested against PX4 1.18.0-alpha (`0000006d67dc8571`), SIH. **18 PASS, 1 XFAIL, b
 | `test_nav_land_altitude_nan_ack` | NaN | PASS — ACCEPTED (observational) |
 | `test_nav_land_wrong_frame_ack` | LOCAL_NED(1) | PASS — ACCEPTED (PX4 accepts any frame) |
 | `test_nav_land_latlon_nan_command_long_ack` | NaN | PASS — ACCEPTED |
-| `test_nav_land_latlon_int32max_command_long` | INT32_MAX | **XFAIL** — DENIED; PX4 rejects `float(INT32_MAX)` as a protocol error (`mavlink_receiver.cpp:499–505`), same gap as NAV_TAKEOFF |
+| `test_nav_land_latlon_int32max_command_long` | INT32_MAX | **PASS (observation)** — DENIED; PX4 rejects `float(INT32_MAX)` as a protocol error (`mavlink_receiver.cpp:499–505`), same gap as NAV_TAKEOFF |
 
 **param1 validation is new**: unlike NAV_TAKEOFF (which ignores param1/pitch entirely), PX4 DENIEs any non-zero NAV_LAND abort altitude. Plausibly correct (values are checked against an internal range), but a GCS can't assume any finite abort altitude is accepted.
 
 ### ArduCopter MC (standalone)
 
-Tested against V4.8.0-dev (`70fe7125`, `--model +`). **18 PASS, 1 XFAIL.** SUPPORTED.
+Tested against V4.8.0-dev (`70fe7125`, `--model +`). **19 PASS** (the former XFAIL, out-of-range lat/lon, is a PASS observation). SUPPORTED.
 
 | Test | Param | Result |
 |------|-------|--------|
@@ -132,7 +134,7 @@ Tested against V4.8.0-dev (`70fe7125`, `--model +`). **18 PASS, 1 XFAIL.** SUPPO
 | `test_nav_land_param4_yaw_nan_ack` | NaN | PASS — ACCEPTED (observational) |
 | `test_nav_land_location_specific_ack` | home | PASS — ACCEPTED |
 | `test_nav_land_location_int32max_ack` | INT32_MAX | PASS — ACCEPTED (observational) |
-| `test_nav_land_location_out_of_range_latlon_ack` | 120°N, 200°E | **XFAIL** — ACCEPTED; accepts geometrically impossible lat/lon (spec violation, same gap as NAV_TAKEOFF) |
+| `test_nav_land_location_out_of_range_latlon_ack` | 120°N, 200°E | **PASS (observation)** — ACCEPTED; accepts geometrically impossible lat/lon (spec violation, same gap as NAV_TAKEOFF) |
 | `test_nav_land_altitude_specific_ack` | 5.0 m | PASS — ACCEPTED |
 | `test_nav_land_altitude_nan_ack` | NaN | PASS — ACCEPTED (observational) |
 | `test_nav_land_wrong_frame_ack` | LOCAL_NED(1) | PASS — ACCEPTED (accepts any frame) |

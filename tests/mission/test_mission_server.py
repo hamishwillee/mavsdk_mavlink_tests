@@ -46,7 +46,7 @@ import asyncio
 import logging
 
 import pytest
-from mavsdk.mission_raw_server import MissionItem as ServerMissionItem
+from mavsdk.plugins.mission_raw_server import MissionItem as ServerMissionItem
 
 from .conftest import collect_incoming_mission, items_match, load_plan
 

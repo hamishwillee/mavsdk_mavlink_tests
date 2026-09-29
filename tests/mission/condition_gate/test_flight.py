@@ -53,9 +53,10 @@ import math
 import os
 
 import pytest
-from mavsdk.mavlink_direct import MavlinkMessage
-from mavsdk.mission_raw import MissionItem
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
+from mavsdk.plugins.mission_raw import MissionItem
 
+from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
 from tests import report
 from ..conftest import (
     RawMissionError,
@@ -225,7 +226,7 @@ def _build_mission(
 async def _send_mission_start(system) -> None:
     await system.mavlink_direct.send_message(MavlinkMessage(
         message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
+        system_id=GCS_SYSID, component_id=GCS_COMPID,
         target_system_id=1, target_component_id=1,
         fields_json=json.dumps({
             "target_system": 1, "target_component": 1,

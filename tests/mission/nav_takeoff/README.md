@@ -3,7 +3,7 @@
 Tier 1 (protocol acceptance) and Tier 2 (execution verification) tests for `MAV_CMD_NAV_TAKEOFF` as a mission item.
 See the root `CLAUDE.md` for the two-tier testing model.
 
-**Migrated onto `Tier1MissionTestBase`/`MissionItemSpec`** (`tests/mission/conftest.py`) — see `tests/mission/CLAUDE.md` § "Shared Tier 1 infrastructure". Unlike `do_reposition`/`condition_gate` (rejected outright, so every param-level test is skipped), NAV_TAKEOFF is supported everywhere, so the generic `test_defined_param_sentinel_tolerated` test genuinely exercises ArduPilot's NaN-rejection quirk — see `ParamSpec.sentinel_xfail_reason` on params 1/3/7 in `test_protocol.py`.
+**Migrated onto `Tier1MissionTestBase`/`MissionItemSpec`** (`tests/mission/conftest.py`) — see `tests/mission/CLAUDE.md` § "Shared Tier 1 infrastructure". Unlike `do_reposition`/`condition_gate` (rejected outright, so every param-level test is skipped), NAV_TAKEOFF is supported everywhere, so the generic `test_defined_param_sentinel_tolerated` test genuinely exercises ArduPilot's NaN-rejection quirk — see `ParamSpec.sentinel_fail_reason` on params 1/3/7 in `test_protocol.py`.
 
 ## Command parameters (MAVLink spec)
 
@@ -46,7 +46,7 @@ PX4 FW/VTOL and ArduPlane FW/QuadPlane columns are carried over unchanged from t
 | Command accepted | ✓ | ✓ | ✓ | ✓ | ✓ |
 | param1 (Pitch) 15° preserved | ✗ zeroed | ✗ zeroed | ✗ zeroed² | ✓ | ✓ |
 | param2 (unused) NaN sentinel accepted | ✓ | ✓ | ✗ rejected | ✗ rejected | ✓ |
-| param2 (unused) non-NaN (1.0) rejected | → NACKed³ | ~ accepted, zeroed | ~ accepted, zeroed | ~ accepted, zeroed | → NACKed (xfail — mock has no validation) |
+| param2 (unused) non-NaN (1.0) rejected | → NACKed³ | ~ accepted, zeroed | ~ accepted, zeroed | ~ accepted, zeroed | NA — mock has no validation |
 | param3 (Flags) 1.0 preserved | ✗ → NACKed³ | ✗ zeroed | ✗ zeroed | ✗ zeroed | ✓ |
 | param3 (Flags) 0 (no flags) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | param3 undefined bit (2.0) | → NACKed³ | ~ zeroed | ~ zeroed | ~ zeroed | ~ accepted (NACK preferred) |
@@ -67,6 +67,10 @@ PX4 FW/VTOL and ArduPlane FW/QuadPlane columns are carried over unchanged from t
 
 Full logs: `logs/mission_nav_takeoff_tier1_px4_quadcopter_1.18.0-beta_20260913_*.log`, `logs/mission_nav_takeoff_tier1_ardupilot_copter_4.8.0-dev_20260913_*.log`; original 2026-05-25 FW/VTOL/QuadPlane logs referenced in `CLAUDE.md`.
 
+### PX4 v1.17.0 VTOL — Gazebo `gz_standard_vtol`, 2026-09-29 (MAVSDK 4)
+
+Tier 1 only (mission-item Tier 2 flight not yet run on Gazebo). 22 PASS, 3 FAIL (compat), plus 1 FAIL (harness) in some runs from a MAVSDK 4 empty-download flake before the retry was added (root `CLAUDE.md` § MAVSDK 4). Same storage result as MC: Yaw and location preserved; Pitch (15°) and Flags (1) **accepted then zeroed** — FAIL (compat); a real value in the Empty param2 **accepted** — FAIL (compat) (PX4 `main` rejects it). All sentinels (NaN, INT32_MAX) accepted.
+
 ### Known ArduPilot storage pattern (unchanged, still explains most FAILs above)
 
 `AP_Mission::mavlink_int_to_mission_cmd` for NAV_TAKEOFF stores only `cmd.p1 = packet.param1`; param3/param4 are never read on upload or written on download. `sanity_check_params()`'s `nan_mask = ~(1<<3)` permits NaN only in param4 — params 1-3 must be a concrete non-NaN value or the whole upload is rejected before the command-specific logic ever runs. INT32_MAX for params 5/6 ("use current position") is rejected outright, a spec violation for a `hasLocation`/`isDestination` command.
@@ -86,18 +90,18 @@ Full logs: `logs/mission_nav_takeoff_tier1_px4_quadcopter_1.18.0-beta_20260913_*
 
 ### PX4 v1.17.0 re-verification, 2026-09-14 (MC full; fixed-wing full; VTOL blocked)
 
-Full test suite rebuilt around root `CLAUDE.md`'s "General testing philosophy for MAV_CMD support" (see `CLAUDE.md`'s dated entry for detail) — tests split cleanly into "is it honoured" (real assertion, `xfail` if the stack accepts-but-ignores) vs. characterisation (observational, edge/sentinel/position values). Tested against a genuine `v1.17.0` release tag build, not a dev branch.
+Full test suite rebuilt around root `CLAUDE.md`'s "General testing philosophy for MAV_CMD support" (see `CLAUDE.md`'s dated entry for detail) — tests split cleanly into "is it honoured" (real assertion — FAIL (compat) if the stack accepts-but-ignores) vs. characterisation (observational, edge/sentinel/position values). Tested against a genuine `v1.17.0` release tag build, not a dev branch.
 
 **Table below is from the 11-test suite as it stood earlier on 2026-09-14 — since superseded by a same-day redesign (13 tests: yaw/pitch tests renamed, pitch redesigned from a 5°-vs-45° comparison to a single 10° value not gated on `--vehicle-type`, plus two new position/trajectory characterisation tests) — kept for the record, but pending a re-run against the current test file before being treated as current.** The underlying MC-vs-fixed-wing headline (MC clean, fixed-wing fails to climb at all) is not expected to change; the individual pitch numbers will.
 
 | Test (as named at the time) | PX4 MC | PX4 fixed-wing |
 |------|:------:|:------:|
 | `test_takeoff_info_implicit_from_waypoint` | ✓ PASS (17.0 m) | ✗ **FAIL** (timeout, never climbed) |
-| `test_takeoff_with_yaw` → `test_takeoff_compat_tracks_yaw` (137°, honoured?) | XFAIL — heading 13.6°, not honoured | ✗ FAIL (timeout) |
+| `test_takeoff_with_yaw` → `test_takeoff_compat_tracks_yaw` (137°, honoured?) | FAIL (compat) — heading 13.6°, not honoured | ✗ FAIL (timeout) |
 | `test_takeoff_compat_with_yaw_sentinel` (NaN) | ✓ PASS (observational — heading 11.5°) | ✗ FAIL (timeout) |
-| `test_takeoff_obs_with_negative_yaw` (−90°) | XFAIL — not honoured | ✗ FAIL (timeout) |
-| `test_takeoff_obs_with_overflow_yaw` (450°) | XFAIL — not honoured | ✗ FAIL (timeout) |
-| `test_takeoff_compat_tracks_pitch` → `test_takeoff_compat_tracks_pitch`, redesigned (5° vs 45°, now a single 10°) | XFAIL — peaks 2.4° vs 2.8°, indistinguishable | ✗ FAIL (timeout) |
+| `test_takeoff_obs_with_negative_yaw` (−90°) | NA — yaw not honoured at all (dependent test) | ✗ FAIL (timeout) |
+| `test_takeoff_obs_with_overflow_yaw` (450°) | NA — yaw not honoured at all (dependent test) | ✗ FAIL (timeout) |
+| `test_takeoff_compat_tracks_pitch` → `test_takeoff_compat_tracks_pitch`, redesigned (5° vs 45°, now a single 10°) | FAIL (compat) — peaks 2.4° vs 2.8°, indistinguishable | ✗ FAIL (timeout) |
 | `test_takeoff_compat_with_pitch_sentinel` (NaN) | ✓ PASS (observational) | ✗ FAIL (timeout) |
 | `test_takeoff_obs_with_large_pitch` (89°) | ✓ PASS (still climbs) | ✗ FAIL (timeout) |
 | `test_takeoff_obs_with_negative_pitch` (−10°) | ✓ PASS (still climbs) | ✗ FAIL (timeout) |
@@ -105,17 +109,17 @@ Full test suite rebuilt around root `CLAUDE.md`'s "General testing philosophy fo
 | `test_takeoff_compat_from_current_position` (INT32_MAX) | ✓ PASS (0.2 m offset) | ✗ FAIL (timeout) |
 | `test_takeoff_compat_respects_position` — **new, not yet run against real hardware** | — | — |
 | `test_takeoff_obs_ascends_before_lateral_movement` — **new, not yet run against real hardware** | — | — |
-| **Total** | **7 PASS, 4 XFAIL, 0 FAIL** | **0 PASS, 0 XFAIL, 11 FAIL** |
+| **Total** | **7 PASS, 2 FAIL (compat), 2 NA** | **0 PASS, 11 FAIL** |
 
 **MC**: clean across the board — confirms yaw/pitch are accepted-but-ignored at execution (matching the 2026-09-13 source-level finding, now shown to hold on the released v1.17.0 too, not just the 1.18.0-beta dev build), and that the vehicle correctly takes off in every other scenario including with no explicit NAV_TAKEOFF item present at all.
 
-**Fixed-wing — genuine, unresolved compliance FAIL, not characterisation**: every single Tier 2 test fails identically — arms, mission starts, never reaches even 85% of a modest 20 m target within the 90 s timeout. Tier 1 (protocol acceptance/storage) is unaffected and passes identically to MC, so this is purely an execution-layer gap. Per the general testing philosophy, "the vehicle takes off" is the one behaviour NAV_TAKEOFF's XML text actually mandates — a stack that accepts the item and then never climbs fails that requirement outright, it isn't an "ignored param" case eligible for `xfail`. Not yet root-caused (needs a blind source read of PX4's fixed-wing launch-detection/runway-roll logic before concluding whether this is a SIH-config gap, a missing precondition, or a real regression) — tracked as an open item, not swept into a passing suite.
+**Fixed-wing — genuine, unresolved compliance FAIL, not characterisation**: every single Tier 2 test fails identically — arms, mission starts, never reaches even 85% of a modest 20 m target within the 90 s timeout. Tier 1 (protocol acceptance/storage) is unaffected and passes identically to MC, so this is purely an execution-layer gap. Per the general testing philosophy, "the vehicle takes off" is the one behaviour NAV_TAKEOFF's XML text actually mandates — a stack that accepts the item and then never climbs fails that requirement outright, it isn't an "ignored param" case. Not yet root-caused (needs a blind source read of PX4's fixed-wing launch-detection/runway-roll logic before concluding whether this is a SIH-config gap, a missing precondition, or a real regression) — tracked as an open item, not swept into a passing suite.
 
 **VTOL**: blocked by a sandbox-level resource issue that killed even a single isolated Tier 2 test 5 times in a row, unrelated to two other real bugs found and fixed along the way (a Tier 2 log-accumulation bug, and PX4's own console-log growth) — see root `CLAUDE.md` item #10 for the full investigation.
 
 ### PX4 v1.17.0 MC — NACK-aware compatibility-error verification, 2026-09-14
 
-Supersedes the "as it stood earlier" MC column above — this is the current 15-test suite (`test_takeoff_compat_respects_position` and `test_takeoff_obs_ascends_before_lateral_movement` now actually run; `xfail` replaced by a plain FAIL, per root `CLAUDE.md` rule 4's revision), and adds one more check per "possibly supported" param: does the stack NACK a non-sentinel value it doesn't honour, per root `CLAUDE.md` rule 4a? Full log: `logs/mission_nav_takeoff_tier2_px4_quadcopter_1.17.0-official_20260914_211414.log`.
+Supersedes the "as it stood earlier" MC column above — this is the current 15-test suite (`test_takeoff_compat_respects_position` and `test_takeoff_obs_ascends_before_lateral_movement` now actually run; `xfail` replaced by a plain FAIL, per root `CLAUDE.md` rule 4's revision — and since 2026-09-29 no test uses xfail at all, rule 11), and adds one more check per "possibly supported" param: does the stack NACK a non-sentinel value it doesn't honour, per root `CLAUDE.md` rule 4a? Full log: `logs/mission_nav_takeoff_tier2_px4_quadcopter_1.17.0-official_20260914_211414.log`.
 
 **Result: 5 PASS, 3 FAIL, 7 NA.** All three FAILs are the "possibly supported" params (Yaw, Pitch, Lat/Lon) — and for every one of them, PX4 MC did **not** NACK the non-sentinel value it was sent (137° yaw, 10° pitch, a real lat/lon 100 m north of home all uploaded and accepted without complaint). Combined with Tier 2 showing none of the three has any effect at execution, this upgrades all three from a plain "not supported" to a confirmed **compatibility error** — the stack accepted a value it silently cannot act on, rather than rejecting it:
 

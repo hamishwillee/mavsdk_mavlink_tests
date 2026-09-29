@@ -1,5 +1,7 @@
 # MAV_CMD_DO_SET_GLOBAL_ORIGIN (cmd=611) — command protocol tests
 
+> **Outcome labels (2026-09-30):** results recorded before 2026-09-29 used pytest XFAIL/XPASS. They're relabelled here under root `CLAUDE.md` rule 11 — FAIL (compat) = compatibility error, FAIL (harness) = not a compatibility error, PASS (observation) = a spec gap recorded rather than asserted, NA = compatibility check against the mock — not re-run.
+
 Sets the GNSS coordinates of the vehicle's local origin (0,0,0). Supersedes the deprecated `SET_GPS_GLOBAL_ORIGIN` message (id=48, deprecated 2025-04). `development.xml` entry `value=611` — not in `common.xml`, so not covered by the command survey.
 
 ## Parameter layout
@@ -24,8 +26,8 @@ Unlike NAV_TAKEOFF/NAV_LAND (INT32_MAX = "use current position"), this command *
 **Verified:**
 1. `GPS_GLOBAL_ORIGIN` response: changes on a new origin (`test_do_set_global_origin_gps_global_origin_changes_when_new_value_set`), stays unchanged but is still emitted on a repeated identical origin per spec "irrespective of whether the origin is changed" (`test_do_set_global_origin_gps_global_origin_unchanged_and_emitted_on_repeat`), emitted exactly once per accepted command (`test_do_set_global_origin_gps_global_origin_emitted`), and NOT emitted when DENIED (`test_do_set_global_origin_gps_global_origin_not_emitted_on_nack`).
 2. Exactly one COMMAND_ACK per send (`test_do_set_global_origin_exactly_one_ack`).
-3. Params 1–4 must be NaN; non-NaN must be DENIED — **xfail on all known stacks** (spec gap, nothing enforces it): `test_do_set_global_origin_reserved_param1_zero_ack` (the common `0.0`-for-NaN GCS mistake), `test_reserved_param{1,2,3,4}_nonnan_ack`.
-4. Params 5–7 must reject sentinels/out-of-range values — **xfail on PX4** (see implementation notes below): `test_do_set_global_origin_location_int32max_denied`, `test_do_set_global_origin_location_out_of_range_latlon_denied`, `test_do_set_global_origin_altitude_nan_denied`.
+3. Params 1–4 must be NaN; non-NaN must be DENIED — **FAIL (compat) on all known stacks** (nothing enforces it): `test_do_set_global_origin_reserved_param1_zero_ack` (the common `0.0`-for-NaN GCS mistake), `test_reserved_param{1,2,3,4}_nonnan_ack`.
+4. Params 5–7 must reject sentinels/out-of-range values — **FAIL (compat) on PX4** (see implementation notes below): `test_do_set_global_origin_location_int32max_denied`, `test_do_set_global_origin_location_out_of_range_latlon_denied`, `test_do_set_global_origin_altitude_nan_denied`.
 
 **Not covered**: whether the navigation stack actually uses the new origin for local↔global coordinate transforms (would need to observe `LOCAL_POSITION_NED`/`GLOBAL_POSITION_INT`; no flight test planned).
 
@@ -33,7 +35,7 @@ Unlike NAV_TAKEOFF/NAV_LAND (INT32_MAX = "use current position"), this command *
 
 Supported on all vehicle types when built with `CONFIG_MAVLINK_DIALECT="development"` (SITL default). Flow: `mavlink_receiver` converts degE7→degrees → Commander's ignore-list passes the command to EKF2 without ACKing → EKF2 calls `setEkfGlobalOrigin()` and sends the ACK → EKF2 publishes `GPS_GLOBAL_ORIGIN` via the vehicle_command_ack path.
 
-Confirmed gaps (all xfail, §4 above): PX4 returns `FAILED(4)` instead of `DENIED(2)` for INT32_MAX/out-of-range coordinates (EKF2 attempts the operation and reports failure rather than rejecting at the protocol layer); EKF2 doesn't validate altitude, so NaN is silently accepted.
+Confirmed gaps (all FAIL (compat), §4 above): PX4 returns `FAILED(4)` instead of `DENIED(2)` for INT32_MAX/out-of-range coordinates (EKF2 attempts the operation and reports failure rather than rejecting at the protocol layer); EKF2 doesn't validate altitude, so NaN is silently accepted.
 
 ## Tier 1 test results
 
@@ -41,16 +43,16 @@ Confirmed gaps (all xfail, §4 above): PX4 returns `FAILED(4)` instead of `DENIE
 |------|------|--------|
 | `test_do_set_global_origin_command_accepted` | PASS | PASS |
 | `test_do_set_global_origin_exactly_one_ack` | PASS | PASS |
-| `test_do_set_global_origin_reserved_param1_zero_ack` | XFAIL | XFAIL |
-| `test_do_set_global_origin_reserved_param1_nonnan_ack` | XFAIL | XFAIL |
-| `test_do_set_global_origin_reserved_param2_nonnan_ack` | XFAIL | XFAIL |
-| `test_do_set_global_origin_reserved_param3_nonnan_ack` | XFAIL | XFAIL |
-| `test_do_set_global_origin_reserved_param4_nonnan_ack` | XFAIL | XFAIL |
+| `test_do_set_global_origin_reserved_param1_zero_ack` | NA | FAIL (compat) |
+| `test_do_set_global_origin_reserved_param1_nonnan_ack` | NA | FAIL (compat) |
+| `test_do_set_global_origin_reserved_param2_nonnan_ack` | NA | FAIL (compat) |
+| `test_do_set_global_origin_reserved_param3_nonnan_ack` | NA | FAIL (compat) |
+| `test_do_set_global_origin_reserved_param4_nonnan_ack` | NA | FAIL (compat) |
 | `test_do_set_global_origin_frame_global_ack` | PASS | PASS |
 | `test_do_set_global_origin_frame_global_relative_alt_ack` | PASS | PASS |
-| `test_do_set_global_origin_location_int32max_denied` | PASS | XFAIL |
-| `test_do_set_global_origin_location_out_of_range_latlon_denied` | PASS | XFAIL |
-| `test_do_set_global_origin_altitude_nan_denied` | PASS | XFAIL |
+| `test_do_set_global_origin_location_int32max_denied` | PASS | FAIL (compat) |
+| `test_do_set_global_origin_location_out_of_range_latlon_denied` | PASS | FAIL (compat) |
+| `test_do_set_global_origin_altitude_nan_denied` | PASS | FAIL (compat) |
 | `test_do_set_global_origin_altitude_zero` | PASS | PASS |
 | `test_do_set_global_origin_altitude_negative` | PASS | PASS |
 | `test_do_set_global_origin_gps_global_origin_emitted` | PASS | PASS¹ |
@@ -60,9 +62,9 @@ Confirmed gaps (all xfail, §4 above): PX4 returns `FAILED(4)` instead of `DENIE
 | `test_do_set_global_origin_command_long_float_int32max_denied` | PASS | PASS |
 | `test_do_set_global_origin_gps_global_origin_not_emitted_on_nack` | PASS | SKIP |
 
-`XFAIL` = asserts DENIED but stack returns something else (documented spec gap). `SKIP` = mock-only test.
+`FAIL (compat)` = asserts DENIED but the stack returns something else. `NA` = a compatibility check against the mock (rule 11).
 
-**Message-type exclusivity (check 7, added 2026-09-18 — see `../CLAUDE.md` § Mandatory common tests)**: `test_do_set_global_origin_command_long_accepted` now also asserts `result != MAV_RESULT_COMMAND_INT_ONLY` — this command is the one documented exception to the exclusivity rule (its own XML text: "Should be sent in a COMMAND_INT... this should be assumed when sent in COMMAND_LONG"), so unlike `NAV_TAKEOFF`/`NAV_LAND`/`DO_REPOSITION` (which `XFAIL` an equivalent check) this is a real, non-xfail assertion. Confirmed PASS (2026-09-17) — PX4 correctly does not reject COMMAND_LONG here.
+**Message-type exclusivity (check 7, added 2026-09-18 — see `../CLAUDE.md` § Mandatory common tests)**: `test_do_set_global_origin_command_long_accepted` now also asserts `result != MAV_RESULT_COMMAND_INT_ONLY` — this command is the one documented exception to the exclusivity rule (its own XML text: "Should be sent in a COMMAND_INT... this should be assumed when sent in COMMAND_LONG"), so unlike `NAV_TAKEOFF`/`NAV_LAND`/`DO_REPOSITION` (which FAIL (compat) an equivalent check) this is a real assertion. Confirmed PASS (2026-09-17) — PX4 correctly does not reject COMMAND_LONG here.
 
 ¹ PX4 MC: the first `GPS_GLOBAL_ORIGIN` received (`alt_mm=-500000 extra=1`) was a late emission from the preceding `test_do_set_global_origin_altitude_negative` (z=−500 m); the response to the current command (z=10 m) arrived as the extra — a test-ordering timing artifact in standalone mode. Emission and exactly-once assertions are enforced on the mock only.
 
@@ -71,10 +73,10 @@ Other vehicle types (PX4 FW/VTOL/Rover, ArduPilot) not yet tested.
 ## Running
 
 ```bash
-# Paired mock (20 tests: 15 PASS, 5 XFAIL)
+# Paired mock (20 tests: 15 PASS, 5 NA)
 pytest tests/command/do_set_global_origin/test_command.py -v --log-cli-level=INFO
 
-# Standalone PX4 MC (11 PASS, 8 XFAIL, 1 SKIP)
+# Standalone PX4 MC (11 PASS, 8 FAIL (compat), 1 SKIP)
 pytest tests/command/do_set_global_origin/test_command.py \
     --drone-address=udp://:14540 --vehicle-type=quadcopter --autopilot=px4 \
     --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx \

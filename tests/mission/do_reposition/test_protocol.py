@@ -69,7 +69,7 @@ import logging
 import math
 
 import pytest
-from mavsdk.mission_raw import MissionRawError
+from mavsdk.plugins.mission_raw import MissionRawError
 
 from ..conftest import MissionItemSpec, Tier1MissionTestBase, clear_all_mission_types
 from tests.param_spec import ParamSpec

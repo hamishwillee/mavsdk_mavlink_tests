@@ -44,9 +44,13 @@ ArduPlane::
 import asyncio
 import datetime
 import logging
+import os
 from pathlib import Path
 
 import pytest
+
+from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
+from tests import report
 
 from tests.command.conftest import (
     probe_command_int,
@@ -64,6 +68,7 @@ from tests.flight_helpers import (
     AIRBORNE_THRESHOLD_M,
     _arm_and_send_takeoff,
     _dist_m,
+    _get_position,
     _get_flight_mode,
     _get_heading,
     _get_home_position,
@@ -77,7 +82,12 @@ from tests.flight_helpers import (
     _wait_armable,
     _wait_for_altitude,
     _wait_for_altitude_with_peak_pitch,
+    _climb_with_peak_pitch,
+    _wait_for_climb_complete,
+    record_compat_command_supported,
+    record_compat_json,
     record_tier2_detail,
+    record_tier2_param_verdict,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
 )
 from tests.mock_flight_stack import MAV_RESULT_UNSUPPORTED, MAV_RESULT_DENIED
@@ -92,14 +102,12 @@ _CMD_ID = 22  # MAV_CMD_NAV_TAKEOFF
 _CMD_NAME = _CMD  # read by tests/flight_helpers.py's flush_tier2_logs()
 
 _IGNORED_WITHOUT_NACK_REASON = (
-    "MAVLink spec violation, common across stacks (root CLAUDE.md's 'ignoring an "
-    "accepted, defined param without NACKing' rule): the command ACKs ACCEPTED for "
-    "{param} but this stack does not apply it at NAV_TAKEOFF execution. Tracked as a "
-    "known, ubiquitous gap, not a per-stack bug — xfail so a stack that fixes this "
-    "shows a clean PASS instead of breaking the suite."
+    "{param} accepted (not NACKed) but not applied at NAV_TAKEOFF execution — "
+    "root CLAUDE.md rule 4: a defined param a stack can't act on must be rejected, not ignored"
 )
 
 YAW_TOLERANCE_DEG  = 20.0   # ± degrees for heading assertion
+YAW_SETTLE_S = 5.0          # s after the climb completes before sampling heading
 
 # For observational tests (yaw, position, mode), check that the vehicle is
 # airborne at a low threshold (AIRBORNE_THRESHOLD_M, imported above) so they
@@ -284,6 +292,14 @@ async def _ensure_nav_takeoff_supported(system) -> None:
 
     # --- Probe 2: actual execution (arm → send → wait for meaningful climb) ---
     if _nav_takeoff_executes is None:
+        # Armability first, outside the "did it climb" try: a vehicle that never
+        # becomes armable raises TimeoutError too, and must not be misreported
+        # as "accepted but doesn't take off" (2026-09-29: exactly that happened
+        # when a MAVSDK 4 identity problem left is_armable False).
+        try:
+            await _wait_armable(system)
+        except TimeoutError:
+            pytest.fail(f"Vehicle never became armable within {ARMABLE_TIMEOUT_S:.0f}s — flight tests can't run")
         try:
             await _arm_and_send_takeoff(system, z=5.0)
             await _wait_for_altitude(system, AIRBORNE_THRESHOLD_M, timeout_s=20.0)
@@ -708,7 +724,7 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
                     try:
                         async with asyncio.timeout(TAKEOFF_TIMEOUT_S):
                             async for fm in gcs_system.telemetry.flight_mode():
-                                m = str(fm)
+                                m = fm.name
                                 if m != mode_initial:
                                     obs["mode_at_arrival"] = m
                                     log.info(
@@ -735,7 +751,7 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
 
                     async def _watch_mode_completion() -> None:
                         async for fm in gcs_system.telemetry.flight_mode():
-                            m = str(fm)
+                            m = fm.name
                             if m != mode_initial:
                                 final_mode[0] = m
                                 mode_event.set()
@@ -921,7 +937,7 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
 # Altitude tests (param7 = z)
 # ---------------------------------------------------------------------------
 
-async def test_altitude_nominal(gcs_system):
+async def test_altitude_nominal(gcs_system, request):
     """NAV_TAKEOFF z=30 m — vehicle climbs to ≥ 85% of target altitude."""
     await _ensure_nav_takeoff_supported(gcs_system)
     target_m = 30.0
@@ -931,6 +947,12 @@ async def test_altitude_nominal(gcs_system):
         log.info(_FMT, _CMD, "z=30 m (nominal)", f"waiting for {threshold:.1f} m")
         pos = await _wait_for_altitude(gcs_system, threshold)
         log.info(_FMT, _CMD, "z=30 m (nominal)", f"reached {pos.relative_altitude_m:.1f} m")
+        # Definitive checks for this command's compatibility export: the vehicle
+        # took off (rule 1 — the one thing NAV_TAKEOFF's XML requires) and
+        # climbed to the commanded altitude (param7 honoured).
+        record_compat_command_supported(request, True)
+        record_tier2_param_verdict(request, "param7 (Altitude)", "SUPPORTED")
+        record_compat_json(request, "7_Altitude", supported=True)
         assert pos.relative_altitude_m >= threshold, (
             f"Vehicle only reached {pos.relative_altitude_m:.1f} m (target {target_m} m, "
             f"threshold {threshold:.1f} m)"
@@ -1003,24 +1025,18 @@ async def test_altitude_nan_uses_default(gcs_system):
         )
     except TimeoutError:
         log.warning(_FMT, _CMD, "z=NaN", "no altitude reached — stack may have rejected NaN altitude")
+        pytest.fail("Vehicle did not take off with z=NaN (expected takeoff to default altitude)")
     finally:
         await _rtl_and_land(gcs_system)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Spec gap: z=0 is ambiguous — stack may use safety minimum, hover in place, "
-        "or reject.  No MAVLink spec requirement exists for this case."
-    ),
-    strict=False,
-)
 async def test_altitude_zero_behaviour(gcs_system):
     """
     NAV_TAKEOFF z=0 — observational: what altitude does the vehicle reach?
 
-    Marked xfail because the outcome is stack-specific and the spec is silent on
-    whether z=0 should be rejected, treated as 'use safety minimum', or honoured
-    literally (hover in place after leaving the ground).
+    Characterisation only (root CLAUDE.md rule 3): the spec is silent on whether z=0
+    should be rejected, treated as 'use safety minimum', or honoured literally, so the
+    outcome is recorded, not asserted.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     try:
@@ -1076,23 +1092,41 @@ async def test_yaw_is_honoured(gcs_system, request):
     The command ACKs ACCEPTED for param4 (Tier 1 test_command.py) on every stack tested.
     If execution does not turn the vehicle to face param4, that is the general "accepted
     but silently ignored" spec violation (see module comment above _observe_yaw) —
-    xfail, not a hard failure: source review already confirms PX4, ArduCopter, and
+    a compatibility FAIL (root CLAUDE.md rule 4): source review already confirms PX4, ArduCopter, and
     ArduPlane all discard param4 in the COMMAND_INT execution path today (see comment
-    above), so this is expected to xfail everywhere until that changes.
+    above), so this is expected to FAIL everywhere until that changes.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     target = 135.0
     try:
         await _arm_and_send_takeoff(gcs_system, param4=target, z=TAKEOFF_ALT_M)
-        pos = await _wait_for_altitude(gcs_system, AIRBORNE_THRESHOLD_M, AIRBORNE_TIMEOUT_S)
-        heading = await _get_heading(gcs_system)
-        diff = abs((heading - target + 180) % 360 - 180)
-        detail = f"altitude={pos.relative_altitude_m:.1f}m heading={heading:.1f}° target={target:.0f}° diff={diff:.1f}°"
+        # Measure once the takeoff has finished and settled, not mid-climb: a
+        # stack may only turn to the commanded heading at (or near) the end.
+        pos = await _wait_for_climb_complete(gcs_system, TAKEOFF_ALT_M)
+        await asyncio.sleep(YAW_SETTLE_S)
+        samples = []
+        for _ in range(5):
+            samples.append(await _get_heading(gcs_system))
+            await asyncio.sleep(0.5)
+        heading = samples[-1]
+        diff = min(abs((h - target + 180) % 360 - 180) for h in samples)
+        detail = (
+            f"altitude={pos.relative_altitude_m:.1f}m (climb complete, +{YAW_SETTLE_S:.0f}s) "
+            f"heading={heading:.1f}° target={target:.0f}° diff={diff:.1f}°"
+        )
         log.info(_FMT, _CMD, "yaw honoured?", detail)
         record_tier2_detail(request, detail)
         ok = diff <= YAW_TOLERANCE_DEG
+        # The takeoff executed, so param4 was accepted (not NACKed): not honoured
+        # here is rule 4's accepted-but-ignored case.
+        record_tier2_param_verdict(
+            request, "param4 (Yaw)", "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR",
+        )
+        record_compat_json(
+            request, "4_Yaw", supported=ok, nacks_on_non_sentinel_value=None if ok else False,
+        )
         if not ok:
-            pytest.xfail(_IGNORED_WITHOUT_NACK_REASON.format(param="param4 (Yaw)"))
+            report.compat_fail(_IGNORED_WITHOUT_NACK_REASON.format(param="param4 (Yaw)"))
         assert ok
     finally:
         await _rtl_and_land(gcs_system)
@@ -1195,6 +1229,82 @@ async def test_yaw_very_large(gcs_system):
 # Position tests (param5/6 = x/y)
 # ---------------------------------------------------------------------------
 
+POSITION_OFFSET_M = 40.0      # target this far north of home — far enough to be unambiguous
+POSITION_TOLERANCE_M = 10.0   # "arrived" if the vehicle gets this close to the target
+POSITION_TIMEOUT_S = float(os.environ.get("NAV_TAKEOFF_POSITION_TIMEOUT_S", "90.0"))
+
+
+async def test_position_is_honoured(gcs_system, request):
+    """
+    param5/6 = a point 40 m north of home — "is lat/lon honoured" core test.
+
+    Root CLAUDE.md rule 6: under the XML's shared hasLocation/isDestination
+    convention, lat/lon means "go here", so this is a rule-4 "is it honoured"
+    test, not characterisation. The target is well away from home, so arriving
+    there and staying put are clearly distinguishable (unlike
+    test_position_specific, which targets home itself). Rule 4a verdicts:
+    NACKed = PASS (REJECTED); accepted and the vehicle reaches the target =
+    PASS (SUPPORTED); accepted but it never gets there = FAIL (compatibility
+    error). A vehicle that never gets airborne is inconclusive and records no
+    verdict.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    home = await _get_home_position(gcs_system)
+    target_lat = home.latitude_deg + POSITION_OFFSET_M / 111111.0
+    target_lon = home.longitude_deg
+    try:
+        ack = await _arm_and_send_takeoff(
+            gcs_system, return_ack=True,
+            x=int(target_lat * 1e7), y=int(target_lon * 1e7), z=TAKEOFF_ALT_M,
+        )
+        if ack is None:
+            pytest.fail("No COMMAND_ACK for NAV_TAKEOFF with a real target position — cannot classify")
+        result = int(ack["result"])
+        nacked = result not in (0, 5)  # anything but ACCEPTED/IN_PROGRESS rejects the value
+        if nacked:
+            detail = f"REJECTED (result={result}) — NACK is a legitimate not-supported"
+            ok = False
+        else:
+            min_to_target = float("inf")
+            max_alt = 0.0
+            last = None
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + POSITION_TIMEOUT_S
+            while loop.time() < deadline:
+                last = await _get_position(gcs_system)
+                max_alt = max(max_alt, last.relative_altitude_m)
+                min_to_target = min(
+                    min_to_target, _dist_m(last.latitude_deg, last.longitude_deg, target_lat, target_lon),
+                )
+                if min_to_target <= POSITION_TOLERANCE_M:
+                    break
+                await asyncio.sleep(1.0)
+            from_home = _dist_m(home.latitude_deg, home.longitude_deg, last.latitude_deg, last.longitude_deg)
+            detail = (
+                f"target {POSITION_OFFSET_M:.0f} m N: closest={min_to_target:.1f} m  "
+                f"final_from_home={from_home:.1f} m  max_alt={max_alt:.1f} m"
+            )
+            log.info(_FMT, _CMD, "position honoured?", detail)
+            if max_alt < AIRBORNE_THRESHOLD_M:
+                record_tier2_detail(request, f"INCONCLUSIVE — never airborne ({detail})")
+                pytest.fail(f"Vehicle never got airborne — lat/lon verdict inconclusive ({detail})")
+            ok = min_to_target <= POSITION_TOLERANCE_M
+        verdict = "REJECTED (NACKed)" if nacked else "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR"
+        record_tier2_detail(request, detail)
+        for label, key in (("param5 (Latitude)", "5_Latitude"), ("param6 (Longitude)", "6_Longitude")):
+            record_tier2_param_verdict(request, label, verdict)
+            record_compat_json(
+                request, key, supported=ok, nacks_on_non_sentinel_value=None if ok else nacked,
+            )
+        assert ok or nacked, (
+            f"NAV_TAKEOFF accepted a target {POSITION_OFFSET_M:.0f} m north of home but the "
+            f"vehicle never came within {POSITION_TOLERANCE_M:.0f} m of it ({detail}) — "
+            "accepted-but-ignored lat/lon (root CLAUDE.md rule 4)"
+        )
+    finally:
+        await _rtl_and_land(gcs_system)
+
+
 async def test_position_specific(gcs_system):
     """
     NAV_TAKEOFF with explicit home lat/lon — vehicle should take off successfully.
@@ -1252,23 +1362,18 @@ async def test_position_int32max_stays_at_home(gcs_system):
         )
     except TimeoutError:
         log.warning(_FMT, _CMD, "x/y=INT32_MAX sentinel", "no altitude reached — stack may have rejected sentinel")
+        pytest.fail("Vehicle did not take off with the INT32_MAX lat/lon sentinel")
     finally:
         await _rtl_and_land(gcs_system)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Spec gap: x=0, y=0 (equator/prime meridian) is not defined as a sentinel.  "
-        "Most stacks treat it as 'use current position', but this is undocumented."
-    ),
-    strict=False,
-)
-async def test_position_zero_treated_as_current(gcs_system):
+async def test_position_zero_treated_as_current(gcs_system, request):
     """
     NAV_TAKEOFF x=0, y=0 — observational: does the stack treat (0, 0) as 'use current'?
 
-    Marked xfail because the outcome is stack-specific and the spec does not address
-    whether (0, 0) is a valid takeoff coordinate or a "use current position" sentinel.
+    Characterisation only (root CLAUDE.md rule 3): the spec doesn't say whether (0, 0)
+    is a valid takeoff coordinate or a "use current position" sentinel, so whatever
+    happens — including not taking off at all — is recorded, not asserted.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     home = await _get_home_position(gcs_system)
@@ -1285,6 +1390,7 @@ async def test_position_zero_treated_as_current(gcs_system):
         )
     except TimeoutError:
         log.warning(_FMT, _CMD, "x/y=0 (zero coords)", "no altitude reached within timeout")
+        record_tier2_detail(request, "Did not take off with x/y=0 (observation — spec gap, not asserted)")
     finally:
         await _rtl_and_land(gcs_system)
 
@@ -1313,27 +1419,26 @@ async def test_pitch_is_honoured(gcs_system, request):
     The command ACKs ACCEPTED for param1 on every stack tested (Tier 1 test_command.py).
     If the peaks come back statistically indistinguishable, that means the stack accepted
     but ignored the param — the general "accepted but silently ignored" spec violation (see
-    test_yaw_is_honoured) — xfail, not a hard failure.
+    test_yaw_is_honoured) — a compatibility FAIL.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     target_m = 20.0  # requested altitude (stacks that honour z will climb here)
     results: dict[str, float] = {}
+    climbed: set[str] = set()
 
     for label, pitch_deg in [("param1=5°", 5.0), ("param1=45°", 45.0)]:
         log.info(_FMT, _CMD, label, f"arming and sending takeoff with {label}")
         try:
             await _arm_and_send_takeoff(gcs_system, param1=pitch_deg, z=target_m)
-            # Use AIRBORNE_THRESHOLD_M so the test works on stacks that ignore z
-            # (e.g. PX4 MPC_TKO_ALT ≈ 2.5 m); peak pitch is still measurable at
-            # low altitude.
-            pos, peak_pitch = await _wait_for_altitude_with_peak_pitch(
-                gcs_system, AIRBORNE_THRESHOLD_M, timeout_s=AIRBORNE_TIMEOUT_S
-            )
+            # Peak over the whole climb (to target, or wherever the stack levels
+            # off), not just the first couple of metres.
+            pos, peak_pitch = await _climb_with_peak_pitch(gcs_system, target_m)
             log.info(
                 _FMT, _CMD, label,
                 f"reached {pos.relative_altitude_m:.1f} m  peak_|pitch|={peak_pitch:.1f}°",
             )
             results[label] = peak_pitch
+            climbed.add(label)
         except TimeoutError as exc:
             log.warning(_FMT, _CMD, label, f"altitude not reached: {exc}")
             results[label] = 0.0
@@ -1347,8 +1452,17 @@ async def test_pitch_is_honoured(gcs_system, request):
     detail = f"param1=5°→peak={low_pitch:.1f}°  param1=45°→peak={high_pitch:.1f}°"
     log.info(_FMT, _CMD, "pitch comparison", f"{detail}  {'honoured' if ok else 'likely ignored'}")
     record_tier2_detail(request, detail)
+    # Only a verdict if both cycles actually got airborne — a timed-out cycle
+    # records 0.0 and would otherwise masquerade as "pitch ignored".
+    if len(climbed) == 2:
+        record_tier2_param_verdict(
+            request, "param1 (Pitch)", "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR",
+        )
+        record_compat_json(
+            request, "1_Pitch", supported=ok, nacks_on_non_sentinel_value=None if ok else False,
+        )
     if not ok:
-        pytest.xfail(_IGNORED_WITHOUT_NACK_REASON.format(param="param1 (Pitch)"))
+        report.compat_fail(_IGNORED_WITHOUT_NACK_REASON.format(param="param1 (Pitch)"))
     assert ok
 
 
@@ -1687,12 +1801,12 @@ async def test_arduplane_guided_takeoff_to_target(gcs_system, request):
     # does not execute it for standard fixed-wing.  TAKEOFF mode is the correct
     # supported mechanism.  TKOFF_PITCH_MIN controls the minimum pitch in this mode
     # (equivalent to cmd.p1 in the mission protocol do_takeoff path).
-    from mavsdk.mavlink_direct import MavlinkMessage as _MavlinkMessage
+    from mavsdk.plugins.mavlink_direct import MavlinkMessage as _MavlinkMessage
 
     async def _param_set(param_id: str, value: float) -> None:
         await gcs_system.mavlink_direct.send_message(_MavlinkMessage(
             message_name="PARAM_SET",
-            system_id=255, component_id=1,
+            system_id=GCS_SYSID, component_id=GCS_COMPID,
             target_system_id=1, target_component_id=1,
             fields_json=_json.dumps({
                 "target_system": 1, "target_component": 1,

@@ -34,7 +34,7 @@ import math
 
 import pytest
 import pytest_asyncio
-from mavsdk import System
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
 
 from .conftest import (
     send_command_int,
@@ -47,7 +47,7 @@ from .conftest import (
     ACK_TIMEOUT_S,
     _FMT,
 )
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
+from tests.conftest import _wait_for_connection
 from tests.mock_flight_stack import (
     MockFlightStack,
     MAV_RESULT_ACCEPTED,
@@ -84,8 +84,7 @@ async def mock_protocol(request) -> MockFlightStack | None:
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
+    system = await open_paired_drone()
 
     stack = MockFlightStack(
         command_results={_UNKNOWN_CMD_ID: MAV_RESULT_UNSUPPORTED},
@@ -106,8 +105,7 @@ async def mock_protocol(request) -> MockFlightStack | None:
 async def gcs_system_protocol(gcs_mavsdk_server, mock_protocol, request) -> System:
     """Class-scoped GCS System for protocol tests."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, int(request.config.getoption("--connection-timeout")))
     await _wait_for_connection(system, timeout_s)
     if request.config.getoption("--drone-address") is not None:
         await asyncio.sleep(3.0)

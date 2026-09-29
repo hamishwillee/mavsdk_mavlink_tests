@@ -60,8 +60,10 @@ def pytest_addoption(parser):
         default="sihsim_quadx",
         metavar="MODEL",
         help=(
-            "PX4_SIM_MODEL value for the SIH simulator "
-            "(default: sihsim_quadx). Examples: sihsim_airplane, sihsim_rover_ackermann."
+            "PX4_SIM_MODEL value (default: sihsim_quadx). sihsim_* models use the built-in "
+            "SIH simulator, e.g. sihsim_airplane, sihsim_rover_ackermann. gz_* models run "
+            "headless Gazebo (gz sim) instead, e.g. gz_standard_vtol, gz_x500 — needs `gz` "
+            "on PATH and a PX4 build with the gz bridge."
         ),
     )
     parser.addoption(
@@ -122,6 +124,16 @@ def pytest_addoption(parser):
             "see root CLAUDE.md's CI section for worked examples and the full formula "
             "table. Default: 0 (single-instance, byte-identical to pre-multi-instance "
             "behaviour — log/working-dir paths are unchanged at N=0)."
+        ),
+    )
+    parser.addoption(
+        "--fresh-report",
+        action="store_true",
+        default=False,
+        help=(
+            "Don't merge saved results from earlier sessions against the same build "
+            "into this session's reports/ output (tests/report.py) — start the combined "
+            "report and JSON from scratch."
         ),
     )
     parser.addoption(

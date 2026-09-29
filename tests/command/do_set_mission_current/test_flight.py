@@ -106,7 +106,9 @@ import json
 import logging
 
 import pytest
-from mavsdk.mission_raw import MissionItem
+
+from tests import report
+from mavsdk.plugins.mission_raw import MissionItem
 
 from tests.command.conftest import probe_command_long
 from tests.flight_helpers import (
@@ -523,7 +525,7 @@ async def test_param2_resets_jump_counter(gcs_system, home_item_for_mission):
               control_visits, test_visits, reset_ack_result, JUMP_REPEAT)
 
     if reset_ack_result != 0:
-        pytest.xfail(
+        pytest.fail(
             f"DO_SET_MISSION_CURRENT(param1=-1, param2=1) reset was not ACCEPTED mid-mission "
             f"(result={reset_ack_result}) — a rejected reset command cannot be evidence either "
             f"way for jump-counter behaviour (control={control_visits}, test={test_visits})"
@@ -612,7 +614,7 @@ async def test_param2_restarts_completed_mission(gcs_system, home_item_for_missi
                 "MISSION_STATE_COMPLETE mission changed mission_state to %s — spec says "
                 "param2=0 leaves the mission untouched", state_after_param2_0,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"mission_state became {state_after_param2_0} after param2=0 on a completed "
                 "mission; spec says param2=0 should NOT restart it"
             )
@@ -636,7 +638,7 @@ async def test_param2_restarts_completed_mission(gcs_system, home_item_for_missi
                 "ACTIVE(3)/PAUSED(4)) within %.0fs — spec says param2=1 makes a completed "
                 "mission restartable", state_after_param2_1, RESTART_STATE_TIMEOUT_S,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"mission_state stayed {state_after_param2_1} after param2=1; spec says "
                 "param2=1 should restart a completed mission (ACTIVE/PAUSED)"
             )
@@ -809,7 +811,7 @@ async def test_param2_restarts_from_early_item_after_hold(gcs_system, home_item_
                 "within %.0fs — spec says param2=1 makes a completed mission restartable",
                 early_seq, state_after_b, RESTART_STATE_TIMEOUT_S,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"mission_state stayed {state_after_b} after param2=1 + reactivation; spec says "
                 "param2=1 should restart a completed mission (ACTIVE/PAUSED)"
             )

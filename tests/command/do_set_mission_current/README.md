@@ -1,5 +1,7 @@
 # MAV_CMD_DO_SET_MISSION_CURRENT (cmd=224) — Command Protocol Test Results
 
+> **Outcome labels (2026-09-30):** results recorded before 2026-09-29 used pytest XFAIL/XPASS. They're relabelled here under root `CLAUDE.md` rule 11 — FAIL (compat) = compatibility error, FAIL (harness) = not a compatibility error, PASS (observation) = a spec gap recorded rather than asserted, NA = compatibility check against the mock — not re-run.
+
 Command-protocol path only (COMMAND_LONG/COMMAND_INT → COMMAND_ACK) — there's no mission-protocol counterpart, since this is a control command, not a mission item.
 
 ## Key findings
@@ -35,7 +37,7 @@ Maintainer-provided, refining the common.xml text quoted below — this is what 
 | `1` | `ACCEPTED` — resets `DO_JUMP` counters and changes mission state COMPLETE → ACTIVE/PAUSED (in principle — see DOC DISCREPANCY #3: on PX4 this isn't actually what makes it resumable) |
 | any other value | `DENIED` |
 
-params 3–7 (reserved) aren't in the matrix — spec names no result code for non-NaN values there, so they stay the usual xfail convention.
+params 3–7 (reserved) aren't in the matrix — spec names no result code for non-NaN values there, so a non-DENIED result there is a FAIL (compat) under the empty-param rule.
 
 ## Parameter definition (common.xml, entry 224)
 
@@ -57,11 +59,11 @@ A COMMAND_ACK only reports ACCEPTED/DENIED/FAILED/etc, not what the mission exec
 
 | Class | Tests | Approach |
 |-------|-------|----------|
-| `TestDoSetMissionCurrentNoMission` | `test_no_mission_{sentinel,valid_looking_index,out_of_range}_failed` | No mission; hard-assert `FAILED` on real stacks (xfail+DOC-DISCREPANCY-log if not); observational in mock |
+| `TestDoSetMissionCurrentNoMission` | `test_no_mission_{sentinel,valid_looking_index,out_of_range}_failed` | No mission; hard-assert `FAILED` on real stacks (FAIL (compat) + DOC-DISCREPANCY log if not); observational in mock |
 | `WithMission` Group A (baseline) | `test_do_set_mission_current_command_accepted`, `test_do_set_mission_current_exactly_one_ack`, `test_do_set_mission_current_command_int_variant_observational` | Mission uploaded (`simple_mission.json`); not-UNSUPPORTED / exactly-one-ACK / observational |
-| Group B (param1) | `test_param1_{negative_one_keeps_unchanged,valid_index}_accepted`, `test_do_set_mission_current_param1_out_of_range_failed`, `test_do_set_mission_current_param1_other_invalid_denied` | Hard-assert per the matrix; xfail+log on real stacks if not, observational in mock |
+| Group B (param1) | `test_param1_{negative_one_keeps_unchanged,valid_index}_accepted`, `test_do_set_mission_current_param1_out_of_range_failed`, `test_do_set_mission_current_param1_other_invalid_denied` | Hard-assert per the matrix; FAIL (compat) + log on real stacks if not, observational in mock |
 | Group C (param2) | `test_param2_{zero,one}_accepted`, `test_do_set_mission_current_param2_invalid_denied` | Hard-assert per the matrix |
-| Group D (reserved 3–7) | `test_reserved_param{3..7}_nonnan_ack` | Expect DENIED; xfail — spec names no result code here |
+| Group D (reserved 3–7) | `test_reserved_param{3..7}_nonnan_ack` | Expect DENIED; FAIL (compat) otherwise — spec names no result code here |
 
 `NoMission` is deliberately minimal (confirms the gate only) — testing param1/param2 without a mission would be confounded by the FAILED gate, so all substantive assertions live in `WithMission`.
 
@@ -69,9 +71,9 @@ Mock mode: several checks are observational rather than asserted because `MockFl
 
 ## Tier 1 test results
 
-### Mock — 13 passed, 5 xfailed (18 collected)
+### Mock — 13 passed, 5 NA (18 collected)
 
-Every test returns `ACCEPTED` (mock's generic accept-all fallback) — so ACCEPTED/valid-index cases pass trivially and DENIED/FAILED cases are observational-pass or xfailed:
+Every test returns `ACCEPTED` (mock's generic accept-all fallback) — so ACCEPTED/valid-index cases pass trivially and DENIED/FAILED cases are observational-pass or NA:
 
 | Test | Result |
 |------|--------|
@@ -81,9 +83,9 @@ Every test returns `ACCEPTED` (mock's generic accept-all fallback) — so ACCEPT
 | `test_do_set_mission_current_param1_out_of_range_failed`, `test_do_set_mission_current_param1_other_invalid_denied` | PASS — ACCEPTED (observational) |
 | `test_param2_{zero,one}_accepted` | PASS — ACCEPTED |
 | `test_do_set_mission_current_param2_invalid_denied` | PASS — ACCEPTED (observational) |
-| `test_reserved_param{3..7}_nonnan_ack` | XFAIL ×5 — ACCEPTED |
+| `test_reserved_param{3..7}_nonnan_ack` | NA ×5 — ACCEPTED |
 
-### PX4 MC (standalone, 1.18.0-beta) — 18 passed, 0 xfailed
+### PX4 MC (standalone, 1.18.0-beta) — 18 passed, 0 failed
 
 Zero deviation from the authoritative matrix:
 
@@ -96,7 +98,7 @@ Zero deviation from the authoritative matrix:
 | `test_do_set_mission_current_param1_other_invalid_denied` | PASS — DENIED(2) |
 | `test_param2_{zero,one}_accepted` | PASS — ACCEPTED |
 | `test_do_set_mission_current_param2_invalid_denied` | PASS — DENIED(2) |
-| `test_reserved_param{3..7}_nonnan_ack` | PASS ×5 — DENIED(2) (PX4 genuinely validates these with a mission loaded — matches the xfail target) |
+| `test_reserved_param{3..7}_nonnan_ack` | PASS ×5 — DENIED(2) (PX4 genuinely validates these with a mission loaded — matches the expected DENIED) |
 
 Tier 2 below confirms the `param1=-1` sentinel and `param2=1` reset also hold mid-flight, not just pre-flight.
 
@@ -148,13 +150,13 @@ Checks the other half of the matrix's param2 claim: does `param2=1` make a `MISS
 
 **Method**: subscribes to raw `MISSION_CURRENT` (msg 42), tracking `mission_state` (`MAV_MISSION_STATE`: ACTIVE=3, PAUSED=4, COMPLETE=5 — `mission_raw.mission_progress()` has no equivalent). Flies to COMPLETE, then sends `param1=-1, param2=0` (expect state stays COMPLETE) and `param1=-1, param2=1` (expect ACTIVE/PAUSED), with the same `-1`-sentinel-DENIED fallback as the jump-counter test. If `mission_state` never leaves UNKNOWN(0) (spec-legal — state reporting isn't mandatory), the test skips as inconclusive rather than failing.
 
-**Result on PX4 MC (1.18.0-beta): XFAIL.** `param2=0` correctly left `COMPLETE`; `param2=1` was `ACCEPTED` but `mission_state` stayed `COMPLETE` (expected ACTIVE/PAUSED). Log: `logs/command_do_set_mission_current_flight_px4_quadcopter_1.18.0-beta_20260730_122757.log`.
+**Result on PX4 MC (1.18.0-beta): FAIL (compat)** (recorded as XFAIL at the time). `param2=0` correctly left `COMPLETE`; `param2=1` was `ACCEPTED` but `mission_state` stayed `COMPLETE` (expected ACTIVE/PAUSED). Log: `logs/command_do_set_mission_current_flight_px4_quadcopter_1.18.0-beta_20260730_122757.log`.
 
 **What PX4 sees as "mission completion"**: purely positional. `MissionBase::goToNextItem()` (`mission_base.cpp`) fails once `current_seq + 1 >= count`, setting `mission_result.finished = true` — the sole input to `MISSION_CURRENT.mission_state == COMPLETE` (`mavlink_mission.cpp`). No landed/at-home check. An `RTL` last item completes instantly (zero travel); an ordinary waypoint only on actually reaching it.
 
-**Root cause of the XFAIL** (traced in PX4 source, ruling out a test-ordering bug first — `_rtl_and_land()`'s disarm was confirmed to run after, not before, the restart commands): `update_mission_state()` sets `mission_state = COMPLETE` whenever `mission_result.finished` is true, independent of flight mode. `mission_result.finished` is only cleared by `set_mission_result()`, reached via `update_mission()`/`set_mission_items()`. `Mission::set_current_mission_index()` (what `DO_SET_MISSION_CURRENT` calls) only invokes those `if (isActive())` — i.e. only while Mission mode is the vehicle's *current* flight mode. But once the mission's last item (`NAV_RETURN_TO_LAUNCH`) is reached, PX4 switches to a dedicated `RETURN_TO_LAUNCH` mode (confirmed via `flight_mode()`), so `isActive()` is false by the time the reset is sent and its effect never propagates to `mission_state`. Separately, `param2`'s only concrete PX4-side effect is `resetMissionJumpCounter()` — moot for a mission with no `DO_JUMP` item (already exercised properly by the jump-counter test above, which stays in `AUTO.MISSION` throughout).
+**Root cause of the FAIL** (traced in PX4 source, ruling out a test-ordering bug first — `_rtl_and_land()`'s disarm was confirmed to run after, not before, the restart commands): `update_mission_state()` sets `mission_state = COMPLETE` whenever `mission_result.finished` is true, independent of flight mode. `mission_result.finished` is only cleared by `set_mission_result()`, reached via `update_mission()`/`set_mission_items()`. `Mission::set_current_mission_index()` (what `DO_SET_MISSION_CURRENT` calls) only invokes those `if (isActive())` — i.e. only while Mission mode is the vehicle's *current* flight mode. But once the mission's last item (`NAV_RETURN_TO_LAUNCH`) is reached, PX4 switches to a dedicated `RETURN_TO_LAUNCH` mode (confirmed via `flight_mode()`), so `isActive()` is false by the time the reset is sent and its effect never propagates to `mission_state`. Separately, `param2`'s only concrete PX4-side effect is `resetMissionJumpCounter()` — moot for a mission with no `DO_JUMP` item (already exercised properly by the jump-counter test above, which stays in `AUTO.MISSION` throughout).
 
-The XFAIL is a genuine result, not a test artifact — but it shows the matrix's "makes a completed mission restartable" claim needs Mission mode reactivated before `mission_state` reflects anything, and is untestable with a `DO_JUMP`-less mission. Corrected in the follow-up test below.
+The FAIL is a genuine result, not a test artifact — but it shows the matrix's "makes a completed mission restartable" claim needs Mission mode reactivated before `mission_state` reflects anything, and is untestable with a `DO_JUMP`-less mission. Corrected in the follow-up test below.
 
 ## Tier 2 — restart-after-Hold, corrected design (`test_param2_restarts_from_early_item_after_hold`)
 
@@ -186,10 +188,10 @@ Ending on a plain waypoint does land in Hold, not RTL, confirming design fix (1)
 ## DOC DISCREPANCY summary
 
 1. **Survey staleness**: `tests/command/README.md`'s survey (2026-05-27, PX4 1.18.0-alpha) shows PX4 MC UNSUPPORTED; live testing shows it's actively processed. Table not regenerated (out of scope — a 168-command survey vs. one command's deep-dive).
-2. **RTL-ending mission, XFAIL** — see § Tier 2 completed-mission restart above for the full trace. Superseded by #3, which corrects the mission shape and confirms the underlying claim can hold with the right setup.
+2. **RTL-ending mission, FAIL (compat)** — see § Tier 2 completed-mission restart above for the full trace. Superseded by #3, which corrects the mission shape and confirms the underlying claim can hold with the right setup.
 3. **`param2` doesn't gate mission resumption on PX4** — see § Tier 2 restart-after-Hold above for the trace and log. Not treated as a bug: the matrix is silent on what `param1` alone does, and `param2`'s one demonstrated effect (`DO_JUMP` reset) is moot for a `DO_JUMP`-less mission.
 
-#2 and #3 are the same underlying question (does `mission_state` reflect a reset) approached with two mission shapes; no other discrepancies found. PX4 MC otherwise matches the authoritative matrix exactly across all 18 Tier 1 tests and the Tier 2 jump-counter test. Assertions xfail-and-log rather than bare-assert, so a regression would surface as an XFAIL with a "DOC DISCREPANCY:" line, not a silent pass.
+#2 and #3 are the same underlying question (does `mission_state` reflect a reset) approached with two mission shapes; no other discrepancies found. PX4 MC otherwise matches the authoritative matrix exactly across all 18 Tier 1 tests and the Tier 2 jump-counter test. Failed assertions log and FAIL (compat) rather than bare-assert, so a regression would surface as a FAIL with a "DOC DISCREPANCY:" line, not a silent pass.
 
 ## Design: verifying DO_SET_MISSION_CURRENT changes the current mission item
 

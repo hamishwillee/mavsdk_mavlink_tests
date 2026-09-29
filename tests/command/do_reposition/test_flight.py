@@ -45,8 +45,9 @@ import math
 import time as _time_m
 
 import pytest
-from mavsdk import System
-from mavsdk.mavlink_direct import MavlinkMessage
+from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
 
 from tests.command.conftest import (
     probe_command_int,
@@ -150,7 +151,7 @@ async def _get_available_modes(system: System, timeout_s: float = 3.0) -> list[d
 
     await system.mavlink_direct.send_message(MavlinkMessage(
         message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
+        system_id=GCS_SYSID, component_id=GCS_COMPID,
         target_system_id=1, target_component_id=0,
         fields_json=json.dumps({
             "target_system": 1, "target_component": 0,
