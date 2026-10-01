@@ -86,7 +86,17 @@ Tier 1 only (mission-item Tier 2 flight not yet run on Gazebo). 22 PASS, 3 FAIL 
 | `test_takeoff_with_yaw` (renamed `test_takeoff_compat_tracks_yaw`, target 137°) | **FAIL** — heading came back at 1.0° (136° off target, tolerance ±20°). Yaw is correctly *stored* on upload (Tier 1 confirms this) but the vehicle did not turn to it during takeoff execution — a genuinely new finding, not previously tested. **Source-confirmed** (see `CLAUDE.md`): `mission_block.cpp`'s takeoff setpoint-conversion case unconditionally sets `yaw = NAN` when not already flying, with no vehicle-type guard — the same limitation already documented for the COMMAND_INT path (below) also applies to mission-item execution, on MC/FW/VTOL alike. |
 | `test_takeoff_obs_with_negative_yaw` / `test_takeoff_obs_with_overflow_yaw` | SKIP — PX4 normalises these on storage (Tier 1), so the conditional Tier 2 pattern correctly judges execution unambiguous and skips |
 
-**ArduCopter**: not run (Tier 2 blocked in this environment — see root `CLAUDE.md` item 7, `is_armable` never goes true). Given param4 is never stored on ArduCopter (Tier 1), `test_takeoff_compat_tracks_yaw` would skip cleanly there regardless.
+**ArduCopter 4.8.0-dev (`31d9b842cb`), first Tier 2 run 2026-10-01** — unblocked by the harness fixes in root `CLAUDE.md` future-work #7. 3 PASS / 4 FAIL / 8 NA / 2 SKIP:
+
+| Param | Verdict | Evidence |
+|---|---|---|
+| param7 Altitude | SUPPORTED | 10 m → 10.0 m, 35 m → 35.0 m at takeoff completion |
+| param4 Yaw | NOT SUPPORTED — compat error | 137° and 227° both flown at 270.4°; accepted, not NACKed (Tier 1: not stored) |
+| param1 Pitch | NOT SUPPORTED — compat error | peak 0.2° for 10° and 35° minimums (vertical climb); accepted, not NACKed |
+| param5/6 Lat/Lon | NOT SUPPORTED — compat error | targets 100 m N/E: climbed in place, closest approach 100.0 m |
+| NaN pitch / INT32_MAX lat/lon sentinels | rejected (NACKed) at upload | see Tier 1 |
+
+`test_takeoff_info_implicit_from_waypoint` FAILs because ArduCopter needs an explicit NAV_TAKEOFF item: STATUSTEXT "Auto: Missing Takeoff Cmd", "Mode change to Auto failed: init failed". The test currently reports this as a raw `MissionRawError: UNKNOWN` from `start_mission()` rather than its "TAKEOFF item is required" verdict — to fix in the test. `test_takeoff_obs_ascends_before_lateral_movement` PASS (no lateral movement — it never moves laterally at all). Report: `reports/mission_nav_takeoff_ardupilot_copter_4.8.0-dev_*.log`.
 
 ### PX4 v1.17.0 re-verification, 2026-09-14 (MC full; fixed-wing full; VTOL blocked)
 

@@ -62,6 +62,10 @@ import pytest
 from tests.mavsdk_compat import ENDPOINTS, GCS_COMPID, GCS_SYSID, Endpoint, SystemShim as System, open_system, open_paired_drone
 
 from tests.mock_flight_stack import MockFlightStack
+from tests.message_watcher import (
+    ARDUPILOT_MESSAGES, HARNESS_MESSAGES, MAV_AUTOPILOT_ARDUPILOTMEGA, MessageWatcher,
+    ensure_harness_streams,
+)
 
 log = logging.getLogger(__name__)
 
@@ -375,23 +379,30 @@ GCS_MAVLINK_PORT = 14560  # not 14540 — avoids PX4 SITL interference
 
 
 def _ardu_model_and_defaults(
-    binary_name: str,
+    binary_path: Path,
     model_override: str | None,
     vehicle_type: str | None,
-) -> tuple[str, Path | None]:
+) -> tuple[str, list[Path]]:
     """
-    Return (model_string, defaults_path_or_None) for an ArduPilot SITL binary.
+    Return (model_string, defaults_paths) for an ArduPilot SITL binary — passed
+    to the binary as one comma-separated ``--defaults=`` list, later files
+    overriding earlier ones.
 
     Model detection order:
       1. ``--ardupilot-model`` CLI option (explicit override)
       2. Inferred from binary name + ``--vehicle-type``
 
     Defaults detection:
-      - copter → copter.parm
+      - copter → copter.parm, then tests/sitl_defaults/copter_gcs_auto.parm
+        (AUTO_OPTIONS=3 — takeoff without RC throttle; see that file)
       - rover  → rover.parm
       - quadplane → quadplane.parm
       - plane → tests/sitl_defaults/plane_ins_cal.parm (upstream ships no
         plane.parm — see that file's own comment for why one is needed)
+
+    Upstream's .parm files come from the checkout the binary was built in
+    (``<checkout>/build/sitl/bin/<binary>``), falling back to
+    ``~/github/ArduPilot/ardupilot`` for a binary that lives elsewhere.
 
     All four set small nonzero INS_ACC*OFFS/SCAL values so ArduPilot's arming
     check reads the INS as already calibrated. Without this, a freshly-booted
@@ -404,6 +415,7 @@ def _ardu_model_and_defaults(
     against the same release binary and it did NOT crash (armable at ~25s);
     whatever caused that finding didn't reproduce, so it's re-enabled.
     """
+    binary_name = binary_path.stem
     if model_override:
         model = model_override
     elif "copter" in binary_name:
@@ -418,9 +430,9 @@ def _ardu_model_and_defaults(
     else:
         model = "+"
 
-    ardu_defaults = (
-        Path("~/github/ArduPilot/ardupilot/Tools/autotest/default_params").expanduser()
-    )
+    ardu_defaults = binary_path.resolve().parents[3] / "Tools/autotest/default_params"
+    if not ardu_defaults.is_dir():
+        ardu_defaults = Path("~/github/ArduPilot/ardupilot/Tools/autotest/default_params").expanduser()
     repo_defaults = Path(__file__).parent / "sitl_defaults"
     defaults_map: dict[str, Path] = {
         "+": ardu_defaults / "copter.parm",
@@ -430,10 +442,13 @@ def _ardu_model_and_defaults(
         "quadplane": ardu_defaults / "quadplane.parm",
         "plane": repo_defaults / "plane_ins_cal.parm",
     }
-    candidate = defaults_map.get(model)
-    defaults = candidate if candidate is not None and candidate.exists() else None
-
-    return model, defaults
+    extra_map: dict[str, list[Path]] = {
+        "+": [repo_defaults / "copter_gcs_auto.parm"],
+        "quad": [repo_defaults / "copter_gcs_auto.parm"],
+    }
+    candidates = [defaults_map[model]] if model in defaults_map else []
+    candidates += extra_map.get(model, [])
+    return model, [c for c in candidates if c.exists()]
 
 
 def _ardu_cmdline_instance(cmdline: str) -> int:
@@ -502,7 +517,7 @@ def _start_ardupilot_process(request) -> dict:
     port = 5760 + 10 * instance
 
     model, defaults = _ardu_model_and_defaults(
-        binary_name,
+        binary_path,
         request.config.getoption("--ardupilot-model"),
         request.config.getoption("--vehicle-type"),
     )
@@ -557,7 +572,7 @@ def _start_ardupilot_process(request) -> dict:
 
     cmd = [str(binary_path), "-S", f"-I{instance}", "--model", model, f"--home={home}"]
     if defaults:
-        cmd.append(f"--defaults={defaults}")
+        cmd.append("--defaults=" + ",".join(str(d) for d in defaults))
     log.info("Starting %s SITL (model=%s, instance=%d): %s", binary_name, model, instance, " ".join(cmd))
     proc = subprocess.Popen(cmd, cwd=str(work_dir), stdout=log_fh, stderr=log_fh)
 
@@ -1217,7 +1232,38 @@ async def gcs_system(gcs_mavsdk_server, mock_stack, request):
     timeout_s = int(request.config.getoption("--connection-timeout"))
     system = await open_system(gcs_mavsdk_server, timeout_s)
     await _wait_for_connection(system, timeout_s)
-    yield system
+    if request.config.getoption("--drone-address") is None:
+        yield system  # mock mode: MockFlightStack streams nothing, nothing to watch
+        return
+
+    # Standalone: watch every message this test's data comes from
+    # (tests/message_watcher.py) and, on ArduPilot, ask for them — it doesn't
+    # send them unrequested. The autopilot type comes from the vehicle's own
+    # HEARTBEAT (never --autopilot), cached on the endpoint. The request is
+    # repeated every test, and again after a mid-test restart
+    # (ensure_harness_streams, called from the flight helpers), since a
+    # restart/reboot forgets it.
+    required = {**HARNESS_MESSAGES, **getattr(request.module, "REQUIRED_MESSAGES", {})}
+    watcher = MessageWatcher(system, required)
+    await watcher.start()
+    autopilot = getattr(gcs_mavsdk_server, "autopilot_type", None)
+    if autopilot is None and await watcher.wait_for_heartbeat():
+        autopilot = gcs_mavsdk_server.autopilot_type = watcher.autopilot
+    if autopilot == MAV_AUTOPILOT_ARDUPILOTMEGA:
+        watcher.add(ARDUPILOT_MESSAGES)
+    system.autopilot_type = autopilot
+    system.watcher = watcher
+    await ensure_harness_streams(system, force=True)
+    request.node._message_watcher = watcher
+    try:
+        yield system
+    finally:
+        await watcher.stop()
+        system.watcher = None
+        missing = watcher.missing()
+        if missing:
+            log.warning("Message watcher: never received during this test: %s\n%s",
+                        ", ".join(missing), watcher.report())
 
 
 # ---------------------------------------------------------------------------
@@ -1290,6 +1336,10 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     setattr(item, f"_report_{rep.when}", rep)
+    watcher = getattr(item, "_message_watcher", None)
+    if watcher is not None and rep.failed:
+        # Which data-bearing messages actually arrived (tests/message_watcher.py).
+        rep.sections.append(("message watcher", watcher.report()))
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

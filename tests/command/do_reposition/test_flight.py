@@ -45,6 +45,8 @@ import math
 import time as _time_m
 
 import pytest
+
+from tests import report
 from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
 from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
 from mavsdk.plugins.mavlink_direct import MavlinkMessage
@@ -69,6 +71,7 @@ from tests.flight_helpers import (
     _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome into the combined report
     _wait_for_altitude,
     _wait_for_horizontal_position,
+    record_tier2_detail,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
 )
 from tests.mock_flight_stack import MAV_RESULT_ACCEPTED, MAV_RESULT_DENIED, MAV_RESULT_UNSUPPORTED
@@ -834,46 +837,93 @@ async def _ensure_supported(system: System) -> None:
         pytest.skip(f"{_CMD} UNSUPPORTED on this platform")
 
 
-async def test_reposition_to_location(gcs_system):
-    """Standalone: arm, take off, reposition 50 m north, assert vehicle arrives."""
-    await _ensure_supported(gcs_system)
-    try:
-        home = await _arm_and_takeoff(gcs_system, _INITIAL_ALT_M)
-        await _find_and_enter_hold_mode(gcs_system)
-        pos = await _get_position(gcs_system)
-        tgt_lat, tgt_lon = _offset_lat_lon(pos.latitude_deg, pos.longitude_deg, _MOVE_DIST_M, 0.0)
-        ack = await _send_reposition(gcs_system, param2=0.0,
-                                      x=int(tgt_lat * 1e7), y=int(tgt_lon * 1e7),
-                                      z=pos.relative_altitude_m)
-        result = int(ack["result"]) if ack else -1
-        assert result == MAV_RESULT_ACCEPTED, f"Expected ACCEPTED; got {result}"
-        pos_final = await _wait_for_horizontal_position(
-            gcs_system, tgt_lat, tgt_lon, _NEAR_DIST_M, _ARRIVE_TIMEOUT_S
-        )
-        d = _dist_m(pos_final.latitude_deg, pos_final.longitude_deg, tgt_lat, tgt_lon)
-        log.info(_FMT, _CMD, "reposition-to-location", f"dist_from_target={d:.1f} m")
-        assert d <= _NEAR_DIST_M, f"Vehicle only got {d:.1f} m from target"
-    finally:
-        await _rtl_and_land(gcs_system)
+# Two values per "is it honoured" check (root CLAUDE.md rule 4c), flown back to
+# back in one takeoff — a reposition is commanded in flight, so the second value
+# costs one more leg, not another takeoff. Each must SETTLE at its value (rule
+# 4b); a NACK is a legitimate PASS, accepted-but-not-honoured the compatibility
+# error (rule 4a).
+_LOCATION_LEGS = (("50 m N", 50.0, 0.0), ("50 m E", 50.0, 90.0))
+_ALTITUDE_STEPS_M = (+20.0, -10.0)          # relative to wherever the previous step left it
+_ALT_SETTLE_TIMEOUT_S = 45.0
+_ALT_TOLERANCE_M = 3.0
 
 
-async def test_altitude_only_reposition(gcs_system):
-    """Standalone: INT32_MAX lat/lon with altitude change — altitude-only reposition."""
+async def test_reposition_to_location(gcs_system, request):
+    """Reposition to 50 m N, then 50 m E of there — each NACKed, or the vehicle settles at it."""
     await _ensure_supported(gcs_system)
+    results = []
     try:
-        home = await _arm_and_takeoff(gcs_system, _INITIAL_ALT_M)
+        await _arm_and_takeoff(gcs_system, _INITIAL_ALT_M)
         await _find_and_enter_hold_mode(gcs_system)
-        pos = await _get_position(gcs_system)
-        new_alt = pos.relative_altitude_m + 20.0
-        ack = await _send_reposition(gcs_system, param2=float(_FLAG_CHANGE_MODE),
-                                      x=INT32_MAX, y=INT32_MAX, z=new_alt)
-        result = int(ack["result"]) if ack else -1
-        assert result == MAV_RESULT_ACCEPTED, f"Expected ACCEPTED; got {result}"
-        pos_final = await _wait_for_altitude(gcs_system, new_alt * 0.85, 30.0)
-        log.info(_FMT, _CMD, "altitude-only", f"alt={pos_final.relative_altitude_m:.1f} m")
-        assert pos_final.relative_altitude_m >= new_alt * 0.85
+        for label, dist, bearing in _LOCATION_LEGS:
+            pos = await _get_position(gcs_system)
+            tgt_lat, tgt_lon = _offset_lat_lon(pos.latitude_deg, pos.longitude_deg, dist, bearing)
+            ack = await _send_reposition(gcs_system, param2=0.0,
+                                         x=int(tgt_lat * 1e7), y=int(tgt_lon * 1e7),
+                                         z=pos.relative_altitude_m)
+            if ack is None:
+                pytest.fail(f"No COMMAND_ACK for DO_REPOSITION to {label} — cannot classify")
+            result = int(ack["result"])
+            if result != MAV_RESULT_ACCEPTED:
+                results.append({"ok": False, "nacked": True, "detail": f"{label}: REJECTED (result={result})"})
+                continue
+            try:
+                await _wait_for_horizontal_position(gcs_system, tgt_lat, tgt_lon, _NEAR_DIST_M, _ARRIVE_TIMEOUT_S)
+            except TimeoutError:
+                pass  # measured below either way
+            await asyncio.sleep(3.0)  # settle
+            final = await _get_position(gcs_system)
+            d = _dist_m(final.latitude_deg, final.longitude_deg, tgt_lat, tgt_lon)
+            results.append({"ok": d <= _NEAR_DIST_M, "nacked": False, "detail": f"{label}: settled {d:.1f} m from target"})
+            log.info(_FMT, _CMD, "reposition-to-location", results[-1]["detail"])
     finally:
         await _rtl_and_land(gcs_system)
+    _verdict(request, results, "param5/6 (Latitude/Longitude)")
+
+
+async def test_altitude_only_reposition(gcs_system, request):
+    """INT32_MAX lat/lon with +20 m then -10 m altitude changes — each NACKed, or the vehicle settles at it."""
+    await _ensure_supported(gcs_system)
+    results = []
+    try:
+        await _arm_and_takeoff(gcs_system, _INITIAL_ALT_M)
+        await _find_and_enter_hold_mode(gcs_system)
+        for step in _ALTITUDE_STEPS_M:
+            pos = await _get_position(gcs_system)
+            new_alt = pos.relative_altitude_m + step
+            label = f"{step:+.0f} m (to {new_alt:.0f} m)"
+            ack = await _send_reposition(gcs_system, param2=float(_FLAG_CHANGE_MODE),
+                                         x=INT32_MAX, y=INT32_MAX, z=new_alt)
+            if ack is None:
+                pytest.fail(f"No COMMAND_ACK for DO_REPOSITION altitude {label} — cannot classify")
+            result = int(ack["result"])
+            if result != MAV_RESULT_ACCEPTED:
+                results.append({"ok": False, "nacked": True, "detail": f"{label}: REJECTED (result={result})"})
+                continue
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _ALT_SETTLE_TIMEOUT_S
+            alt = pos.relative_altitude_m
+            while loop.time() < deadline:
+                alt = (await _get_position(gcs_system)).relative_altitude_m
+                if abs(alt - new_alt) <= _ALT_TOLERANCE_M:
+                    break
+                await asyncio.sleep(1.0)
+            await asyncio.sleep(3.0)  # settle
+            alt = (await _get_position(gcs_system)).relative_altitude_m
+            results.append({"ok": abs(alt - new_alt) <= _ALT_TOLERANCE_M, "nacked": False,
+                            "detail": f"{label}: settled at {alt:.1f} m"})
+            log.info(_FMT, _CMD, "altitude-only", results[-1]["detail"])
+    finally:
+        await _rtl_and_land(gcs_system)
+    _verdict(request, results, "param7 (Altitude)")
+
+
+def _verdict(request, results: list[dict], what: str) -> None:
+    """Combine per-value results (rule 4c) and PASS / compatibility-FAIL accordingly."""
+    detail = "; ".join(r["detail"] for r in results)
+    record_tier2_detail(request, detail)
+    if not all(r["ok"] or r["nacked"] for r in results):
+        report.compat_fail(f"{what} accepted but not honoured: {detail} (root CLAUDE.md rule 4)")
 
 
 async def test_nan_altitude_keeps_current(gcs_system):

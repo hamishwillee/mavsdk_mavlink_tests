@@ -73,7 +73,9 @@ Against ArduCopter SITL::
 """
 
 import asyncio
+import json
 import logging
+import math
 import os
 
 import pytest
@@ -83,12 +85,15 @@ from tests import report
 from ..conftest import clear_all_mission_types
 from .test_protocol import SPEC as _NAV_TAKEOFF_SPEC
 from tests.flight_helpers import (
+    AIRBORNE_THRESHOLD_M,
     TAKEOFF_TIMEOUT_S,
     _dist_m,
     _get_heading,
     _get_home_position,
     _get_position,
     _north_of,
+    mission_landing_items,
+    request_message_rate,
     _rtl_and_land,
     _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome for the Tier 2 log
     _wait_armable,
@@ -105,7 +110,9 @@ from tests.flight_helpers import (
 log = logging.getLogger(__name__)
 
 # Flight tests: arming (60 s) + takeoff (90 s) + RTL/land (120 s) + margin.
-pytestmark = pytest.mark.timeout(360)
+# 720 s: a test that first triggers a cached yaw/pitch/position probe flies two
+# values (rule 4c) — two full arm/climb/land-or-restart cycles.
+pytestmark = pytest.mark.timeout(720)
 
 # Read by tests/flight_helpers.py's flush_tier2_logs() to name/identify this module's log.
 _CMD_NAME = "NAV_TAKEOFF"
@@ -130,12 +137,17 @@ report.declare_params(
 TRANSFER_TIMEOUT_S = 30.0
 TAKEOFF_ALT_M      = 20.0   # metres relative to home — this file's own nominal altitude
 YAW_TOLERANCE_DEG  = 20.0   # ± degrees for heading assertion
-TARGET_YAW_DEG     = 137.0  # unusual value to distinguish from any default heading
+YAW_TARGETS_DEG    = (137.0, 227.0)  # two values, 90° apart (rule 4c) — both must be honoured
 # Chosen to be achievable as a genuine climb-out pitch for fixed-wing while comfortably
 # exceeding what a hover-capable vehicle incidentally reaches under vertical
 # acceleration alone (observed 1.1-3.4° peak |pitch| across this session's PX4 MC runs)
 # — see test_takeoff_compat_tracks_pitch and root CLAUDE.md rule 5.
-PITCH_TARGET_DEG = 10.0
+# Two values (rule 4c). param1 is a MINIMUM pitch, so a vehicle that always climbs
+# steeply (PX4 SIH fixed-wing: ~26°) genuinely satisfies small values — the second
+# value must sit above any natural climb-out pitch to tell honoured from ignored.
+# A stack that can't reach it should NACK it (rule 4a).
+PITCH_TARGETS_DEG = (10.0, 35.0)
+PITCH_TRACKED_FRACTION = 0.9  # peak |pitch| must reach 90% of each commanded minimum
 PITCH_HONOURED_FRACTION = 0.5  # peak |pitch| must reach at least this fraction of the commanded value to count as "supported"
 PITCH_OVERFLOW_RAW_DEG = 380.0  # 360° + 20° — wraps to 20° if the stack treats pitch cyclically like yaw
 # Distance from home that counts as "lateral navigation has started", for the
@@ -144,6 +156,7 @@ LATERAL_START_M = 5.0
 # North offset for the two position/trajectory tests' explicit, non-sentinel,
 # non-home NAV_TAKEOFF target.
 POSITION_TARGET_OFFSET_M = 100.0
+POSITION_BEARINGS_DEG = (("N", 0.0), ("E", 90.0))  # two targets, 90° apart (rule 4c)
 # Not yet tuned from real telemetry (test is new) — generous starting point per
 # root CLAUDE.md's Tier 2 design pattern #2/#4; tighten once real runs are observed.
 LOCATION_TOLERANCE_M = float(os.environ.get("NAV_TAKEOFF_LOCATION_TOLERANCE_M", "20.0"))
@@ -191,13 +204,14 @@ _explicit_takeoff_confirmed: bool = False
 # Mission builder
 # ---------------------------------------------------------------------------
 
-def _build_mission(home_item, *probes):
+def _build_mission(home_item, *probes, landing_bearing_deg: float | None = None):
     """
     Build a mission item list.
 
     If home_item is not None (ArduCopter), prepend it at seq=0 with current=0
     and number probes from seq=1.  Otherwise number probes from seq=0.
-    The first probe item gets current=1 (mission start point).
+    The first probe item gets current=1 (mission start point). A NAV_LAND is
+    appended last, after an approach waypoint — see _landing_items().
     """
     items = []
     if home_item is not None:
@@ -221,11 +235,33 @@ def _build_mission(home_item, *probes):
             x=p.x, y=p.y, z=p.z,
             mission_type=p.mission_type,
         ))
+    if landing_bearing_deg is None:
+        items.extend(_landing_items(items))
+    else:
+        # Anchored on home along a chosen bearing — for a position check, so the
+        # way to the landing can't pass over the target by chance.
+        items.extend(mission_landing_items(items, anchor_lat_lon_int=_home_ref, bearing_deg=landing_bearing_deg))
     return items
+
+
+# Every mission ends with an approach waypoint + NAV_LAND (shared
+# tests/flight_helpers.mission_landing_items), so it's valid under stack defaults
+# that require a landing — PX4 fixed-wing/VTOL reject a mission without one, and
+# before this every mission-item takeoff test silently never flew on those
+# frames (2026-09-30; see tests/mission/CLAUDE.md § "Mission shape a stack will
+# fly"). _home_ref (set by _takeoff_item) anchors the landing when every item is
+# a sentinel (e.g. the INT32_MAX "current position" test).
+_home_ref: tuple[int, int] | None = None
+
+
+def _landing_items(items):
+    return mission_landing_items(items, _home_ref)
 
 
 def _takeoff_item(home, **overrides) -> MissionItem:
     """Default NAV_TAKEOFF MissionItem at home lat/lon, TAKEOFF_ALT_M relative."""
+    global _home_ref
+    _home_ref = (int(home.latitude_deg * 1e7), int(home.longitude_deg * 1e7))
     defaults = dict(
         seq=0, frame=6, command=_CMD_ID, current=1, autocontinue=1,
         param1=15.0, param2=0.0, param3=0.0, param4=NAN,
@@ -317,14 +353,10 @@ def _compat_json_fields(nacked: bool, ok: bool) -> dict:
     return {"supported": False, "nacks_on_non_sentinel_value": False}
 
 
-async def _check_yaw_tracked(gcs_system, home_item_for_mission, restart_flight_stack) -> dict:
-    """Fly once with TARGET_YAW_DEG; cache and return {'ok', 'nacked', 'heading', 'diff'}."""
-    global _yaw_tracked_result
-    if _yaw_tracked_result is not None:
-        return _yaw_tracked_result
-
+async def _yaw_once(gcs_system, home_item_for_mission, restart_flight_stack, target: float) -> dict:
+    """Fly one mission with yaw=target; return {'ok', 'nacked', 'heading', 'diff', 'target'}."""
     home = await _get_home_position(gcs_system)
-    takeoff = _takeoff_item(home, param4=TARGET_YAW_DEG)
+    takeoff = _takeoff_item(home, param4=target)
     items = _build_mission(home_item_for_mission, takeoff)
     try:
         async with asyncio.timeout(TRANSFER_TIMEOUT_S):
@@ -332,8 +364,7 @@ async def _check_yaw_tracked(gcs_system, home_item_for_mission, restart_flight_s
     except MissionRawError:
         log.info("Yaw tracking probe: upload NACKed — correctly rejects an unsupported value")
         await clear_all_mission_types(gcs_system)
-        _yaw_tracked_result = {"ok": False, "nacked": True, "heading": None, "diff": None}
-        return _yaw_tracked_result
+        return {"ok": False, "nacked": True, "heading": None, "diff": None, "target": target}
 
     try:
         await _wait_armable(gcs_system)
@@ -343,38 +374,32 @@ async def _check_yaw_tracked(gcs_system, home_item_for_mission, restart_flight_s
         global _explicit_takeoff_confirmed
         _explicit_takeoff_confirmed = True
         heading = await _get_heading(gcs_system)
-        diff = abs((heading - TARGET_YAW_DEG + 180) % 360 - 180)
-        result = {"ok": diff <= YAW_TOLERANCE_DEG, "nacked": False, "heading": heading, "diff": diff}
+        diff = abs((heading - target + 180) % 360 - 180)
+        result = {"ok": diff <= YAW_TOLERANCE_DEG, "nacked": False, "heading": heading, "diff": diff, "target": target}
         log.info(
             "Yaw tracking probe: alt=%.1fm heading=%.1f° target=%.0f° diff=%.1f° -> %s",
-            pos.relative_altitude_m, heading, TARGET_YAW_DEG, diff,
+            pos.relative_altitude_m, heading, target, diff,
             "SUPPORTED" if result["ok"] else "NOT SUPPORTED",
         )
     finally:
         await _rtl_and_land(gcs_system, restart_flight_stack)
         await clear_all_mission_types(gcs_system)
-    _yaw_tracked_result = result
     return result
 
 
-async def _check_pitch_tracked(gcs_system, home_item_for_mission, restart_flight_stack) -> dict:
-    """Fly once with PITCH_TARGET_DEG; cache and return {'ok', 'nacked', 'peak_pitch', 'required'}."""
-    global _pitch_tracked_result
-    if _pitch_tracked_result is not None:
-        return _pitch_tracked_result
-
+async def _pitch_once(gcs_system, home_item_for_mission, restart_flight_stack, target: float) -> dict:
+    """Fly one mission with pitch=target; return {'ok', 'nacked', 'peak_pitch', 'required', 'target'}."""
     home = await _get_home_position(gcs_system)
-    takeoff = _takeoff_item(home, param1=PITCH_TARGET_DEG, param4=NAN)
+    takeoff = _takeoff_item(home, param1=target, param4=NAN)
     items = _build_mission(home_item_for_mission, takeoff)
-    required = PITCH_TARGET_DEG * PITCH_HONOURED_FRACTION
+    required = target * PITCH_TRACKED_FRACTION
     try:
         async with asyncio.timeout(TRANSFER_TIMEOUT_S):
             await gcs_system.mission_raw.upload_mission(items)
     except MissionRawError:
         log.info("Pitch tracking probe: upload NACKed — correctly rejects an unsupported value")
         await clear_all_mission_types(gcs_system)
-        _pitch_tracked_result = {"ok": False, "nacked": True, "peak_pitch": None, "required": required}
-        return _pitch_tracked_result
+        return {"ok": False, "nacked": True, "peak_pitch": None, "required": required, "target": target}
 
     try:
         await _wait_armable(gcs_system)
@@ -383,7 +408,7 @@ async def _check_pitch_tracked(gcs_system, home_item_for_mission, restart_flight
         pos, peak_pitch = await _wait_for_altitude_with_peak_pitch(gcs_system, TAKEOFF_ALT_M * 0.85)
         global _explicit_takeoff_confirmed
         _explicit_takeoff_confirmed = True
-        result = {"ok": peak_pitch >= required, "nacked": False, "peak_pitch": peak_pitch, "required": required}
+        result = {"ok": peak_pitch >= required, "nacked": False, "peak_pitch": peak_pitch, "required": required, "target": target}
         log.info(
             "Pitch tracking probe: alt=%.1fm peak_|pitch|=%.1f° (need >= %.1f°) -> %s",
             pos.relative_altitude_m, peak_pitch, required,
@@ -392,84 +417,155 @@ async def _check_pitch_tracked(gcs_system, home_item_for_mission, restart_flight
     finally:
         await _rtl_and_land(gcs_system, restart_flight_stack)
         await clear_all_mission_types(gcs_system)
-    _pitch_tracked_result = result
     return result
 
 
-async def _check_position_tracked(gcs_system, home_item_for_mission, restart_flight_stack) -> dict:
-    """
-    Fly once with an explicit target POSITION_TARGET_OFFSET_M north of home; cache and
-    return {'ok', 'nacked', 'dist_from_target', 'dist_from_home', 'samples'}.
+_POSITION_WINDOW_TIMEOUT_S = 150.0
+_LANDING_AWAY_BEARING_DEG = 225.0  # south-west — away from both N and E targets
 
-    Shared by test_takeoff_compat_respects_position (is lat/lon honoured — final
-    position) and test_takeoff_obs_ascends_before_lateral_movement (does altitude lead
-    lateral movement — trajectory): both need the identical mission and differ only in
-    what they read back from one flight, so flying it twice — as this file originally
-    did — wasted an entire arm/climb/RTL/land cycle for no new information. Same
-    caching principle as _check_yaw_tracked/_check_pitch_tracked, extended to position.
-    """
-    global _position_tracked_result
-    if _position_tracked_result is not None:
-        return _position_tracked_result
 
+async def _position_once(gcs_system, home_item_for_mission, restart_flight_stack, label: str, bearing_deg: float) -> dict:
+    """
+    Fly one mission whose NAV_TAKEOFF targets a point POSITION_TARGET_OFFSET_M from
+    home on bearing_deg; return {'ok', 'nacked', 'dist_from_target', 'dist_from_home',
+    'samples', 'target'}.
+
+    "Went there" is the CLOSEST APPROACH to the target while the takeoff item is the
+    current mission item (MISSION_CURRENT == its seq) — the whole time the item is in
+    control, and only that time. The pre-2026-09-30 version sampled once at 85% of
+    the climb, which is too early for both kinds of vehicle: a multicopter that
+    climbs vertically first is still over home, and a fixed-wing is still climbing out
+    along its runway heading. Ending the window when the mission moves on keeps the
+    next item (the landing approach, placed south-west of home by
+    _LANDING_AWAY_BEARING_DEG) from carrying the vehicle over the target by chance.
+    'dist_from_home' is where the vehicle was when the item ended; 'samples' is
+    (alt_rel_m, dist_from_home_m) for test_takeoff_obs_ascends_before_lateral_movement.
+    """
     home = await _get_home_position(gcs_system)
-    target_lat_int = _north_of(home.latitude_deg, POSITION_TARGET_OFFSET_M)
-    target_lon_int = int(home.longitude_deg * 1e7)
-    takeoff = _takeoff_item(home, x=target_lat_int, y=target_lon_int, param4=NAN)
-    items = _build_mission(home_item_for_mission, takeoff)
+    n = POSITION_TARGET_OFFSET_M * math.cos(math.radians(bearing_deg))
+    e = POSITION_TARGET_OFFSET_M * math.sin(math.radians(bearing_deg))
+    target_lat = home.latitude_deg + n / 111111.0
+    target_lon = home.longitude_deg + e / (111111.0 * math.cos(math.radians(home.latitude_deg)))
+    takeoff = _takeoff_item(home, x=int(target_lat * 1e7), y=int(target_lon * 1e7), param4=NAN)
+    items = _build_mission(home_item_for_mission, takeoff, landing_bearing_deg=_LANDING_AWAY_BEARING_DEG)
+    takeoff_seq = 1 if home_item_for_mission is not None else 0
     try:
         async with asyncio.timeout(TRANSFER_TIMEOUT_S):
             await gcs_system.mission_raw.upload_mission(items)
     except MissionRawError:
-        log.info("Position tracking probe: upload NACKed — correctly rejects an unsupported value")
+        log.info("Position tracking probe (%s): upload NACKed — correctly rejects an unsupported value", label)
         await clear_all_mission_types(gcs_system)
-        _position_tracked_result = {
-            "ok": False, "nacked": True, "dist_from_target": None, "dist_from_home": None,
-            "samples": [],
-        }
-        return _position_tracked_result
+        return {"ok": False, "nacked": True, "dist_from_target": None, "dist_from_home": None,
+                "samples": [], "target": label}
 
     samples: list[tuple[float, float]] = []  # (alt_rel_m, dist_from_home_m)
+    closest = {"d": float("inf")}
+    last = {"pos": None}
+    current = {"seq": None}
+    item_done = asyncio.Event()
 
     async def _sample_pos() -> None:
         async for pos in gcs_system.telemetry.position():
-            dist = _dist_m(pos.latitude_deg, pos.longitude_deg, home.latitude_deg, home.longitude_deg)
-            samples.append((pos.relative_altitude_m, dist))
+            samples.append((pos.relative_altitude_m,
+                            _dist_m(pos.latitude_deg, pos.longitude_deg, home.latitude_deg, home.longitude_deg)))
+            last["pos"] = pos
+            if current["seq"] == takeoff_seq:
+                closest["d"] = min(closest["d"], _dist_m(pos.latitude_deg, pos.longitude_deg, target_lat, target_lon))
 
-    sample_task = asyncio.create_task(_sample_pos())
+    async def _watch_seq() -> None:
+        async for msg in gcs_system.mavlink_direct.message("MISSION_CURRENT"):
+            seq = int(json.loads(msg.fields_json)["seq"])
+            if current["seq"] == takeoff_seq and seq > takeoff_seq:
+                item_done.set()
+            current["seq"] = seq
+
+    tasks = [asyncio.create_task(_sample_pos()), asyncio.create_task(_watch_seq())]
     try:
+        await request_message_rate(gcs_system, 42, 10.0)  # MISSION_CURRENT
         await _wait_armable(gcs_system)
         await gcs_system.action.arm()
         await gcs_system.mission_raw.start_mission()
-        threshold = TAKEOFF_ALT_M * 0.85
         try:
-            pos = await _wait_for_altitude(gcs_system, threshold)
-            global _explicit_takeoff_confirmed
+            await asyncio.wait_for(item_done.wait(), _POSITION_WINDOW_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.warning("Position probe (%s): takeoff item still current after %.0fs — measuring what was flown",
+                        label, _POSITION_WINDOW_TIMEOUT_S)
+        global _explicit_takeoff_confirmed
+        if samples and max(a for a, _ in samples) >= AIRBORNE_THRESHOLD_M:
             _explicit_takeoff_confirmed = True
-            log.info("Altitude reached: %.1f m — sampling position", pos.relative_altitude_m)
-        except TimeoutError:
-            log.warning("Altitude threshold not reached — analysing samples/position collected so far")
-
-        after = await _get_position(gcs_system)
-        target_lat, target_lon = target_lat_int / 1e7, target_lon_int / 1e7
-        dist_from_target = _dist_m(after.latitude_deg, after.longitude_deg, target_lat, target_lon)
-        dist_from_home = _dist_m(after.latitude_deg, after.longitude_deg, home.latitude_deg, home.longitude_deg)
+        pos = last["pos"]
+        dist_from_home = (_dist_m(pos.latitude_deg, pos.longitude_deg, home.latitude_deg, home.longitude_deg)
+                          if pos is not None else None)
         result = {
-            "ok": dist_from_target <= LOCATION_TOLERANCE_M, "nacked": False,
-            "dist_from_target": dist_from_target, "dist_from_home": dist_from_home,
-            "samples": samples,
+            "ok": closest["d"] <= LOCATION_TOLERANCE_M, "nacked": False,
+            "dist_from_target": closest["d"], "dist_from_home": dist_from_home,
+            "samples": samples, "target": label,
         }
-        log.info(
-            "dist_from_target=%.1fm dist_from_home=%.1fm (commanded %.0fm north of home) -> %s",
-            dist_from_target, dist_from_home, POSITION_TARGET_OFFSET_M,
-            "SUPPORTED" if result["ok"] else "NOT SUPPORTED",
-        )
+        log.info("Position probe (%s): closest approach to target while the takeoff item was current = %.1fm; "
+                 "%.1fm from home when it ended -> %s", label, closest["d"], dist_from_home or -1,
+                 "SUPPORTED" if result["ok"] else "NOT SUPPORTED")
     finally:
-        sample_task.cancel()
+        for t in tasks:
+            t.cancel()
         await _rtl_and_land(gcs_system, restart_flight_stack)
         await clear_all_mission_types(gcs_system)
-    _position_tracked_result = result
     return result
+
+
+def _m(v) -> str:
+    """Metres for a detail line; '-' for a value a NACKed flight never measured."""
+    return "-" if v is None else f"{v:.1f}m"
+
+
+def _combine_tracked(results: list[dict]) -> dict:
+    """
+    One cached verdict from several values of the same param (rule 4c): supported
+    only if every value was honoured, NACKed only if every value was NACKed. The
+    per-value fields callers read (heading, peak_pitch, dist_from_target, samples,
+    ...) come from the first value that wasn't honoured — or the first value if
+    all were — and 'per_value' keeps every result.
+    """
+    worst = next((r for r in results if not r["ok"]), results[0])
+    out = dict(worst)
+    out["ok"] = all(r["ok"] for r in results)
+    out["nacked"] = all(r["nacked"] for r in results)
+    out["per_value"] = results
+    return out
+
+
+async def _check_yaw_tracked(gcs_system, home_item_for_mission, restart_flight_stack) -> dict:
+    """Fly every YAW_TARGETS_DEG value once (cached for dependent tests); combined verdict."""
+    global _yaw_tracked_result
+    if _yaw_tracked_result is None:
+        _yaw_tracked_result = _combine_tracked([
+            await _yaw_once(gcs_system, home_item_for_mission, restart_flight_stack, t) for t in YAW_TARGETS_DEG
+        ])
+    return _yaw_tracked_result
+
+
+async def _check_pitch_tracked(gcs_system, home_item_for_mission, restart_flight_stack) -> dict:
+    """Fly every PITCH_TARGETS_DEG value once (cached for dependent tests); combined verdict."""
+    global _pitch_tracked_result
+    if _pitch_tracked_result is None:
+        _pitch_tracked_result = _combine_tracked([
+            await _pitch_once(gcs_system, home_item_for_mission, restart_flight_stack, t) for t in PITCH_TARGETS_DEG
+        ])
+    return _pitch_tracked_result
+
+
+async def _check_position_tracked(gcs_system, home_item_for_mission, restart_flight_stack) -> dict:
+    """
+    Fly every POSITION_BEARINGS_DEG target once (cached — shared by
+    test_takeoff_compat_respects_position and test_takeoff_obs_ascends_before_lateral_movement,
+    which read different things from the same flights); combined verdict.
+    """
+    global _position_tracked_result
+    if _position_tracked_result is None:
+        _position_tracked_result = _combine_tracked([
+            await _position_once(gcs_system, home_item_for_mission, restart_flight_stack, label, b)
+            for label, b in POSITION_BEARINGS_DEG
+        ])
+    return _position_tracked_result
 
 
 # ---------------------------------------------------------------------------
@@ -711,17 +807,20 @@ async def test_takeoff_compat_tracks_yaw(gcs_system, home_item_for_mission, rest
         detail = (
             f"PASS if yaw param is supported (heading matches commanded yaw within "
             f"±{YAW_TOLERANCE_DEG:.0f}°); FAIL implies param4 is accepted but not applied at "
-            f"execution: heading={result['heading']:.1f}° target={TARGET_YAW_DEG:.0f}° "
-            f"diff={result['diff']:.1f}°"
+            f"execution: " + "; ".join(
+                f"target={r['target']:.0f}° heading={r['heading']:.1f}° diff={r['diff']:.1f}°"
+                if r["heading"] is not None else f"target={r['target']:.0f}° NACKed"
+                for r in result["per_value"])
         )
     record_tier2_detail(request, detail)
     record_tier2_param_verdict(request, "param4 (Yaw)", verdict)
     record_compat_json(request, "4_Yaw", **_compat_json_fields(result["nacked"], result["ok"]))
-    assert result["ok"] or result["nacked"], (
+    if not (result["ok"] or result["nacked"]):
+        report.compat_fail(
         f"Heading {result['heading']:.1f}° deviates {result['diff']:.1f}° from target "
-        f"{TARGET_YAW_DEG}° (tolerance ±{YAW_TOLERANCE_DEG}°), and the upload was not "
+        f"{result['target']:.0f}° (tolerance ±{YAW_TOLERANCE_DEG}°), and the upload was not "
         f"NACKed either — yaw param is accepted but not supported (compatibility error)."
-    )
+        )
 
 
 async def test_takeoff_compat_with_yaw_sentinel(gcs_system, home_item_for_mission, request):
@@ -896,18 +995,21 @@ async def test_takeoff_compat_tracks_pitch(gcs_system, home_item_for_mission, re
     else:
         detail = (
             f"PASS if pitch param is supported (peak |pitch| reaches >= "
-            f"{result['required']:.1f}°, {PITCH_HONOURED_FRACTION:.0%} of commanded "
-            f"{PITCH_TARGET_DEG:.0f}°); FAIL implies param1 is accepted but not applied at "
-            f"execution: peak_|pitch|={result['peak_pitch']:.1f}°"
+            f"{PITCH_TRACKED_FRACTION:.0%} of each commanded minimum pitch); FAIL implies param1 "
+            f"is accepted but not applied at execution: " + "; ".join(
+                f"commanded {r['target']:.0f}° peak={r['peak_pitch']:.1f}° (need {r['required']:.1f}°)"
+                if r["peak_pitch"] is not None else f"commanded {r['target']:.0f}° NACKed"
+                for r in result["per_value"])
         )
     record_tier2_detail(request, detail)
     record_tier2_param_verdict(request, "param1 (Pitch)", verdict)
     record_compat_json(request, "1_Pitch", **_compat_json_fields(result["nacked"], result["ok"]))
-    assert result["ok"] or result["nacked"], (
+    if not (result["ok"] or result["nacked"]):
+        report.compat_fail(
         f"Peak |pitch| {result['peak_pitch']:.1f}° is below the required "
         f"{result['required']:.1f}°, and the upload was not NACKed either — pitch param "
         f"is accepted but not supported (compatibility error)."
-    )
+        )
 
 
 async def test_takeoff_compat_with_pitch_sentinel(gcs_system, home_item_for_mission, restart_flight_stack, request):
@@ -1222,24 +1324,27 @@ async def test_takeoff_compat_respects_position(gcs_system, home_item_for_missio
     else:
         detail = (
             f"PASS if lat/lon params are supported — vehicle travels to the commanded "
-            f"point within {LOCATION_TOLERANCE_M:.0f}m (treated as a destination under "
+            f"point within {LOCATION_TOLERANCE_M:.0f}m while the takeoff item is current (treated as a destination under "
             f"the shared hasLocation/isDestination convention, same as a waypoint); FAIL "
             f"implies param5/6 is accepted but not applied at execution: "
-            f"dist_from_target={result['dist_from_target']:.1f}m "
-            f"dist_from_home={result['dist_from_home']:.1f}m "
-            f"(commanded {POSITION_TARGET_OFFSET_M:.0f}m north of home)"
+            f"closest approach={_m(result['dist_from_target'])} "
+            f"dist_from_home at item end={_m(result['dist_from_home'])} "
+            f"(worst of targets {POSITION_TARGET_OFFSET_M:.0f}m "
+            f"{'/'.join(l for l, _ in POSITION_BEARINGS_DEG)} of home: {result['target']})"
         )
     record_tier2_detail(request, detail)
     record_tier2_param_verdict(request, "param5/6 (Lat/Lon)", verdict)
     fields = _compat_json_fields(result["nacked"], result["ok"])
     record_compat_json(request, "5_Latitude", **fields)
     record_compat_json(request, "6_Longitude", **fields)
-    assert result["ok"] or result["nacked"], (
-        f"Vehicle is {result['dist_from_target']:.1f} m from the commanded target "
-        f"({result['dist_from_home']:.1f} m from home instead), exceeding tolerance "
+    if not (result["ok"] or result["nacked"]):
+        report.compat_fail(
+        f"Vehicle came no closer than {_m(result['dist_from_target'])} to the commanded target "
+        f"while the takeoff item was current ({_m(result['dist_from_home'])} from home when it "
+        f"ended), exceeding tolerance "
         f"{LOCATION_TOLERANCE_M:.1f} m, and the upload was not NACKed either — lat/lon "
         f"accepted but not honoured as a destination (compatibility error)."
-    )
+        )
 
 
 async def test_takeoff_obs_ascends_before_lateral_movement(gcs_system, home_item_for_mission, restart_flight_stack, request):

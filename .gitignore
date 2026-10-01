@@ -220,3 +220,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local run output (SITL consoles, MAVSDK logs, hand-written run logs) — see CLAUDE.md § Conventions.
+logs/
