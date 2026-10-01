@@ -25,7 +25,7 @@ This is an implementation-specific extension, not a spec violation — the XML d
 
 PX4 has a separate MAVLink-boundary parameter mask (`src/modules/mavlink/mavlink_command_params.hpp`) that DENIES any non-"unset" value for a param outside a per-command allow-list, before the command ever reaches Navigator. Before this fix, cmd=84's command-path mask was `0x7C` — allowing only params 3/4/5/6/7 (param3, despite being genuinely unused!) and **denying any non-zero param1/param2**, even though Navigator's own handler reads both. Fixed same-day to `0x7B` — param1/param2/param4-7 now allowed, param3 (the one genuinely unused slot) correctly the only one still denied.
 
-`test_param1_loiter_height_accepted` verifies this directly at the ACK level — the one place Tier 1 can observe it (a real param1 value flipping from DENIED to ACCEPTED):
+`test_nav_vtol_takeoff_param1_loiter_height_accepted` verifies this directly at the ACK level — the one place Tier 1 can observe it (a real param1 value flipping from DENIED to ACCEPTED):
 
 ```
 NAV_VTOL_TAKEOFF | param1 (Loiter Height) = 20.0                | result=0   (ACCEPTED — fix confirmed)
@@ -34,7 +34,7 @@ NAV_VTOL_TAKEOFF | param3 (Empty) = non-sentinel                | result=2   (DE
 
 ## Message-type exclusivity — a real, verified PX4 fix
 
-`test_hasLocation_rejects_command_long` (inherited, check 7 — see `../CLAUDE.md` § Mandatory common tests) is a genuine **PASS** for this command: PX4 commit `83e7afba56` adds `MavlinkReceiver::command_is_int_only()`, which NACKs a COMMAND_LONG send of `NAV_VTOL_TAKEOFF` with `MAV_RESULT_COMMAND_INT_ONLY(8)`, confirmed independent of MAVSDK via a raw pymavlink probe. This is the *only* command in this test suite where that check currently passes — `NAV_TAKEOFF`/`NAV_LAND`/`DO_REPOSITION` all still FAIL (compat) it on the same PX4 build. Full story, including a currently-open, not-yet-root-caused instability in a different, pre-existing test (`test_param1_loiter_height_accepted`) discovered during this same investigation: see `CLAUDE.md`.
+`test_hasLocation_rejects_command_long` (inherited, check 7 — see `../CLAUDE.md` § Mandatory common tests) is a genuine **PASS** for this command: PX4 commit `83e7afba56` adds `MavlinkReceiver::command_is_int_only()`, which NACKs a COMMAND_LONG send of `NAV_VTOL_TAKEOFF` with `MAV_RESULT_COMMAND_INT_ONLY(8)`, confirmed independent of MAVSDK via a raw pymavlink probe. This is the *only* command in this test suite where that check currently passes — `NAV_TAKEOFF`/`NAV_LAND`/`DO_REPOSITION` all still FAIL (compat) it on the same PX4 build. Full story, including a currently-open, not-yet-root-caused instability in a different, pre-existing test (`test_nav_vtol_takeoff_param1_loiter_height_accepted`) discovered during this same investigation: see `CLAUDE.md`.
 
 ## Tier 1 (ACK) results
 
@@ -42,7 +42,7 @@ NAV_VTOL_TAKEOFF | param3 (Empty) = non-sentinel                | result=2   (DE
 
 ### PX4 VTOL (0.0.0-official, `sihsim_standard_vtol`, tested 2026-09-17 against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`)
 
-26 PASS, 1 SKIP (NA — `test_float_params5_6_rejects_command_int`, this command has no non-location float in param5/6), 1 FAIL (compat) (param1 — see below); the out-of-range and INT32_MAX rows are PASS observations. Relabelled from 24 PASS / 3 XFAIL. `test_hasLocation_rejects_command_long`: **PASS** (see above). `test_param1_loiter_height_accepted`: intermittently **FAIL** later the same session against an unmodified running binary — see `CLAUDE.md`'s open finding; not reflected in the counts below, which are from the earlier, passing run.
+26 PASS, 1 SKIP (NA — `test_float_params5_6_rejects_command_int`, this command has no non-location float in param5/6), 1 FAIL (compat) (param1 — see below); the out-of-range and INT32_MAX rows are PASS observations. Relabelled from 24 PASS / 3 XFAIL. `test_hasLocation_rejects_command_long`: **PASS** (see above). `test_nav_vtol_takeoff_param1_loiter_height_accepted`: intermittently **FAIL** later the same session against an unmodified running binary — see `CLAUDE.md`'s open finding; not reflected in the counts below, which are from the earlier, passing run.
 
 | Test | Result | Notes |
 |------|--------|-------|
@@ -53,21 +53,21 @@ NAV_VTOL_TAKEOFF | param3 (Empty) = non-sentinel                | result=2   (DE
 | `test_undefined_param_nonsentinel_rejected[param1]` | **FAIL (compat)** — ACCEPTED | param1 is genuinely used as Loiter Height (source-confirmed); not a validation gap |
 | `test_undefined_param_nonsentinel_rejected[param3]` | **PASS** — DENIED | PX4 genuinely validates the one truly-unused slot (mask `0x7B`) |
 | `test_defined_param_sentinel_tolerated[param2,4,5,6,7]` | PASS ×5 — ACCEPTED | |
-| `test_param2_transition_heading_values` (0-4) | PASS (obs) — ACCEPTED ×5 | |
-| `test_param1_loiter_height_accepted` (param1=20.0) | **PASS**, then intermittently **FAIL** (DENIED) later the same session | verifies commit `aad2f0f3` — see `CLAUDE.md`'s open finding, not yet root-caused |
+| `test_nav_vtol_takeoff_param2_transition_heading_values` (0-4) | PASS (obs) — ACCEPTED ×5 | |
+| `test_nav_vtol_takeoff_param1_loiter_height_accepted` (param1=20.0) | **PASS**, then intermittently **FAIL** (DENIED) later the same session | verifies commit `aad2f0f3` — see `CLAUDE.md`'s open finding, not yet root-caused |
 | `test_hasLocation_rejects_command_long` | **PASS** — COMMAND_INT_ONLY(8) | verifies commit `83e7afba56`; the only command in this suite where this check currently passes |
 | `test_float_params5_6_rejects_command_int` | SKIP (NA) | this command has no non-location float in param5/6 |
-| `test_param2_transition_heading_specified_uses_param4` (param2=3, param4=45°) | PASS (obs) — ACCEPTED | |
-| `test_param2_transition_heading_out_of_range` (param2=5) | PASS (obs) — ACCEPTED | |
-| `test_param4_yaw_ack` (param4=90°, param2=default) | PASS (obs) — ACCEPTED | yaw genuinely not consulted unless param2==SPECIFIED — not a spec gap |
-| `test_param4_yaw_nan_ack` | PASS (obs) — ACCEPTED | |
-| `test_location_specific_ack` | PASS — ACCEPTED | |
-| `test_location_int32max_ack` | PASS (obs) — ACCEPTED | |
-| `test_nan_altitude_ack` | PASS (obs) — ACCEPTED | |
-| `test_location_out_of_range_latlon_ack` | **PASS (observation)** — ACCEPTED | PX4 doesn't validate lat/lon range — same known gap as `nav_takeoff` |
-| `test_wrong_frame_ack` | PASS (obs) — ACCEPTED | |
-| `test_latlon_nan_command_long_ack` | PASS — ACCEPTED | |
-| `test_latlon_int32max_command_long` | **PASS (observation)** — DENIED | PX4 rejects `float(INT32_MAX)` in COMMAND_LONG param5/6 as a protocol error — same known gap as `nav_takeoff` |
+| `test_nav_vtol_takeoff_param2_transition_heading_specified_uses_param4` (param2=3, param4=45°) | PASS (obs) — ACCEPTED | |
+| `test_nav_vtol_takeoff_param2_transition_heading_out_of_range` (param2=5) | PASS (obs) — ACCEPTED | |
+| `test_nav_vtol_takeoff_param4_yaw_ack` (param4=90°, param2=default) | PASS (obs) — ACCEPTED | yaw genuinely not consulted unless param2==SPECIFIED — not a spec gap |
+| `test_nav_vtol_takeoff_param4_yaw_nan_ack` | PASS (obs) — ACCEPTED | |
+| `test_nav_vtol_takeoff_location_specific_ack` | PASS — ACCEPTED | |
+| `test_nav_vtol_takeoff_location_int32max_ack` | PASS (obs) — ACCEPTED | |
+| `test_nav_vtol_takeoff_nan_altitude_ack` | PASS (obs) — ACCEPTED | |
+| `test_nav_vtol_takeoff_location_out_of_range_latlon_ack` | **PASS (observation)** — ACCEPTED | PX4 doesn't validate lat/lon range — same known gap as `nav_takeoff` |
+| `test_nav_vtol_takeoff_wrong_frame_ack` | PASS (obs) — ACCEPTED | |
+| `test_nav_vtol_takeoff_latlon_nan_command_long_ack` | PASS — ACCEPTED | |
+| `test_nav_vtol_takeoff_latlon_int32max_command_long` | **PASS (observation)** — DENIED | PX4 rejects `float(INT32_MAX)` in COMMAND_LONG param5/6 as a protocol error — same known gap as `nav_takeoff` |
 
 Both former XFAILs beyond the param1/param3 story (now PASS observations) are the identical, already-documented PX4 gaps found on `NAV_TAKEOFF` (`../nav_takeoff/README.md`) — consistent cross-command behaviour, not new findings.
 
@@ -76,6 +76,27 @@ Report: `reports/command_nav_vtol_takeoff_px4_vtol_*.log` / `.json` (mavlink-com
 ### Other stacks — not yet re-tested against this file
 
 Per `../README.md`'s survey (footnote 1): ArduCopter maps `NAV_VTOL_TAKEOFF` onto its standard takeoff handler (ACCEPTED on any airframe); ArduPlane QuadPlane (the one real VTOL ArduPilot frame) rejects a direct COMMAND_INT — it only recognises this command as a mission-item executed during AUTO (see `../baseline_takeoff/README.md`). PX4 doesn't gate commands by vehicle type, so MC/FW/Rover are expected to match the VTOL results above, per the same pattern already confirmed for `NAV_TAKEOFF` — not independently re-verified against this specific test file.
+
+## Tier 2 (flight) results — 2026-10-01
+
+`test_flight.py`: COMMAND_INT, two values per "is it honoured" param, judged where the vehicle settles (details and source evidence in `CLAUDE.md`).
+
+| Param | PX4 `main` VTOL (Gazebo) | ArduPlane QuadPlane | PX4 multicopter | ArduCopter |
+|---|---|---|---|---|
+| takes off + transitions | PASS | UNSUPPORTED via COMMAND_INT — all flight tests skip | NA (not a VTOL) — ACCEPTED, flown as a multicopter takeoff | NA — DENIED outside GUIDED |
+| 7 Altitude | FAIL (compat) — transitions at param7, then settles at VTO_LOITER_ALT (~80 m) | — | flies to param7 | REJECTED |
+| 5/6 Lat/Lon | SUPPORTED — loiters on both targets | — | FAIL (compat) — climbs in place | REJECTED |
+| 4 Yaw (with SPECIFIED) | SUPPORTED | — | NA | NA |
+| 2 Transition Heading | FAIL (compat) — SPECIFIED honoured, TAKEOFF accepted but ignored | — | NA | NA |
+| param7 used as | transition altitude only | — | — | — |
+
+PX4 `main` = `7cb65787b3`, built in its own worktree (`~/github/px4/PX4-Autopilot-main`). PX4 v1.17.0 Gazebo VTOL quad-chutes during transitions, so its Tier 2 is mostly inconclusive (see `CLAUDE.md`).
+
+Also found:
+- **PX4:** a NAV_VTOL_TAKEOFF sent while disarmed with an altitude below the vehicle makes the next valid one a no-op. It's ACCEPTED, but the vehicle stays in HOLD. Reproducer: `scripts/px4_disarmed_vtol_takeoff_ab.py`.
+- **PX4:** INT32_MAX lat/lon is flown as a real coordinate (a fly-away).
+- **PX4:** param1 ("loiter height") is stored but never used.
+- **ArduPilot:** a COMMAND_LONG with an out-of-range lat/lon crashes SITL with a floating-point exception (`convert_COMMAND_LONG_loc_param()` has no range check).
 
 ## Mock (paired)
 
@@ -90,6 +111,10 @@ pytest tests/command/nav_vtol_takeoff/test_command.py \
     --drone-address=udp://:14540 --connection-timeout=60 \
     --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_standard_vtol \
     --vehicle-type=vtol --autopilot=px4 -v --log-cli-level=INFO   # PX4 VTOL, tier 1
+
+pytest tests/command/nav_vtol_takeoff/ --drone-address=udp://:14540 \
+    --px4-sitl=~/github/px4/PX4-Autopilot --px4-model=gz_standard_vtol \
+    --vehicle-type=vtol --autopilot=px4 -v --log-cli-level=INFO   # PX4 VTOL, tier 1 + 2 (Gazebo — SIH VTOL doesn't fly)
 ```
 
 Other stacks/vehicle types: swap `--*-sitl`/`--*-model` and `--vehicle-type`/`--autopilot` per root `CLAUDE.md` § Running modes.

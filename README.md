@@ -91,6 +91,9 @@ pytest tests/mission/test_mission_server.py
 pytest tests/mission/nav_takeoff/ -v --log-cli-level=INFO
 pytest tests/mission/nav_takeoff/ --drone-address=udp://:14540 -v --log-cli-level=INFO
 
+# NAV_VTOL_TAKEOFF tests only — mission item and command, Tier 1 + Tier 2 (Gazebo for PX4 VTOL; see tests/mission/nav_vtol_takeoff/README.md)
+pytest tests/mission/nav_vtol_takeoff/ tests/command/nav_vtol_takeoff/ -v
+
 # DO_REPOSITION tests only (Tier 1 — rejected as a mission item on every stack; see tests/mission/do_reposition/README.md)
 pytest tests/mission/do_reposition/ -v --log-cli-level=INFO
 

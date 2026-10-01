@@ -41,14 +41,14 @@ enum. Reading PX4's own standalone-command handler for this MAV_CMD
 (`navigator_main.cpp`, `VEHICLE_CMD_NAV_VTOL_TAKEOFF` branch) shows PX4
 assigns real, source-confirmed meaning beyond the XML for two of these:
 
-  param1  "Loiter Height" — height above takeoff altitude at which the
-          vehicle establishes a loiter circle after the FW transition
-          (`_vtol_takeoff.setLoiterHeight(cmd.param1)`). XML says Empty;
-          PX4's command-protocol path uses it anyway — an
-          implementation-specific extension, not a spec violation (the
-          XML doesn't forbid a stack from giving an Empty slot meaning,
-          it just doesn't define one — see root CLAUDE.md's general
-          testing philosophy rule 3).
+  param1  "Loiter Height" — handed to `_vtol_takeoff.setLoiterHeight(
+          cmd.param1)`, documented as the height above takeoff altitude for
+          the post-transition loiter. XML says Empty. **Correction
+          (2026-10-01):** `_loiter_height` is stored but never read —
+          `vtol_takeoff.cpp` loiters at home + VTO_LOITER_ALT regardless —
+          so on PX4 main param1 has no effect even when it's accepted.
+          Either way an implementation-specific use of an Empty slot is
+          not a spec violation (root CLAUDE.md rule 3).
   param2  Only ever compared for exact equality to 3.0
           (VTOL_TRANSITION_HEADING_SPECIFIED) — `if (fabs(param2 - 3.0f)
           < FLT_EPSILON) setTransitionDirection(param4)`. The other four
@@ -73,7 +73,7 @@ though Navigator's own handler reads both. This was fixed same-day
 (commit aad2f0f3, "fix(mavlink): allow p1/p2 for standalone
 NAV_VTOL_TAKEOFF command") to `{ 84, 0x78, 0x7B }` — param1/param2/param4-7
 now allowed, param3 (the one genuinely unused slot) correctly the only one
-still denied. `test_param1_loiter_height_accepted` below exists
+still denied. `test_nav_vtol_takeoff_param1_loiter_height_accepted` below exists
 specifically to verify this fix at the ACK level — the one place Tier 1
 can actually observe it (a real param1 value flipping from DENIED to
 ACCEPTED). Assisted-by: Claude:claude-sonnet-5 on the PX4-side commit.
@@ -139,10 +139,9 @@ SPEC = CommandSpec(
         ParamSpec(
             1, "Empty", defined=False,
             reject_fail_reason=(
-                "PX4's standalone-command handler reads param1 as 'Loiter Height' "
-                "(navigator_main.cpp: _vtol_takeoff.setLoiterHeight(cmd.param1)) even "
-                "though common.xml marks this slot Empty — an implementation-specific "
-                "extension, not a validation gap. See test_param1_loiter_height_accepted."
+                "PX4's standalone-command handler passes param1 to setLoiterHeight() "
+                "(a 'Loiter Height' extension of an Empty slot), but never reads the "
+                "stored value — see test_nav_vtol_takeoff_param1_loiter_height_accepted."
             ),
         ),
         ParamSpec(2, "Transition Heading", defined=True),
@@ -180,7 +179,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
 
     SPEC = SPEC
 
-    async def test_param2_transition_heading_values(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_param2_transition_heading_values(self, gcs_system_cls, mock_stack_cls):
         """
         param2 (Transition Heading) — every defined VTOL_TRANSITION_HEADING
         enum value (0-4) — observational: the spec defines the enum's
@@ -207,7 +206,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
             log.info(_FMT, _CMD, label, f"result={result}")
             assert result != MAV_RESULT_UNSUPPORTED, f"{label} should not cause UNSUPPORTED"
 
-    async def test_param1_loiter_height_accepted(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_param1_loiter_height_accepted(self, gcs_system_cls, mock_stack_cls):
         """
         param1 (Loiter Height) = 20.0 m — expects not DENIED.
 
@@ -239,7 +238,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
             "rejected at the MAVLink boundary (regression check for commit aad2f0f3)"
         )
 
-    async def test_param2_transition_heading_specified_uses_param4(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_param2_transition_heading_specified_uses_param4(self, gcs_system_cls, mock_stack_cls):
         """
         param2 (Transition Heading) = 3.0 (SPECIFIED) with param4 (Yaw
         Angle) = 45.0 — observational.
@@ -261,7 +260,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "param2=SPECIFIED(3), param4=45.0", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED, "SPECIFIED transition heading + Yaw Angle should not cause UNSUPPORTED"
 
-    async def test_param2_transition_heading_out_of_range(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_param2_transition_heading_out_of_range(self, gcs_system_cls, mock_stack_cls):
         """
         param2 (Transition Heading) = 5 — one past the last defined enum
         value (VTOL_TRANSITION_HEADING_ANY=4). Observational: the spec
@@ -277,7 +276,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "param2 (Transition Heading) = 5 (out of range)", f"result={result}")
         # Observational — no assertion
 
-    async def test_param4_yaw_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_param4_yaw_ack(self, gcs_system_cls, mock_stack_cls):
         """
         param4 (Yaw Angle) = 90.0 deg, with param2 left at its baseline
         (VEHICLE_DEFAULT, not SPECIFIED) — observational, not a rule-4
@@ -288,7 +287,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         rule-4 violation, see nav_takeoff/test_command.py), NAV_VTOL_TAKEOFF's
         own standalone-command handler only consults param4 when param2 is
         exactly VTOL_TRANSITION_HEADING_SPECIFIED (3.0) — see module
-        docstring and test_param2_transition_heading_specified_uses_param4.
+        docstring and test_nav_vtol_takeoff_param2_transition_heading_specified_uses_param4.
         With param2 at its default here, PX4 genuinely has no obligation to
         honour param4, so ACCEPTED is expected/correct, not a spec gap.
         """
@@ -299,10 +298,10 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param4 (Yaw Angle) = 90.0 (param2=default)", f"result={result}")
-        # Observational — no assertion; see test_param2_transition_heading_specified_uses_param4
+        # Observational — no assertion; see test_nav_vtol_takeoff_param2_transition_heading_specified_uses_param4
         # for the combination where param4 is actually meaningful.
 
-    async def test_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
         """
         param4 (Yaw Angle) = NaN — observational: NaN means 'use current
         system yaw heading mode'.
@@ -316,7 +315,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "param4 (Yaw Angle) = NaN", f"result={result}")
         # Observational — no assertion
 
-    async def test_location_specific_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_location_specific_ack(self, gcs_system_cls, mock_stack_cls):
         """Specific lat/lon location — COMMAND_INT x/y carry integer lat/lon × 1e7."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, x=_LAT_INT, y=_LON_INT)
@@ -327,7 +326,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "params 5/6 (Lat/Lon) specific", f"result={result}")
         assert result != MAV_RESULT_UNSUPPORTED, "Location coordinates should not cause UNSUPPORTED"
 
-    async def test_location_int32max_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_location_int32max_ack(self, gcs_system_cls, mock_stack_cls):
         """
         x=INT32_MAX, y=INT32_MAX — 'use current position' sentinel.
         Observational — behaviour may differ per stack.
@@ -341,7 +340,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "params 5/6 (Lat/Lon) INT32_MAX", f"result={result}")
         # Observational — no assertion
 
-    async def test_nan_altitude_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_nan_altitude_ack(self, gcs_system_cls, mock_stack_cls):
         """
         z = NaN altitude — observational: NaN means 'use current/default altitude'.
         """
@@ -354,7 +353,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "param7 (Alt) = NaN", f"result={result}")
         # Observational — no assertion
 
-    async def test_location_out_of_range_latlon_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_location_out_of_range_latlon_ack(self, gcs_system_cls, mock_stack_cls):
         """
         x=1_200_000_000 (120°N), y=2_000_000_000 (200°E) — out-of-range lat/lon.
 
@@ -384,7 +383,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
                 "should return MAV_RESULT_DENIED — spec gap (coordinate range not mandated)",
             )
 
-    async def test_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_wrong_frame_ack(self, gcs_system_cls, mock_stack_cls):
         """
         frame = MAV_FRAME_LOCAL_NED (1) — observational.
         NAV_VTOL_TAKEOFF uses global coordinates; LOCAL_NED is unexpected.
@@ -398,7 +397,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "frame=LOCAL_NED(1)", f"result={result}")
         # Observational — no assertion; behaviour is stack-specific
 
-    async def test_latlon_nan_command_long_ack(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_latlon_nan_command_long_ack(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG param5=NaN, param6=NaN — "use current position" sentinel.
 
@@ -426,7 +425,7 @@ class TestNavVtolTakeoffCommand(Tier1CommandTestBase):
             "the command is valid; lat/lon=NaN means 'use current position'"
         )
 
-    async def test_latlon_int32max_command_long(self, gcs_system_cls, mock_stack_cls):
+    async def test_nav_vtol_takeoff_latlon_int32max_command_long(self, gcs_system_cls, mock_stack_cls):
         """
         COMMAND_LONG param5=INT32_MAX (as float), param6=INT32_MAX — 'use current position'.
 
