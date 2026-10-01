@@ -44,6 +44,7 @@ ArduPlane::
 import asyncio
 import datetime
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -313,7 +314,7 @@ async def _ensure_nav_takeoff_supported(system) -> None:
                 "(ACCEPTED but not executed — stack may require a different flight mode)",
             )
         finally:
-            await _rtl_and_land(system)
+            await _rtl_and_land(system, _restart)
 
     if not _nav_takeoff_executes:
         pytest.skip(
@@ -328,6 +329,24 @@ async def _ensure_nav_takeoff_supported(system) -> None:
 # require_real_stack is imported from tests.flight_helpers (above); pytest
 # picks up an autouse fixture by name regardless of which module defines it,
 # as long as it's imported into this module's namespace.
+
+
+# The restart_flight_stack callable, bound per test so every _rtl_and_land()
+# cleanup (including ones inside helpers that don't take a request) can fall
+# back to restarting the flight stack. Without it a fixed-wing never gets back
+# on the ground: RTL just loiters at RTL_RETURN_ALT (100 m on PX4 FW) with no
+# landing pattern, the in-air disarm is refused, and every later test "takes
+# off" from 100 m — which is exactly what invalidated the 2026-09-30 PX4 FW
+# runs of this file (root CLAUDE.md Tier 2 pattern #8).
+_restart = None
+
+
+@pytest.fixture(autouse=True)
+def _bind_restart_flight_stack(restart_flight_stack):
+    global _restart
+    _restart = restart_flight_stack
+    yield
+    _restart = None
 
 
 @pytest.fixture(autouse=True)
@@ -608,7 +627,7 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
                 successful_tier = "COMMAND_INT with lat/lon"
             else:
                 # Attempt failed — RTL back to ground, re-arm for tier 2
-                await _rtl_and_land(gcs_system)
+                await _rtl_and_land(gcs_system, _restart)
                 # Re-arm for tier 2 — verify GUIDED mode before arming
                 if autopilot == "ardupilot":
                     guided_ok2 = await _set_guided_mode_ardupilot(gcs_system)
@@ -637,7 +656,7 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
 
         # Tier 3: unarmed COMMAND_INT (tests auto-arm capability) — probe only, no re-arm needed
         if successful_tier is None:
-            await _rtl_and_land(gcs_system)  # ensure disarmed
+            await _rtl_and_land(gcs_system, _restart)  # ensure disarmed
             obs["mode_before_cmd"] = await _get_flight_mode(gcs_system)
             log.info(_FMT, _CMD, "tier3: unarmed probe", "sending COMMAND_INT without arming")
             climbed = await _send_and_check_climb(
@@ -806,7 +825,7 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
             )
     finally:
         sample_task.cancel()
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
     # ── POST-FLIGHT ANALYSIS ──────────────────────────────────────────────────────
 
@@ -937,46 +956,140 @@ async def test_mc_takeoff_comprehensive(gcs_system, request):
 # Altitude tests (param7 = z)
 # ---------------------------------------------------------------------------
 
-async def test_altitude_nominal(gcs_system, request):
-    """NAV_TAKEOFF z=30 m — vehicle climbs to ≥ 85% of target altitude."""
-    await _ensure_nav_takeoff_supported(gcs_system)
-    target_m = 30.0
-    threshold = target_m * 0.85
-    try:
-        await _arm_and_send_takeoff(gcs_system, z=target_m)
-        log.info(_FMT, _CMD, "z=30 m (nominal)", f"waiting for {threshold:.1f} m")
-        pos = await _wait_for_altitude(gcs_system, threshold)
-        log.info(_FMT, _CMD, "z=30 m (nominal)", f"reached {pos.relative_altitude_m:.1f} m")
-        # Definitive checks for this command's compatibility export: the vehicle
-        # took off (rule 1 — the one thing NAV_TAKEOFF's XML requires) and
-        # climbed to the commanded altitude (param7 honoured).
-        record_compat_command_supported(request, True)
-        record_tier2_param_verdict(request, "param7 (Altitude)", "SUPPORTED")
-        record_compat_json(request, "7_Altitude", supported=True)
-        assert pos.relative_altitude_m >= threshold, (
-            f"Vehicle only reached {pos.relative_altitude_m:.1f} m (target {target_m} m, "
-            f"threshold {threshold:.1f} m)"
-        )
-    finally:
-        await _rtl_and_land(gcs_system)
+def _combine(results: list[dict]) -> dict:
+    """
+    One verdict from several values of the same param (root CLAUDE.md rule
+    4c: every "is it honoured" check uses at least two distinct values).
+    Each result is {"nacked", "ok", "detail"}. Supported only if every value
+    was honoured; NACKed only if every value was NACKed; anything else — any
+    value accepted but not honoured — is the compatibility error.
+    """
+    return {
+        "ok": all(r["ok"] for r in results),
+        "nacked": all(r["nacked"] for r in results),
+        "detail": "; ".join(r["detail"] for r in results),
+    }
 
 
-async def test_altitude_higher(gcs_system):
-    """NAV_TAKEOFF z=50 m — vehicle climbs to ≥ 85% of the higher target altitude."""
-    await _ensure_nav_takeoff_supported(gcs_system)
-    target_m = 50.0
-    threshold = target_m * 0.85
+def _record_param(request, label: str, key: str, v: dict) -> None:
+    verdict = "REJECTED (NACKed)" if v["nacked"] else "SUPPORTED" if v["ok"] else "NOT SUPPORTED — COMPATIBILITY ERROR"
+    record_tier2_param_verdict(request, label, verdict)
+    record_compat_json(request, key, supported=v["ok"], nacks_on_non_sentinel_value=None if v["ok"] else v["nacked"])
+
+
+def _fail_if_ignored(v: dict, what: str) -> None:
+    if not (v["ok"] or v["nacked"]):
+        report.compat_fail(f"{what} accepted but not honoured: {v['detail']} (root CLAUDE.md rule 4)")
+
+
+ALT_TOLERANCE_MIN_M = 5.0     # settled altitude within max(5 m, 20%) of the commanded value
+ALT_TOLERANCE_FRAC = 0.2      # — a fixed-wing climbs out to target + 10 m (PX4 kClearanceAltitudeBuffer)
+ALT_SETTLE_S = 15.0           # then loiters; observed settled 28.8–29.4 m for 30 m (PX4 FW, 2026-09-30)
+ALT_CLIMB_TIMEOUT_S = float(os.environ.get("NAV_TAKEOFF_ALT_CLIMB_TIMEOUT_S", "90.0"))
+
+
+async def _altitude_verdict(system, ack, target_m: float) -> dict:
+    """
+    Rule 4a verdict for a takeoff already sent with a real (non-sentinel)
+    altitude: NACKed = a legitimate "not supported"; accepted = the vehicle must
+    SETTLE at (not merely pass through) the commanded altitude. Measured after
+    the climb completes (or levels off) plus ALT_SETTLE_S, so a stack that
+    ignores the value and climbs to its own default — higher or lower — is
+    caught either way. The NAV_TAKEOFF XML doesn't require any particular
+    height when none is given (a predefined default is fine for the sentinel);
+    it's a *specified* value accepted-but-ignored that's the compatibility
+    error. A vehicle that accepts but doesn't climb at all is the same error:
+    _ensure_nav_takeoff_supported() has already shown this stack can take off.
+    """
+    if ack is None:
+        pytest.fail("No COMMAND_ACK for NAV_TAKEOFF — cannot classify")
+    result = int(ack["result"])
+    if result not in (0, 5):
+        return {"nacked": True, "ok": False, "detail": f"REJECTED (result={result}) — NACK is a legitimate not-supported"}
     try:
-        await _arm_and_send_takeoff(gcs_system, z=target_m)
-        log.info(_FMT, _CMD, "z=50 m (higher)", f"waiting for {threshold:.1f} m")
-        pos = await _wait_for_altitude(gcs_system, threshold, timeout_s=120.0)
-        log.info(_FMT, _CMD, "z=50 m (higher)", f"reached {pos.relative_altitude_m:.1f} m")
-        assert pos.relative_altitude_m >= threshold, (
-            f"Vehicle only reached {pos.relative_altitude_m:.1f} m (target {target_m} m, "
-            f"threshold {threshold:.1f} m)"
-        )
-    finally:
-        await _rtl_and_land(gcs_system)
+        await _wait_for_climb_complete(system, target_m, ALT_CLIMB_TIMEOUT_S)
+    except TimeoutError:
+        pass  # never climbed / never levelled off — measure wherever it is
+    await asyncio.sleep(ALT_SETTLE_S)
+    samples = []
+    for _ in range(5):
+        samples.append((await _get_position(system)).relative_altitude_m)
+        await asyncio.sleep(1.0)
+    settled = sum(samples) / len(samples)
+    tol = max(ALT_TOLERANCE_MIN_M, ALT_TOLERANCE_FRAC * target_m)
+    ok = abs(settled - target_m) <= tol
+    return {"nacked": False, "ok": ok,
+            "detail": f"commanded {target_m:.0f} m, settled {settled:.1f} m (tolerance ±{tol:.0f} m)"}
+
+
+ALTITUDE_VALUES_M = (30.0, 50.0)
+
+
+@pytest.mark.timeout(720)  # two values = two takeoff cycles (rule 4c)
+async def test_altitude_is_honoured(gcs_system, request):
+    """
+    NAV_TAKEOFF z=30 m and z=50 m — "is altitude honoured": each NACKed, or the vehicle settles at it.
+
+    Two widely separated values (rule 4c): one value can't tell "honoured" from "the
+    stack's own default takeoff height happens to be close". Each value is its own
+    takeoff cycle (restart fallback between them).
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    results = []
+    for target_m in ALTITUDE_VALUES_M:
+        try:
+            ack = await _arm_and_send_takeoff(gcs_system, return_ack=True, z=target_m)
+            v = await _altitude_verdict(gcs_system, ack, target_m)
+            log.info(_FMT, _CMD, f"altitude honoured? ({target_m:.0f} m)", v["detail"])
+            results.append(v)
+        finally:
+            await _rtl_and_land(gcs_system, _restart)
+    v = _combine(results)
+    record_tier2_detail(request, v["detail"])
+    # The vehicle took off (rule 1 — the one thing the XML requires) is established
+    # by _ensure_nav_takeoff_supported(); param7's own verdict comes from here.
+    record_compat_command_supported(request, True)
+    _record_param(request, "param7 (Altitude)", "7_Altitude", v)
+    _fail_if_ignored(v, "param7 (Altitude)")
+
+
+@pytest.mark.timeout(720)  # two values = two takeoff cycles (rule 4c)
+async def test_altitude_relative_frame_honoured(gcs_system, request):
+    """
+    COMMAND_INT frame 6 (GLOBAL_RELATIVE_ALT_INT), z=30 m and 50 m — is the frame honoured?
+
+    Every other test here sends frame 5 with an absolute (AMSL) z, working around
+    PX4 copying COMMAND_INT z straight into param7 without applying the frame
+    (mavlink_receiver.cpp: vcmd.param7 = cmd_mavlink.z). Here the frame itself
+    is the question: 30 m relative to home must be flown as 30 m above home.
+    NACKing the frame is a legitimate PASS; accepting it and flying some other
+    altitude (PX4: 30 m AMSL, i.e. below ground — no climb) is a compatibility
+    error, same rule 4a logic as test_altitude_is_honoured.
+    """
+    await _ensure_nav_takeoff_supported(gcs_system)
+    home = await _get_home_position(gcs_system)
+    if abs(home.absolute_altitude_m) < max(ALTITUDE_VALUES_M) + ALT_TOLERANCE_MIN_M:
+        # Absolute and relative altitude only differ measurably when home isn't
+        # near sea level; otherwise "honoured" and "frame ignored" look the same.
+        pytest.skip(f"NA: home is {home.absolute_altitude_m:.0f} m AMSL — too close to sea level to tell "
+                    "a relative-altitude frame from an absolute one")
+    results = []
+    for target_m in ALTITUDE_VALUES_M:
+        try:
+            await _wait_armable(gcs_system)
+            await gcs_system.action.arm()
+            await asyncio.sleep(0.5)
+            ack = await probe_command_int(gcs_system, **_takeoff_cmd(
+                frame=6, param4=None, x=int(home.latitude_deg * 1e7), y=int(home.longitude_deg * 1e7), z=target_m,
+            ))
+            v = await _altitude_verdict(gcs_system, ack, target_m)
+            log.info(_FMT, _CMD, f"relative-frame altitude honoured? ({target_m:.0f} m)", v["detail"])
+            results.append(v)
+        finally:
+            await _rtl_and_land(gcs_system, _restart)
+    v = _combine(results)
+    record_tier2_detail(request, v["detail"])
+    _fail_if_ignored(v, "COMMAND_INT frame 6 (relative altitude)")
 
 
 async def test_altitude_very_low(gcs_system):
@@ -1001,7 +1114,7 @@ async def test_altitude_very_low(gcs_system):
                 )
                 break
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_altitude_nan_uses_default(gcs_system):
@@ -1027,7 +1140,7 @@ async def test_altitude_nan_uses_default(gcs_system):
         log.warning(_FMT, _CMD, "z=NaN", "no altitude reached — stack may have rejected NaN altitude")
         pytest.fail("Vehicle did not take off with z=NaN (expected takeoff to default altitude)")
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_altitude_zero_behaviour(gcs_system):
@@ -1050,7 +1163,7 @@ async def test_altitude_zero_behaviour(gcs_system):
                 )
                 break
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 # ---------------------------------------------------------------------------
@@ -1082,54 +1195,59 @@ async def _observe_yaw(gcs_system, label: str, param4_deg) -> None:
             f"(param4={param4_deg}° — observational, all known stacks ignore param4 in COMMAND_INT path)",
         )
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
+YAW_VALUES_DEG = (135.0, 225.0)
+
+
+async def _yaw_verdict(system, ack, target: float) -> dict:
+    if ack is None:
+        pytest.fail("No COMMAND_ACK for NAV_TAKEOFF — cannot classify")
+    result = int(ack["result"])
+    if result not in (0, 5):
+        return {"nacked": True, "ok": False, "detail": f"{target:.0f}°: REJECTED (result={result})"}
+    # Measure once the takeoff has finished and settled, not mid-climb: a stack
+    # may only turn to the commanded heading at (or near) the end.
+    try:
+        pos = await _wait_for_climb_complete(system, TAKEOFF_ALT_M)
+        alt = pos.relative_altitude_m
+    except TimeoutError:
+        alt = (await _get_position(system)).relative_altitude_m
+    await asyncio.sleep(YAW_SETTLE_S)
+    samples = []
+    for _ in range(5):
+        samples.append(await _get_heading(system))
+        await asyncio.sleep(0.5)
+    diff = min(abs((h - target + 180) % 360 - 180) for h in samples)
+    return {"nacked": False, "ok": diff <= YAW_TOLERANCE_DEG,
+            "detail": f"{target:.0f}°: heading={samples[-1]:.1f}° diff={diff:.1f}° alt={alt:.1f}m"}
+
+
+@pytest.mark.timeout(720)  # two values = two takeoff cycles (rule 4c)
 async def test_yaw_is_honoured(gcs_system, request):
     """
-    param4=135° — "is yaw honoured" core test.
+    param4=135° and 225° — "is yaw honoured": each NACKed, or the vehicle settles facing it.
 
-    The command ACKs ACCEPTED for param4 (Tier 1 test_command.py) on every stack tested.
-    If execution does not turn the vehicle to face param4, that is the general "accepted
-    but silently ignored" spec violation (see module comment above _observe_yaw) —
-    a compatibility FAIL (root CLAUDE.md rule 4): source review already confirms PX4, ArduCopter, and
-    ArduPlane all discard param4 in the COMMAND_INT execution path today (see comment
-    above), so this is expected to FAIL everywhere until that changes.
+    Two values (rule 4c) far from each other and from the takeoff heading, so a
+    vehicle that just keeps (or happens to land near) one heading can't pass both.
+    Measured after the climb completes plus YAW_SETTLE_S. A value accepted but not
+    honoured is the compatibility error (rule 4).
     """
     await _ensure_nav_takeoff_supported(gcs_system)
-    target = 135.0
-    try:
-        await _arm_and_send_takeoff(gcs_system, param4=target, z=TAKEOFF_ALT_M)
-        # Measure once the takeoff has finished and settled, not mid-climb: a
-        # stack may only turn to the commanded heading at (or near) the end.
-        pos = await _wait_for_climb_complete(gcs_system, TAKEOFF_ALT_M)
-        await asyncio.sleep(YAW_SETTLE_S)
-        samples = []
-        for _ in range(5):
-            samples.append(await _get_heading(gcs_system))
-            await asyncio.sleep(0.5)
-        heading = samples[-1]
-        diff = min(abs((h - target + 180) % 360 - 180) for h in samples)
-        detail = (
-            f"altitude={pos.relative_altitude_m:.1f}m (climb complete, +{YAW_SETTLE_S:.0f}s) "
-            f"heading={heading:.1f}° target={target:.0f}° diff={diff:.1f}°"
-        )
-        log.info(_FMT, _CMD, "yaw honoured?", detail)
-        record_tier2_detail(request, detail)
-        ok = diff <= YAW_TOLERANCE_DEG
-        # The takeoff executed, so param4 was accepted (not NACKed): not honoured
-        # here is rule 4's accepted-but-ignored case.
-        record_tier2_param_verdict(
-            request, "param4 (Yaw)", "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR",
-        )
-        record_compat_json(
-            request, "4_Yaw", supported=ok, nacks_on_non_sentinel_value=None if ok else False,
-        )
-        if not ok:
-            report.compat_fail(_IGNORED_WITHOUT_NACK_REASON.format(param="param4 (Yaw)"))
-        assert ok
-    finally:
-        await _rtl_and_land(gcs_system)
+    results = []
+    for target in YAW_VALUES_DEG:
+        try:
+            ack = await _arm_and_send_takeoff(gcs_system, return_ack=True, param4=target, z=TAKEOFF_ALT_M)
+            r = await _yaw_verdict(gcs_system, ack, target)
+            log.info(_FMT, _CMD, "yaw honoured?", r["detail"])
+            results.append(r)
+        finally:
+            await _rtl_and_land(gcs_system, _restart)
+    v = _combine(results)
+    record_tier2_detail(request, v["detail"])
+    _record_param(request, "param4 (Yaw)", "4_Yaw", v)
+    _fail_if_ignored(v, "param4 (Yaw)")
 
 
 async def test_yaw_sentinel_changes_from_previous(gcs_system, request):
@@ -1163,7 +1281,7 @@ async def test_yaw_sentinel_changes_from_previous(gcs_system, request):
         log.info(_FMT, _CMD, "yaw sentinel re-send", detail)
         record_tier2_detail(request, detail)
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_yaw_north(gcs_system):
@@ -1229,80 +1347,82 @@ async def test_yaw_very_large(gcs_system):
 # Position tests (param5/6 = x/y)
 # ---------------------------------------------------------------------------
 
-POSITION_OFFSET_M = 40.0      # target this far north of home — far enough to be unambiguous
-POSITION_TOLERANCE_M = 10.0   # "arrived" if the vehicle gets this close to the target
-POSITION_TIMEOUT_S = float(os.environ.get("NAV_TAKEOFF_POSITION_TIMEOUT_S", "90.0"))
+POSITION_OFFSET_M = 200.0     # targets this far from home — well beyond a fixed-wing's loiter radius
+POSITION_BEARINGS = (("N", 0.0), ("E", 90.0))  # two targets (rule 4c), 90° apart
+POSITION_TOLERANCE_M = 30.0   # settled centre within this of the target counts as "went there"
+POSITION_WINDOW_S = 30.0      # centre = mean position over the last 30 s (≈ one fixed-wing orbit)
+POSITION_TIMEOUT_S = float(os.environ.get("NAV_TAKEOFF_POSITION_TIMEOUT_S", "120.0"))
 
 
+def _offset(lat_deg: float, lon_deg: float, metres: float, bearing_deg: float) -> tuple[float, float]:
+    n = metres * math.cos(math.radians(bearing_deg))
+    e = metres * math.sin(math.radians(bearing_deg))
+    return lat_deg + n / 111111.0, lon_deg + e / (111111.0 * math.cos(math.radians(lat_deg)))
+
+
+async def _position_verdict(system, home, ack, label: str, target_lat: float, target_lon: float) -> dict:
+    if ack is None:
+        pytest.fail("No COMMAND_ACK for NAV_TAKEOFF with a real target position — cannot classify")
+    result = int(ack["result"])
+    if result not in (0, 5):  # anything but ACCEPTED/IN_PROGRESS rejects the value
+        return {"nacked": True, "ok": False, "detail": f"{label}: REJECTED (result={result})"}
+    max_alt = 0.0
+    track = []  # (t, lat, lon)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    while loop.time() - t0 < POSITION_TIMEOUT_S:
+        pos = await _get_position(system)
+        max_alt = max(max_alt, pos.relative_altitude_m)
+        track.append((loop.time() - t0, pos.latitude_deg, pos.longitude_deg))
+        await asyncio.sleep(1.0)
+    tail = [(la, lo) for t, la, lo in track if t >= POSITION_TIMEOUT_S - POSITION_WINDOW_S]
+    c_lat = sum(la for la, _ in tail) / len(tail)
+    c_lon = sum(lo for _, lo in tail) / len(tail)
+    to_target = _dist_m(c_lat, c_lon, target_lat, target_lon)
+    from_home = _dist_m(home.latitude_deg, home.longitude_deg, c_lat, c_lon)
+    detail = f"{label}: settled centre {to_target:.1f} m from target, {from_home:.1f} m from home, max_alt {max_alt:.1f} m"
+    if max_alt < AIRBORNE_THRESHOLD_M:
+        pytest.fail(f"Vehicle never got airborne — lat/lon verdict inconclusive ({detail})")
+    return {"nacked": False, "ok": to_target <= POSITION_TOLERANCE_M, "detail": detail}
+
+
+@pytest.mark.timeout(720)  # two values = two takeoff cycles (rule 4c)
 async def test_position_is_honoured(gcs_system, request):
     """
-    param5/6 = a point 40 m north of home — "is lat/lon honoured" core test.
+    param5/6 = points 200 m north and 200 m east of home — "is lat/lon honoured" core test.
 
     Root CLAUDE.md rule 6: under the XML's shared hasLocation/isDestination
     convention, lat/lon means "go here", so this is a rule-4 "is it honoured"
-    test, not characterisation. The target is well away from home, so arriving
-    there and staying put are clearly distinguishable (unlike
-    test_position_specific, which targets home itself). Rule 4a verdicts:
-    NACKed = PASS (REJECTED); accepted and the vehicle reaches the target =
-    PASS (SUPPORTED); accepted but it never gets there = FAIL (compatibility
-    error). A vehicle that never gets airborne is inconclusive and records no
-    verdict.
+    test, not characterisation. Two targets 90° apart (rule 4c), both well away
+    from home, so a vehicle that just flies its own way can't pass both. Each is
+    measured as where the vehicle SETTLES — the mean position over the last
+    POSITION_WINDOW_S of the sampling window — so it works unchanged for a vehicle
+    that hovers at the point and one that orbits it (a fixed-wing never passes
+    within a few metres of its loiter centre), with no vehicle-type gating. Rule
+    4a verdicts: NACKed = PASS (REJECTED); accepted and settled at the target =
+    PASS (SUPPORTED); accepted but settled elsewhere = FAIL (compatibility error).
+    A vehicle that never gets airborne is inconclusive and records no verdict.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     home = await _get_home_position(gcs_system)
-    target_lat = home.latitude_deg + POSITION_OFFSET_M / 111111.0
-    target_lon = home.longitude_deg
-    try:
-        ack = await _arm_and_send_takeoff(
-            gcs_system, return_ack=True,
-            x=int(target_lat * 1e7), y=int(target_lon * 1e7), z=TAKEOFF_ALT_M,
-        )
-        if ack is None:
-            pytest.fail("No COMMAND_ACK for NAV_TAKEOFF with a real target position — cannot classify")
-        result = int(ack["result"])
-        nacked = result not in (0, 5)  # anything but ACCEPTED/IN_PROGRESS rejects the value
-        if nacked:
-            detail = f"REJECTED (result={result}) — NACK is a legitimate not-supported"
-            ok = False
-        else:
-            min_to_target = float("inf")
-            max_alt = 0.0
-            last = None
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + POSITION_TIMEOUT_S
-            while loop.time() < deadline:
-                last = await _get_position(gcs_system)
-                max_alt = max(max_alt, last.relative_altitude_m)
-                min_to_target = min(
-                    min_to_target, _dist_m(last.latitude_deg, last.longitude_deg, target_lat, target_lon),
-                )
-                if min_to_target <= POSITION_TOLERANCE_M:
-                    break
-                await asyncio.sleep(1.0)
-            from_home = _dist_m(home.latitude_deg, home.longitude_deg, last.latitude_deg, last.longitude_deg)
-            detail = (
-                f"target {POSITION_OFFSET_M:.0f} m N: closest={min_to_target:.1f} m  "
-                f"final_from_home={from_home:.1f} m  max_alt={max_alt:.1f} m"
+    results = []
+    for label, bearing in POSITION_BEARINGS:
+        target_lat, target_lon = _offset(home.latitude_deg, home.longitude_deg, POSITION_OFFSET_M, bearing)
+        try:
+            ack = await _arm_and_send_takeoff(
+                gcs_system, return_ack=True,
+                x=int(target_lat * 1e7), y=int(target_lon * 1e7), z=TAKEOFF_ALT_M,
             )
-            log.info(_FMT, _CMD, "position honoured?", detail)
-            if max_alt < AIRBORNE_THRESHOLD_M:
-                record_tier2_detail(request, f"INCONCLUSIVE — never airborne ({detail})")
-                pytest.fail(f"Vehicle never got airborne — lat/lon verdict inconclusive ({detail})")
-            ok = min_to_target <= POSITION_TOLERANCE_M
-        verdict = "REJECTED (NACKed)" if nacked else "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR"
-        record_tier2_detail(request, detail)
-        for label, key in (("param5 (Latitude)", "5_Latitude"), ("param6 (Longitude)", "6_Longitude")):
-            record_tier2_param_verdict(request, label, verdict)
-            record_compat_json(
-                request, key, supported=ok, nacks_on_non_sentinel_value=None if ok else nacked,
-            )
-        assert ok or nacked, (
-            f"NAV_TAKEOFF accepted a target {POSITION_OFFSET_M:.0f} m north of home but the "
-            f"vehicle never came within {POSITION_TOLERANCE_M:.0f} m of it ({detail}) — "
-            "accepted-but-ignored lat/lon (root CLAUDE.md rule 4)"
-        )
-    finally:
-        await _rtl_and_land(gcs_system)
+            r = await _position_verdict(gcs_system, home, ack, f"{POSITION_OFFSET_M:.0f} m {label}", target_lat, target_lon)
+            log.info(_FMT, _CMD, "position honoured?", r["detail"])
+            results.append(r)
+        finally:
+            await _rtl_and_land(gcs_system, _restart)
+    v = _combine(results)
+    record_tier2_detail(request, v["detail"])
+    for label, key in (("param5 (Latitude)", "5_Latitude"), ("param6 (Longitude)", "6_Longitude")):
+        _record_param(request, label, key, v)
+    _fail_if_ignored(v, "param5/6 (Latitude/Longitude)")
 
 
 async def test_position_specific(gcs_system):
@@ -1329,42 +1449,35 @@ async def test_position_specific(gcs_system):
             f"Vehicle did not take off with explicit home lat/lon"
         )
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
-async def test_position_int32max_stays_at_home(gcs_system):
+async def test_position_int32max_stays_at_home(gcs_system, request):
     """
-    NAV_TAKEOFF x=INT32_MAX, y=INT32_MAX — vehicle takes off from current position.
+    NAV_TAKEOFF x=INT32_MAX, y=INT32_MAX — observational: where does it take off to?
 
-    INT32_MAX is the sentinel meaning "use current vehicle position".  This test
-    verifies that when the sentinel is sent via COMMAND_INT, the vehicle takes off
-    from where it is (within 5 m of home) rather than navigating to a garbage coordinate.
-
-    ArduCopter rejects INT32_MAX with DENIED in the mission protocol; the command
-    protocol behaviour may differ.
+    INT32_MAX is the "use current position" sentinel. What that means for the
+    trajectory is not defined (a multicopter can climb in place; a fixed-wing
+    climbs out ahead and then loiters), so this is characterisation (root
+    CLAUDE.md rule 6): it records where the vehicle settled relative to home,
+    and asserts nothing about it.
     """
     await _ensure_nav_takeoff_supported(gcs_system)
     home = await _get_home_position(gcs_system)
     try:
         await _arm_and_send_takeoff(gcs_system, x=INT32_MAX, y=INT32_MAX, z=TAKEOFF_ALT_M)
-        pos = await _wait_for_altitude(gcs_system, AIRBORNE_THRESHOLD_M, AIRBORNE_TIMEOUT_S)
-        # Check horizontal distance from home is small (vehicle didn't fly to garbage coords)
-        dlat = (pos.latitude_deg - home.latitude_deg) * 111111.0
-        dlon = (pos.longitude_deg - home.longitude_deg) * 111111.0 * abs(home.latitude_deg / 90.0 + 0.001)
-        dist_m = (dlat**2 + dlon**2) ** 0.5
-        log.info(
-            _FMT, _CMD, "x/y=INT32_MAX sentinel",
-            f"altitude={pos.relative_altitude_m:.1f} m  dist_from_home={dist_m:.1f} m",
-        )
-        assert dist_m < 50.0, (
-            f"Vehicle drifted {dist_m:.1f} m from home with INT32_MAX sentinel — "
-            "may have navigated to an invalid coordinate"
-        )
-    except TimeoutError:
-        log.warning(_FMT, _CMD, "x/y=INT32_MAX sentinel", "no altitude reached — stack may have rejected sentinel")
-        pytest.fail("Vehicle did not take off with the INT32_MAX lat/lon sentinel")
+        try:
+            await _wait_for_climb_complete(gcs_system, TAKEOFF_ALT_M, ALT_CLIMB_TIMEOUT_S)
+        except TimeoutError:
+            pass
+        await asyncio.sleep(ALT_SETTLE_S)
+        pos = await _get_position(gcs_system)
+        dist_m = _dist_m(home.latitude_deg, home.longitude_deg, pos.latitude_deg, pos.longitude_deg)
+        detail = f"altitude={pos.relative_altitude_m:.1f} m  dist_from_home={dist_m:.1f} m (observation)"
+        log.info(_FMT, _CMD, "x/y=INT32_MAX sentinel", detail)
+        record_tier2_detail(request, detail)
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_position_zero_treated_as_current(gcs_system, request):
@@ -1392,7 +1505,7 @@ async def test_position_zero_treated_as_current(gcs_system, request):
         log.warning(_FMT, _CMD, "x/y=0 (zero coords)", "no altitude reached within timeout")
         record_tier2_detail(request, "Did not take off with x/y=0 (observation — spec gap, not asserted)")
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 # ---------------------------------------------------------------------------
@@ -1443,7 +1556,7 @@ async def test_pitch_is_honoured(gcs_system, request):
             log.warning(_FMT, _CMD, label, f"altitude not reached: {exc}")
             results[label] = 0.0
         finally:
-            await _rtl_and_land(gcs_system)
+            await _rtl_and_land(gcs_system, _restart)
             await asyncio.sleep(5.0)  # brief pause between cycles
 
     low_pitch = results.get("param1=5°", 0.0)
@@ -1483,7 +1596,7 @@ async def test_pitch_sentinel(gcs_system, request):
         log.info(_FMT, _CMD, "param1=NaN sentinel", detail)
         record_tier2_detail(request, detail)
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_pitch_negative(gcs_system, request):
@@ -1509,7 +1622,7 @@ async def test_pitch_negative(gcs_system, request):
             "Stack may be acting on the negative pitch value literally (nose-down)."
         )
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_pitch_overflow(gcs_system, request):
@@ -1531,7 +1644,7 @@ async def test_pitch_overflow(gcs_system, request):
         record_tier2_detail(request, detail)
         assert pos.relative_altitude_m >= AIRBORNE_THRESHOLD_M, "Vehicle did not become airborne with param1=450°."
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 # ---------------------------------------------------------------------------
@@ -1594,7 +1707,7 @@ async def test_unarmed_takeoff(gcs_system):
                 "pre-arming is required before COMMAND_INT NAV_TAKEOFF",
             )
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 async def test_required_flight_mode(gcs_system):
@@ -1649,7 +1762,7 @@ async def test_required_flight_mode(gcs_system):
                 "(NAV_TAKEOFF not executed from this mode; stack may require mode change)",
             )
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 # ---------------------------------------------------------------------------
@@ -1690,7 +1803,7 @@ async def test_mode_after_takeoff(gcs_system):
             f"altitude={pos.relative_altitude_m:.1f} m  mode={flight_mode} (informational)",
         )
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, _restart)
 
 
 # ---------------------------------------------------------------------------
@@ -1903,7 +2016,7 @@ async def test_arduplane_guided_takeoff_to_target(gcs_system, request):
                 log.warning(_FMT, _CMD, f"{label} | airborne 5 m", "not reached within 90 s")
         finally:
             pitch_task.cancel()
-            await _rtl_and_land(gcs_system)
+            await _rtl_and_land(gcs_system, _restart)
             await asyncio.sleep(5.0)  # brief settle between runs
 
     pitch_verdict = "unknown (fewer than 2 runs completed)"

@@ -40,6 +40,8 @@ from mavsdk.plugins.mission_raw import MissionItem
 from tests import report
 from tests.command.conftest import probe_command_int
 from tests.flight_helpers import (
+    record_tier2_detail,
+    start_mission_or_na,
     _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome into the combined report
     record_compat_command_supported,
     record_compat_json,
@@ -53,6 +55,7 @@ log = logging.getLogger(__name__)
 pytestmark = pytest.mark.timeout(120)
 
 _CMD_NAME = "DO_SET_ACTUATOR"  # read by tests/report.py's key_from_module (_tier1_auto_record/_tier2_auto_record)
+REQUIRED_MESSAGES = {"ACTUATOR_OUTPUT_STATUS": "the commanded PWM output under test"}  # tests/message_watcher.py
 _CMD_ID = 187
 
 # Declare identity + full param-slot list at import time (deriving the list from
@@ -144,8 +147,8 @@ async def _read_actuator5_pwm(system, settle_s: float = 2.0) -> float | None:
     return latest
 
 
-def _build_actuator_mission(home_item) -> list[MissionItem]:
-    """Home-slot prepend (ArduCopter) + a single DO_SET_ACTUATOR item: x=5,000,000 (Actuator 5 = 0.5)."""
+def _build_actuator_mission(home_item, value: float = 0.5) -> list[MissionItem]:
+    """Home-slot prepend (ArduCopter) + a single DO_SET_ACTUATOR item: x=value*1e7 (Actuator 5 = value)."""
     items = []
     if home_item is not None:
         items.append(MissionItem(
@@ -161,52 +164,55 @@ def _build_actuator_mission(home_item) -> list[MissionItem]:
         seq=seq, frame=2, command=187, current=(0 if home_item is not None else 1),  # MAV_FRAME_MISSION
         autocontinue=1,
         param1=float("nan"), param2=float("nan"), param3=float("nan"), param4=float("nan"),
-        x=5_000_000, y=0x7FFF_FFFF, z=0.0,
+        x=int(value * 1e7), y=0x7FFF_FFFF, z=0.0,
         mission_type=0,
     ))
     return items
 
 
+# Two values (root CLAUDE.md rule 4c), either side of the output's neutral point.
+_ACTUATOR_VALUES = (0.5, -0.5)
+
+
 async def test_actuator_compat_mission_item_scales_by_1e7(gcs_system, home_item_for_mission, request):
     """
-    A mission with a single DO_SET_ACTUATOR item (Actuator 5 = 0.5 via
-    x=5,000,000) reaches the vehicle's actuator output correctly once
-    executed — the full upload -> mission-execution -> dispatch pipeline,
-    not just protocol-level storage.
+    A mission with a single DO_SET_ACTUATOR item (Actuator 5 = +0.5, then -0.5 in a
+    second mission) reaches the vehicle's actuator output correctly once executed —
+    the full upload -> mission-execution -> dispatch pipeline, not just protocol-level
+    storage. One mission per value: only the last-executed value is observable.
 
-    PASS if the observed PWM is within tolerance of 1750us.
+    PASS if the observed PWM is within tolerance of each value's expected PWM.
     """
     await _ensure_actuator_output_observable(gcs_system)
-    items = _build_actuator_mission(home_item_for_mission)
-    try:
-        await gcs_system.mission_raw.upload_mission(items)
-        await gcs_system.action.arm()
-        await asyncio.sleep(1.0)
-        await gcs_system.mission_raw.start_mission()
-
-        pwm = await _read_actuator5_pwm(gcs_system, settle_s=3.0)
-        expected = _expected_pwm(0.5)
-        ok = pwm is not None and abs(pwm - expected) <= _PWM_TOLERANCE
-        log.info("PASS if PWM within %.0f of %.1f after mission execution: measured=%s", _PWM_TOLERANCE, expected, pwm)
-        # This is the definitive Tier 2 "is it honoured" check for the mission-item
-        # path — a real flown mission with a quantitative PWM confirmation, not just
-        # an upload/download round-trip — so it's what promotes the command-level
-        # fact from Tier 1's "null" (not independently tested past acceptance) to a
-        # genuine True/False. Without this call the JSON stays "supported": null
-        # forever, even on a passing run, since nothing else in this file records it.
-        record_compat_command_supported(
-            request, ok,
-            notes="Verified via commanded PWM output, not physical actuator feedback" if ok
-            else f"measured PWM={pwm}, expected {expected}",
-        )
-        record_compat_json(
-            request, "5_Actuator 5", supported=ok,
-            notes="Commanded output value verified" if ok else None,
-        )
-        assert ok, f"Actuator 5 PWM={pwm} after mission-item DO_SET_ACTUATOR execution, expected {expected}±{_PWM_TOLERANCE}"
-    finally:
+    results = []
+    for value in _ACTUATOR_VALUES:
+        items = _build_actuator_mission(home_item_for_mission, value)
         try:
-            await gcs_system.action.disarm()
-        except Exception as exc:
-            log.warning("disarm failed (may already be disarmed): %s", exc)
-        await clear_all_mission_types(gcs_system)
+            await gcs_system.mission_raw.upload_mission(items)
+            await gcs_system.action.arm()
+            await asyncio.sleep(1.0)
+            await start_mission_or_na(gcs_system)
+            pwm = await _read_actuator5_pwm(gcs_system, settle_s=3.0)
+            expected = _expected_pwm(value)
+            ok = pwm is not None and abs(pwm - expected) <= _PWM_TOLERANCE
+            results.append({"ok": ok, "detail": f"{value:+.1f}: PWM {pwm} (expected {expected:.0f}±{_PWM_TOLERANCE:.0f})"})
+            log.info("mission value %+.1f: %s", value, results[-1]["detail"])
+        finally:
+            try:
+                await gcs_system.action.disarm()
+            except Exception as exc:
+                log.warning("disarm failed (may already be disarmed): %s", exc)
+            await clear_all_mission_types(gcs_system)
+    ok = all(r["ok"] for r in results)
+    detail = "; ".join(r["detail"] for r in results)
+    record_tier2_detail(request, detail)
+    # The definitive Tier 2 "is it honoured" check for the mission-item path — a real
+    # executed mission with a quantitative PWM confirmation — so it's what promotes the
+    # command-level fact from Tier 1's "null" to a genuine True/False.
+    record_compat_command_supported(
+        request, ok,
+        notes="Verified via commanded PWM output, not physical actuator feedback" if ok else detail,
+    )
+    record_compat_json(request, "5_Actuator 5", supported=ok, notes="Commanded output value verified" if ok else None)
+    if not ok:
+        report.compat_fail(f"Mission-item DO_SET_ACTUATOR accepted but not reflected at the output: {detail}")

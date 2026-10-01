@@ -70,6 +70,8 @@ from tests.flight_helpers import (
     _request_position_stream,
     _rtl_and_land,
     _takeoff_via_command,
+    mission_landing_items,
+    request_message_rate,
     _tier2_auto_record,
     record_tier2_detail,
     record_tier2_param_verdict,
@@ -93,7 +95,6 @@ NAN = float("nan")
 _GATE_CMD = 4501
 _WAYPOINT_CMD = 16
 _DO_CHANGE_SPEED_CMD = 178
-_RTL_CMD = 20
 _MISSION_START_CMD = 300
 
 _CRUISE_ALT_M = 30.0
@@ -102,6 +103,7 @@ _LEG_LENGTH_M = 140.0   # wp1 -> wp2 distance along the leg
 _GATE_FRACTION = 0.5    # gate's projection onto the leg, as a fraction of its length
 _GATE_OFFSET_M = 25.0   # perpendicular (east) offset of the gate from the leg — "off-path"
 _REDUCED_SPEED_MPS = 2.0
+_GATE_SEQ = 1  # the gate's index in _build_mission's item list (wp1=0, gate=1)
 _DEFAULT_CRUISE_MPS = 5.0  # fallback if MPC_XY_CRUISE can't be read
 _ON_TRACK_TOLERANCE_M = 8.0     # max acceptable cross-track deviation if the gate is NOT a destination
 _GATE_APPROACH_TOLERANCE_M = 10.0  # min acceptable closest-approach to the gate's own coordinates
@@ -157,10 +159,10 @@ def _cross_track_distance_m(north_m: float, east_m: float, leg_start_north_m: fl
 
 def _build_mission(
     home_lat: float, home_lon: float, home_amsl_m: float,
-    *, gate_param2: float = 0.0, gate_alt_m: float = _CRUISE_ALT_M,
+    *, gate_param2: float = 0.0, gate_alt_m: float = _CRUISE_ALT_M, gate_east_m: float = _GATE_OFFSET_M,
 ) -> list[MissionItem]:
     """
-    wp1 -> gate (off-path) -> DO_CHANGE_SPEED -> wp2 -> RTL.
+    wp1 -> gate (off-path) -> DO_CHANGE_SPEED -> wp2 -> approach wp -> NAV_LAND.
 
     Deliberately carries NO takeoff item — the vehicle takes off via
     _takeoff_via_command() (commanded, not a mission-item NAV_TAKEOFF) before
@@ -175,9 +177,7 @@ def _build_mission(
 
     All items use frame=6 (GLOBAL_RELATIVE_ALT_INT) except DO_CHANGE_SPEED
     (frame=2, MAV_FRAME_MISSION — its params are unscaled, per
-    tests/mission/CLAUDE.md's frame-type findings) and RTL (frame=2, since
-    PX4 rejects RTL as a mission item outside MAV_FRAME_MISSION — see
-    do_reposition's sibling finding for the same command family).
+    tests/mission/CLAUDE.md's frame-type findings).
 
     `gate_param2` (UseAltitude) and `gate_alt_m` are overridable for
     test_gate_obs_use_altitude_gates_on_altitude_if_supported's conditional
@@ -188,7 +188,7 @@ def _build_mission(
 
     wp1_lat, wp1_lon = _latlon_at(home_lat, home_lon, _LEG_START_M, 0.0)
     wp2_lat, wp2_lon = _latlon_at(home_lat, home_lon, leg_end_m, 0.0)
-    gate_lat, gate_lon = _latlon_at(home_lat, home_lon, gate_north_m, _GATE_OFFSET_M)
+    gate_lat, gate_lon = _latlon_at(home_lat, home_lon, gate_north_m, gate_east_m)
 
     items = [
         MissionItem(
@@ -214,12 +214,13 @@ def _build_mission(
             x=int(wp2_lat * 1e7), y=int(wp2_lon * 1e7), z=_CRUISE_ALT_M,
             mission_type=0,
         ),
-        MissionItem(
-            seq=4, frame=2, command=_RTL_CMD, current=0, autocontinue=1,
-            param1=0.0, param2=0.0, param3=0.0, param4=0.0,
-            x=0, y=0, z=0.0, mission_type=0,
-        ),
     ]
+    # End on a real landing (approach waypoint + NAV_LAND, shared helper) rather
+    # than an RTL item: PX4 fixed-wing/VTOL refuse to start a mission without a
+    # landing (tests/mission/CLAUDE.md § "Mission shape a stack will fly"). Both
+    # sit well north of wp2, outside the leg this test analyses, and sampling is
+    # fixed-duration, so nothing measured depends on how the mission ends.
+    items.extend(mission_landing_items(items))
     return items
 
 
@@ -281,16 +282,20 @@ def _timing_caveat(samples: list[tuple[float, float, float, float]], sample_dura
     return ""
 
 
-async def _sample_track(system, home_lat: float, home_lon: float, duration_s: float) -> list[tuple[float, float, float, float]]:
+async def _sample_track(system, home_lat: float, home_lon: float, duration_s: float):
     """
-    Sample GLOBAL_POSITION_INT for duration_s; return a list of
-    (north_m, east_m, groundspeed_mps, elapsed_s) relative to (home_lat, home_lon)
-    and to the start of sampling. `elapsed_s` is diagnostic — used by
-    `_timing_caveat()` and this file's own logging to distinguish "ran out of
-    sampling time" from "behaved unexpectedly", and to inform future tuning of
-    `_CLIMB_AND_TRANSIT_ALLOWANCE_S` — not by any assertion directly.
+    Sample for duration_s; return (samples, seq_events).
+
+    samples: (north_m, east_m, groundspeed_mps, elapsed_s) from GLOBAL_POSITION_INT,
+    relative to (home_lat, home_lon) and to the start of sampling. seq_events:
+    (elapsed_s, seq) for every change of MISSION_CURRENT — the gate's trigger is the
+    moment the current item moves past the gate item (see _gate_trigger). `elapsed_s`
+    is also diagnostic: `_timing_caveat()` uses it to tell "ran out of sampling time"
+    from "behaved unexpectedly".
     """
     samples: list[tuple[float, float, float, float]] = []
+    seq_events: list[tuple[float, int]] = []
+    mc_count = [0]
     t0 = asyncio.get_event_loop().time()
 
     async def _collect() -> None:
@@ -305,13 +310,58 @@ async def _sample_track(system, home_lat: float, home_lon: float, duration_s: fl
             elapsed_s = asyncio.get_event_loop().time() - t0
             samples.append((north_m, east_m, speed, elapsed_s))
 
-    task = asyncio.create_task(_collect())
+    async def _collect_seq() -> None:
+        async for msg in system.mavlink_direct.message("MISSION_CURRENT"):
+            seq = int(json.loads(msg.fields_json)["seq"])
+            mc_count[0] += 1
+            if not seq_events or seq_events[-1][1] != seq:
+                seq_events.append((asyncio.get_event_loop().time() - t0, seq))
+
+    tasks = [asyncio.create_task(_collect()), asyncio.create_task(_collect_seq())]
     await asyncio.sleep(duration_s)
-    task.cancel()  # fire-and-forget — see CLAUDE.md §4a
-    return samples
+    for task in tasks:
+        task.cancel()
+    # The trigger can't be timed better than one MISSION_CURRENT interval — log the
+    # rate actually received (the 10 Hz request is fire-and-forget).
+    log.info("MISSION_CURRENT received at %.1f Hz (%d msgs in %.0fs); GLOBAL_POSITION_INT at %.1f Hz",
+             mc_count[0] / duration_s, mc_count[0], duration_s, len(samples) / duration_s)
+    return samples, seq_events
 
 
-async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, request):
+async def _request_mission_current_stream(system, rate_hz: float = 10.0) -> None:
+    """
+    Ask for MISSION_CURRENT at rate_hz. PX4 ignores this (its mission manager resends
+    at a fixed 1 Hz) but sends MISSION_CURRENT immediately whenever the current item
+    changes (mavlink_mission.cpp), so the trigger event isn't quantized — its
+    position is limited by GLOBAL_POSITION_INT's rate (~5 Hz, ~1 m at MC speed).
+    Kept for stacks that only report the change on their periodic stream.
+    """
+    await request_message_rate(system, 42, rate_hz)
+
+
+def _gate_trigger(samples, seq_events):
+    """
+    (north_m, elapsed_s) of the gate trigger: the vehicle's position when MISSION_CURRENT
+    first moves past the gate item, or None if it never did within the window.
+
+    Measured from the mission's own progress rather than from a speed change after
+    the gate (the pre-2026-09-30 method): a DO_CHANGE_SPEED to 2 m/s can't be flown
+    by a fixed-wing, and the speed method also lagged the true crossing by the
+    deceleration distance. This works identically for any vehicle type.
+    """
+    after = [t for t, seq in seq_events if seq > _GATE_SEQ]
+    if not after or not samples:
+        return None
+    t_trig = after[0]
+    nearest = min(samples, key=lambda s: abs(s[3] - t_trig))
+    return nearest[0], t_trig
+
+
+# Two gate positions (root CLAUDE.md rule 4c): the same off-path gate mirrored
+# either side of the leg, so a trigger that only happens to line up for one
+# geometry can't pass both.
+@pytest.mark.parametrize("gate_east_m", [_GATE_OFFSET_M, -_GATE_OFFSET_M], ids=["gate_east", "gate_west"])
+async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, request, restart_flight_stack, gate_east_m):
     """
     Fly wp1 -> gate (25 m off-path) -> DO_CHANGE_SPEED -> wp2 -> RTL (takeoff
     is commanded, not a mission item — see _build_mission's docstring) and
@@ -333,7 +383,7 @@ async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, r
     home = await _get_home_position(gcs_system)
     home_lat, home_lon, home_amsl = home.latitude_deg, home.longitude_deg, home.absolute_altitude_m
 
-    items = _build_mission(home_lat, home_lon, home_amsl)
+    items = _build_mission(home_lat, home_lon, home_amsl, gate_east_m=gate_east_m)
     cruise_mps = await _get_cruise_speed_mps(gcs_system)
     log.info("CONDITION_GATE flight: cruise speed=%.2f m/s, reduced target=%.2f m/s", cruise_mps, _REDUCED_SPEED_MPS)
 
@@ -372,6 +422,7 @@ async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, r
                 "no Tier 2 flight is possible or meaningful here"
             )
         await _request_position_stream(gcs_system, rate_hz=5.0)
+        await _request_mission_current_stream(gcs_system)
         await _takeoff_via_command(gcs_system, _CRUISE_ALT_M)
         await _send_mission_start(gcs_system)
 
@@ -383,9 +434,9 @@ async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, r
             + _LEG_START_M / cruise_mps
             + _LEG_LENGTH_M / _REDUCED_SPEED_MPS  # worst case: whole leg at the slower post-gate speed
         )
-        samples = await _sample_track(gcs_system, home_lat, home_lon, sample_duration_s)
+        samples, seq_events = await _sample_track(gcs_system, home_lat, home_lon, sample_duration_s)
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, restart_flight_stack)
         await clear_all_mission_types(gcs_system)
 
     assert samples, "No GLOBAL_POSITION_INT samples collected during the flight"
@@ -405,13 +456,13 @@ async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, r
     # --- Claim 1: track stays on the direct line, not bent toward the gate ---
     max_cross_track = max(_cross_track_distance_m(n, e, _LEG_START_M, leg_end_m) for n, e, _, _ in leg_samples)
     log.info("CONDITION_GATE flight: max cross-track deviation on leg = %.2f m (gate offset = %.1f m)",
-              max_cross_track, _GATE_OFFSET_M)
+              max_cross_track, gate_east_m)
     assert max_cross_track < _ON_TRACK_TOLERANCE_M, (
         f"Flown track deviated {max_cross_track:.1f} m from the direct wp1->wp2 line "
-        f"(tolerance {_ON_TRACK_TOLERANCE_M:.1f} m) — the gate (offset {_GATE_OFFSET_M:.1f} m) may be "
+        f"(tolerance {_ON_TRACK_TOLERANCE_M:.1f} m) — the gate (offset {gate_east_m:.1f} m) may be "
         "bending the route, contradicting PR #761's 'not a destination' claim"
     )
-    closest_to_gate = min(math.hypot(n - gate_north_m, e - _GATE_OFFSET_M) for n, e, _, _ in leg_samples)
+    closest_to_gate = min(math.hypot(n - gate_north_m, e - gate_east_m) for n, e, _, _ in leg_samples)
     log.info("CONDITION_GATE flight: closest approach to gate's own coordinates = %.2f m", closest_to_gate)
     assert closest_to_gate > _GATE_APPROACH_TOLERANCE_M, (
         f"Vehicle passed within {closest_to_gate:.1f} m of the gate's own coordinates "
@@ -419,39 +470,33 @@ async def test_gate_compat_does_not_bend_path_and_triggers_mid_leg(gcs_system, r
         "destination, contradicting PR #761"
     )
 
-    # --- Claim 2: speed drop occurs near the gate's leg-projection, not at a waypoint ---
-    threshold = (cruise_mps + _REDUCED_SPEED_MPS) / 2.0
-    drop_samples = [s for s in leg_samples if s[2] < threshold]
-    assert drop_samples, (
+    # --- Claim 2: the gate triggers near its leg-projection, not at a waypoint ---
+    trig = _gate_trigger(samples, seq_events)
+    assert trig is not None, (
         _timing_caveat(samples, sample_duration_s, gate_north_m) +
-        f"Groundspeed never dropped below the midpoint threshold ({threshold:.2f} m/s) on the leg — "
-        f"DO_CHANGE_SPEED (target {_REDUCED_SPEED_MPS:.1f} m/s) may not have executed at all; "
-        f"observed speeds: {[round(s[2], 2) for s in leg_samples]}"
+        f"The mission never advanced past the gate item (MISSION_CURRENT events: {seq_events}) — "
+        "the gate never triggered within the sampling window"
     )
-    trigger_north_m = drop_samples[0][0]
-    trigger_elapsed_s = drop_samples[0][3]
+    trigger_north_m, trigger_elapsed_s = trig
     log.info(
-        "CONDITION_GATE flight: speed dropped below %.2f m/s at north=%.1f m, t=%.1fs "
-        "(gate projects to %.1f m; %.1fs of the %.1fs sampling budget was unused after this — "
-        "see root CLAUDE.md's Tier 2 padding convention before shrinking budgets further)",
-        threshold, trigger_north_m, trigger_elapsed_s, gate_north_m,
+        "CONDITION_GATE flight: mission advanced past the gate at north=%.1f m, t=%.1fs "
+        "(gate projects to %.1f m; %.1fs of the %.1fs sampling budget unused after this)",
+        trigger_north_m, trigger_elapsed_s, gate_north_m,
         sample_duration_s - trigger_elapsed_s, sample_duration_s,
     )
     assert _LEG_START_M + 5.0 < trigger_north_m < leg_end_m - 5.0, (
-        f"Speed drop detected at north={trigger_north_m:.1f} m, essentially at a waypoint "
+        f"Gate triggered at north={trigger_north_m:.1f} m, essentially at a waypoint "
         f"(leg spans {_LEG_START_M:.0f}-{leg_end_m:.0f} m) rather than mid-leg — does not look like "
         "gate-triggered blocking"
     )
-    # Generous tolerance: PX4 needs some distance to decelerate to the new
-    # setpoint, so the *detected* drop lags the true crossing point.
     assert abs(trigger_north_m - gate_north_m) < _LEG_LENGTH_M * 0.4, (
-        f"Speed drop at north={trigger_north_m:.1f} m is far from the gate's projection "
+        f"Gate triggered at north={trigger_north_m:.1f} m, far from the gate's projection "
         f"({gate_north_m:.1f} m) relative to the leg length ({_LEG_LENGTH_M:.0f} m)"
     )
     record_tier2_detail(
         request,
         f"PASS if the route stays on the direct wp1-wp2 line (max cross-track "
-        f"{max_cross_track:.1f}m) and the DO_CHANGE_SPEED trigger fires mid-leg "
+        f"{max_cross_track:.1f}m) and the gate triggers mid-leg "
         f"(north={trigger_north_m:.1f}m, gate projects to {gate_north_m:.1f}m) rather than at "
         f"either waypoint — confirms mavlink-devguide PR #761's two behavioural claims",
     )
@@ -490,7 +535,7 @@ async def _probe_use_altitude_stored(system, home_lat: float, home_lon: float) -
     return bool(downloaded) and abs(downloaded[0].param2 - 1.0) < 1e-6
 
 
-async def test_gate_obs_use_altitude_gates_on_altitude_if_supported(gcs_system, request):
+async def test_gate_obs_use_altitude_gates_on_altitude_if_supported(gcs_system, request, restart_flight_stack):
     """
     Fly a gate placed _GATE_ALT_OFFSET_M above cruise altitude with
     UseAltitude=1 (MAV_BOOL_TRUE — "include altitude") and observe whether
@@ -532,29 +577,29 @@ async def test_gate_obs_use_altitude_gates_on_altitude_if_supported(gcs_system, 
                 "test_gate_compat_does_not_bend_path_and_triggers_mid_leg already establishes this"
             )
         await _request_position_stream(gcs_system, rate_hz=5.0)
+        await _request_mission_current_stream(gcs_system)
         await _takeoff_via_command(gcs_system, _CRUISE_ALT_M)
         await _send_mission_start(gcs_system)
         sample_duration_s = (
             _CLIMB_AND_TRANSIT_ALLOWANCE_S + _LEG_START_M / cruise_mps + _LEG_LENGTH_M / _REDUCED_SPEED_MPS
         )
-        samples = await _sample_track(gcs_system, home_lat, home_lon, sample_duration_s)
+        samples, seq_events = await _sample_track(gcs_system, home_lat, home_lon, sample_duration_s)
     finally:
-        await _rtl_and_land(gcs_system)
+        await _rtl_and_land(gcs_system, restart_flight_stack)
         await clear_all_mission_types(gcs_system)
 
-    threshold = (cruise_mps + _REDUCED_SPEED_MPS) / 2.0
-    fired = [s for s in samples if s[2] < threshold]
+    fired = _gate_trigger(samples, seq_events)
     if fired:
         detail = (
             f"Observational: UseAltitude=1 with gate {_GATE_ALT_OFFSET_M:.0f}m above cruise altitude — "
-            f"DO_CHANGE_SPEED fired anyway at north={fired[0][0]:.1f}m — UseAltitude has no functional "
+            f"the gate triggered anyway at north={fired[0]:.1f}m — UseAltitude has no functional "
             f"effect on the crossing test (param2_stored={param2_stored})"
         )
         log.warning(detail)
     else:
         detail = (
             f"Observational: UseAltitude=1 with gate {_GATE_ALT_OFFSET_M:.0f}m above cruise altitude — "
-            f"DO_CHANGE_SPEED never fired within the budget — UseAltitude appears to gate on altitude "
+            f"the gate never triggered within the budget — UseAltitude appears to gate on altitude "
             f"as mavlink-devguide PR #761 describes (param2_stored={param2_stored})"
         )
         log.warning(detail)

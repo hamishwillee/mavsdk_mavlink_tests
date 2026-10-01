@@ -12,7 +12,7 @@ Command-protocol path only (COMMAND_LONG/COMMAND_INT → COMMAND_ACK) — there'
 - **`param2=1` genuinely resets a `DO_JUMP` repeat counter** on PX4 MC, confirmed in flight (Tier 2): a `JUMP_REPEAT=2` loop visits the target 3 times normally, 4 times when reset mid-loop.
 - **`param2` does NOT gate whether a completed mission can resume** on PX4 — that's purely positional (`param1` pointed at a valid, non-terminal index + re-engaging Mission mode). See DOC DISCREPANCY #2/#3.
 - **`MISSION_CURRENT` oscillates rapidly around a `DO_JUMP` item** on PX4 (same seq pair reported alternately, no real travel) — a reporting artifact that broke naive seq-transition counting; see Tier 2 below for the fix.
-- **ArduCopter SITL doesn't complete initialisation in this environment** (confirmed on three independent builds; PX4 SITL is unaffected) — see § ArduCopter SITL boot issue.
+- ~~**ArduCopter SITL doesn't complete initialisation in this environment**~~ — resolved 2026-10-01 (harness gap, not SITL); see § ArduCopter SITL boot issue.
 
 ## Authoritative behaviour matrix
 
@@ -111,6 +111,8 @@ SITL doesn't reach `is_armable` in this environment — see § ArduCopter SITL b
 Per the (partially stale — see DOC DISCREPANCY #1) survey in `tests/command/README.md`: ArduRover expected SUPPORTED, ArduPlane FW/QP expected UNKNOWN (no ACK), PX4 FW/VTOL/Rover expected UNSUPPORTED. Given the PX4 MC discrepancy found this session, don't trust these without re-verification.
 
 ## ArduCopter SITL boot issue
+
+> **Resolved 2026-10-01 — a harness gap, not SITL.** ArduCopter doesn't stream SYS_STATUS unless asked, so MAVSDK's `is_armable` never updated; there were two further ArduCopter-specific setup gaps (EKF position, takeoff without RC throttle). The harness now handles all three — see root `CLAUDE.md` future-work #7. ArduCopter results in this file are still from before the fix; re-run to fill them in.
 
 SITL never reaches `is_armable` — gyro/accel/mag `calibration_ok` stay false (40s+ probe), console log stalls on `Waiting for internal clock bits to be set (current=0x00)` after loading default params, no further progress. Params file, CPU/memory contention, and the `-S`/`--synthetic-clock` deprecation warning are all ruled out.
 

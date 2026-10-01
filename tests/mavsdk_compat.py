@@ -148,6 +148,11 @@ class SystemShim:
     def __init__(self, system, server_component=None):
         self._system = system
         self._server_component = server_component
+        # Bumped by Endpoint.reopen() (e.g. after a flight-stack restart):
+        # subscriptions made before it are on the destroyed connection, and
+        # anything requested from the vehicle (message rates) was forgotten.
+        # tests/message_watcher.ensure_harness_streams() keys on it.
+        self.generation = 0
 
     async def connect(self, *args, **kwargs) -> None:
         """No-op — kept so old `await system.connect()` call sites still work."""
@@ -232,10 +237,28 @@ class Endpoint:
             raise RuntimeError(f"{self.name}: add_any_connection({self.url}) failed: {result}")
         log.info("MAVSDK endpoint %s up (sysid=%d compid=%d, %s)", self.name, self.sysid, self.compid, self.url)
 
-    def reopen(self) -> None:
-        """Tear down and recreate the connection (e.g. after the flight stack was restarted)."""
-        self.close()
+    def reopen(self, timeout_s: float = 30.0) -> None:
+        """
+        Tear down and recreate the connection (e.g. after the flight stack was
+        restarted), and rebind the existing SystemShim — if any — to the new
+        connection's System in place. Tests hold that shim object for their
+        whole duration, so replacing it would leave them calling into the
+        destroyed instance ("system handle is null", seen 2026-09-30 when a
+        mid-test restart was followed by the same test's cleanup).
+        """
+        shim = self._shim
+        self.close()  # also drops the shim's cached plugins
         self._open()
+        if shim is None:
+            return
+        # Synchronous discovery: this runs from the synchronous restart fixture.
+        from mavsdk.asyncio.system import System as _AsyncSystem
+        system = self.mavsdk._mavsdk.first_autopilot(timeout_s)
+        if system is None:
+            raise RuntimeError(f"{self.name}: no autopilot rediscovered within {timeout_s}s after reopen")
+        shim._system = _AsyncSystem(system)
+        shim.generation += 1
+        self._shim = shim
 
     def close(self) -> None:
         if self._shim is not None:

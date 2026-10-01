@@ -57,11 +57,14 @@ ArduCopter::
 """
 
 import asyncio
+import math
 import datetime
 import logging
 from pathlib import Path
 
 import pytest
+
+from tests import report
 from mavsdk.plugins.telemetry import LandedState, VtolState
 
 from tests.command.conftest import (
@@ -86,6 +89,10 @@ from tests.flight_helpers import (
     _wait_armable,
     _wait_for_altitude,
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
+    _get_position,
+    record_tier2_detail,
+    record_compat_json,
+    record_tier2_param_verdict,
 )
 
 log = logging.getLogger(__name__)
@@ -339,6 +346,65 @@ async def _arm_and_climb(
                     return
     finally:
         progress_task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# "Is the landing position honoured" — rule 4 compat check, two targets
+# ---------------------------------------------------------------------------
+# NAV_LAND's lat/lon (hasLocation/isDestination) means "land here", read under
+# the XML's shared location convention (root CLAUDE.md rule 6). The comprehensive
+# tests below only characterise the landing; this is the definitive check: two
+# targets 90° apart (rule 4c), each flown as its own climb-and-land cycle, with
+# the touchdown point compared against the commanded one. NACKed = PASS (a
+# legitimate "not supported"); accepted but landed elsewhere = compatibility
+# error (rule 4). Not gated on vehicle type (rule 5).
+LAND_POSITION_TARGETS = (("60 m N", 60.0, 0.0), ("60 m E", 60.0, 90.0))
+
+
+@pytest.mark.timeout(900)  # two climb + land cycles
+async def test_nav_land_compat_position_honoured(gcs_system, request, restart_flight_stack):
+    """NAV_LAND lat/lon 60 m N and 60 m E of home — each NACKed, or the vehicle touches down there."""
+    autopilot = request.config.getoption("--autopilot")
+    await _request_position_stream(gcs_system)
+    home = await _get_home_position(gcs_system)
+    results = []
+    for label, dist, bearing in LAND_POSITION_TARGETS:
+        n = dist * math.cos(math.radians(bearing))
+        e = dist * math.sin(math.radians(bearing))
+        tgt_lat = home.latitude_deg + n / 111111.0
+        tgt_lon = home.longitude_deg + e / (111111.0 * math.cos(math.radians(home.latitude_deg)))
+        try:
+            await _arm_and_climb(gcs_system, autopilot, home, TAKEOFF_ALT_M)
+            if autopilot == "px4":
+                cmd_z, cmd_frame = home.absolute_altitude_m, 5   # ground level AMSL
+            else:
+                cmd_z, cmd_frame = 0.0, 3                         # ground level relative to home
+            ack = await probe_command_int(gcs_system, **_land_cmd(
+                x=int(tgt_lat * 1e7), y=int(tgt_lon * 1e7), z=cmd_z, frame=cmd_frame,
+            ))
+            if ack is None:
+                pytest.fail(f"No COMMAND_ACK for NAV_LAND to {label} — cannot classify")
+            if int(ack["result"]) not in (0, 5):
+                results.append({"ok": False, "nacked": True, "detail": f"{label}: REJECTED (result={int(ack['result'])})"})
+                continue
+            landed = await _wait_for_landed_state(gcs_system, LandedState.ON_GROUND, TOUCHDOWN_TIMEOUT_S)
+            pos = await _get_position(gcs_system)
+            d = _dist_m(pos.latitude_deg, pos.longitude_deg, tgt_lat, tgt_lon)
+            detail = f"{label}: touched down {d:.1f} m from target" + ("" if landed else " (ON_GROUND not reported)")
+            results.append({"ok": landed and d <= TOUCHDOWN_MATCH_M, "nacked": False, "detail": detail})
+            log.info(_FMT, _CMD, "land position honoured?", detail)
+        finally:
+            await _rtl_and_land(gcs_system, restart_flight_stack)
+    ok = all(r["ok"] for r in results)
+    nacked = all(r["nacked"] for r in results)
+    detail = "; ".join(r["detail"] for r in results)
+    record_tier2_detail(request, detail)
+    verdict = "REJECTED (NACKed)" if nacked else "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR"
+    for lbl, key in (("param5 (Latitude)", "5_Latitude"), ("param6 (Longitude)", "6_Longitude")):
+        record_tier2_param_verdict(request, lbl, verdict)
+        record_compat_json(request, key, supported=ok, nacks_on_non_sentinel_value=None if ok else nacked)
+    if not all(r["ok"] or r["nacked"] for r in results):
+        report.compat_fail(f"NAV_LAND lat/lon accepted but not honoured: {detail} (root CLAUDE.md rule 4)")
 
 
 # ---------------------------------------------------------------------------

@@ -220,6 +220,24 @@ For ArduCopter (requires home at seq=0), use `home_item_for_mission` from `tests
 When not None, prepend it as seq=0 and renumber the probe item to seq=1.
 Always find the probe item by `seq` on download, not by list index.
 
+### Mission shape a stack will fly (Tier 2)
+
+Like the home slot above, some stacks only *execute* a mission of a particular shape — and unlike the home slot, the upload still succeeds, so a wrong shape only shows up as a refused start. Every Tier 2 test that flies a mission must account for this (found 2026-09-30, PX4 SIH fixed-wing, v1.17 and main):
+
+- **PX4 fixed-wing and VTOL require a landing.** `MIS_TKO_LAND_REQ` defaults to 2 ("Require a landing") in `rc.fw_defaults`/`rc.vtol_defaults`. A mission without a NAV_LAND is rejected by the feasibility checker (event `navigator_mis_land_missing`, "Mission rejected: Landing waypoint/pattern required"; arming check "No valid mission available").
+- **A fixed-wing landing must be entered from a waypoint.** The item before a NAV_LAND must be a WAYPOINT or ORBIT_TO_ALT (event `navigator_mis_unsupported_landing_approach_wp`) — a NAV_LAND straight after a NAV_TAKEOFF is rejected too.
+- **The symptom is a DENIED start, not a rejected upload.** `start_mission()` returns DENIED once armed ("Switching to Mission is currently not available"); PX4 does let Mission mode be *selected* while disarmed, so probing without arming misleads. MAVSDK 4's `events` plugin (`subscribe_events()`, `subscribe_health_and_arming_checks()`) gives the exact reason — use it before guessing from STATUSTEXT. A "Preflight Fail: no heading reference" message seen at the same time is a red herring: it's gone ~2 s after boot.
+- **An RTL item doesn't satisfy it, and RTL doesn't land a fixed-wing anyway**: PX4 FW RTL loiters at `RTL_RETURN_ALT` (100 m) with no landing pattern. Tier 2 cleanup must pass `restart_flight_stack` (root `CLAUDE.md` Tier 2 pattern #8) or every later test starts airborne.
+
+**How tests handle it — two shared tools in `tests/flight_helpers.py`, chosen by whether the mission's ending matters to the test:**
+
+| Situation | Tool | Used by |
+|---|---|---|
+| The ending doesn't matter (every measurement happens earlier) | `mission_landing_items(items, fallback)` — appends an approach waypoint (600 m past the furthest point, 30 m) and a NAV_LAND (1200 m past) | `nav_takeoff` (via `_build_mission`), `condition_gate` (replaces its old final RTL item) |
+| The ending *is* the test (e.g. completion into Hold, a DO item executed on the ground) | `start_mission_or_na(system)` — keeps the mission as designed; a DENIED start becomes an NA skip naming the likely cause (a NACK is the one legitimate skip basis, root `CLAUDE.md` Tier 2 pattern #1) | `do_set_mission_current` (command, flies missions), `do_set_actuator` (mission) |
+
+Rules for a new mission-flying Tier 2 test: pick one of the two; keep the landing items in the mission rather than overriding `MIS_TKO_LAND_REQ` (tests should fly the stack's shipped configuration, and the suite would otherwise stop noticing the requirement); anchor the landing on a real coordinate — pass `fallback` (e.g. home) when every item is a sentinel; and pass `restart_flight_stack` to every `_rtl_and_land()`.
+
 ### Conditional Tier 2 pattern
 
 See also root `CLAUDE.md`'s "General testing philosophy for MAV_CMD support" for the broader framing this pattern is one instance of (supported-vs-fail, characterisation-vs-"is it honoured", the accepted-but-ignored-without-NACK rule).

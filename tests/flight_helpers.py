@@ -32,6 +32,9 @@ from mavsdk.plugins.mavlink_direct import MavlinkMessage
 from mavsdk.plugins.telemetry import LandedState
 
 from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
+from tests.message_watcher import (  # noqa: F401 — request_message_rate re-exported
+    MAV_AUTOPILOT_ARDUPILOTMEGA, ensure_harness_streams, request_message_rate,
+)
 from tests import report
 from tests.command.conftest import probe_command_int, probe_command_long, send_command_int
 
@@ -129,6 +132,7 @@ async def _request_position_stream(system, rate_hz: float = 5.0) -> None:
 
 async def _get_home_position(system, timeout_s: float = 30.0):
     """Return the vehicle's home Position from telemetry."""
+    await ensure_harness_streams(system)  # ArduPilot only streams HOME_POSITION when asked
     async with asyncio.timeout(timeout_s):
         async for home in system.telemetry.home():
             return home
@@ -164,9 +168,50 @@ async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ESTIMATOR_STATUS_FLAGS that ArduPilot's own CI (Tools/autotest/
+# vehicle_test_suite.py, wait_ekf_happy(require_absolute=True)) waits for before
+# arming: attitude, velocity, relative/absolute/predicted position — and none
+# of const-pos mode, GPS glitch, accel error.
+_EKF_REQUIRED_FLAGS = 1 | 2 | 4 | 8 | 16 | 32 | 256 | 512
+_EKF_ERROR_FLAGS = 128 | 1024 | 2048
+_EKF_HOLD_S = 1.0  # flags must hold this long, not flicker true once
+
+
+async def _wait_ardupilot_ekf_position(system, timeout_s: float) -> None:
+    """
+    ArduPilot only: wait until EKF_STATUS_REPORT shows a usable absolute
+    position. ArduCopter reports is_armable about 1 s after the EKF origin is
+    set, before AUTO/GUIDED will accept it ("Mode change to Auto failed:
+    requires position", 2026-10-01) — arming in that window starts the test
+    on a vehicle that can't fly it.
+    """
+    since: float | None = None
+    last_flags = None
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for msg in system.mavlink_direct.message("EKF_STATUS_REPORT"):
+                last_flags = json.loads(msg.fields_json).get("flags", 0)
+                ok = (last_flags & _EKF_REQUIRED_FLAGS) == _EKF_REQUIRED_FLAGS and not last_flags & _EKF_ERROR_FLAGS
+                now = _time_m.monotonic()
+                if not ok:
+                    since = None
+                elif since is None:
+                    since = now
+                elif now - since >= _EKF_HOLD_S:
+                    return
+    except TimeoutError:
+        watcher = getattr(system, "watcher", None)
+        detail = f"; {watcher.explain('EKF_STATUS_REPORT')}" if watcher is not None else ""
+        raise TimeoutError(
+            f"ArduPilot EKF position not ready within {timeout_s:.0f}s "
+            f"(EKF_STATUS_REPORT flags={last_flags}, need {_EKF_REQUIRED_FLAGS} and none of {_EKF_ERROR_FLAGS}){detail}"
+        ) from None
+
+
 async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
     """
-    Block until the vehicle reports is_armable=True.
+    Block until the vehicle reports is_armable=True — and, on ArduPilot, until
+    its EKF has a usable absolute position (_wait_ardupilot_ekf_position).
 
     Uses fire-and-forget task + asyncio.Event to avoid leaving a dangling gRPC
     health stream after timeout cancellation (CLAUDE.md §4a pattern) — the
@@ -174,6 +219,9 @@ async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
     in a background task and only awaiting a plain Event ensures clean timeout
     handling.
     """
+    # After a mid-test flight-stack restart, SYS_STATUS must be re-requested
+    # (ArduPilot) and the watcher re-subscribed — no-op otherwise.
+    await ensure_harness_streams(system)
     armable_event = asyncio.Event()
 
     async def _watch() -> None:
@@ -185,8 +233,17 @@ async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
     task = asyncio.create_task(_watch())
     try:
         await asyncio.wait_for(armable_event.wait(), timeout=timeout_s)
+    except TimeoutError:
+        # is_armable is only ever SYS_STATUS's PREARM_CHECK bit — say whether
+        # that message arrived at all (tests/message_watcher.py).
+        watcher = getattr(system, "watcher", None)
+        detail = f": {watcher.explain('SYS_STATUS')}" if watcher is not None else ""
+        raise TimeoutError(f"is_armable not True within {timeout_s:.0f}s{detail}") from None
     finally:
         task.cancel()  # fire-and-forget — do NOT await (§4a)
+    # Keyed on the autopilot the vehicle's own HEARTBEAT reports (tests/conftest.py's gcs_system).
+    if getattr(system, "autopilot_type", None) == MAV_AUTOPILOT_ARDUPILOTMEGA:
+        await _wait_ardupilot_ekf_position(system, timeout_s)
 
 
 async def _takeoff_via_command(system, altitude_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S) -> None:
@@ -450,7 +507,7 @@ async def _rtl_and_land(system, restart_flight_stack=None, timeout_s: float | No
                     landed = True
                     break
     except Exception as exc:
-        log.warning("RTL/land wait failed: %s", exc)
+        log.warning("RTL/land wait failed: %r", exc)  # %r: a bare TimeoutError's str() is empty
 
     if landed:
         await asyncio.sleep(2.0)
@@ -514,6 +571,7 @@ async def _reboot_sitl_if_degraded(system, label: str = "SITL") -> None:
     # Wait for PX4 SIH to boot and for EKF to begin converging before
     # re-requesting streams (streams silently timeout if PX4 isn't ready yet).
     await asyncio.sleep(15.0)
+    await ensure_harness_streams(system, force=True)  # a reboot forgets message intervals
     await _request_position_stream(system)
     await _request_home_position(system)
     log.info("%s SITL reboot: done — caller should now _wait_armable(120 s)", label)
@@ -549,6 +607,96 @@ def _offset_lat_lon(lat_deg: float, lon_deg: float, north_m: float, east_m: floa
 def _north_of(lat_deg: float, metres: float) -> int:
     """Return latitude as int×1e7 for a position metres north of lat_deg."""
     return int((lat_deg + metres / 111111.0) * 1e7)
+
+
+# ---------------------------------------------------------------------------
+# Mission shape requirements a stack imposes before it will fly a mission
+# ---------------------------------------------------------------------------
+# PX4 fixed-wing and VTOL (both v1.17 and main, confirmed 2026-09-30) refuse to
+# start a mission that doesn't end in a landing, and a fixed-wing landing must
+# be entered from a waypoint:
+#   - MIS_TKO_LAND_REQ defaults to 2 ("Require a landing") in rc.fw_defaults /
+#     rc.vtol_defaults → event navigator_mis_land_missing, "Mission rejected:
+#     Landing waypoint/pattern required".
+#   - the item before a NAV_LAND must be a WAYPOINT or ORBIT_TO_ALT → event
+#     navigator_mis_unsupported_landing_approach_wp.
+# Either way the upload is accepted but start_mission() is DENIED ("Switching
+# to Mission is currently not available"). Full story: tests/mission/CLAUDE.md
+# § "Mission shape a stack will fly". Two tools, one per situation:
+
+_LANDING_APPROACH_M = 600.0
+_LANDING_BEYOND_M = 1200.0
+_LANDING_APPROACH_ALT_M = 30.0
+
+
+def mission_landing_items(items, fallback_lat_lon_int: tuple[int, int] | None = None, *,
+                          anchor_lat_lon_int: tuple[int, int] | None = None, bearing_deg: float = 0.0):
+    """
+    [approach NAV_WAYPOINT, NAV_LAND] to append to a flight mission whose end
+    doesn't matter to the test, so it stays valid under stack defaults that
+    require a landing. Placed 600 m / 1200 m past the mission's furthest-north
+    real coordinate (or `fallback_lat_lon_int`, e.g. home, when every item is
+    a sentinel) — far enough for a fixed-wing glide slope, and well clear of
+    anything a test measures, which all happens before the approach waypoint
+    becomes active. Items are `mavsdk.plugins.mission_raw.MissionItem`, seq
+    continuing from `items`. Returns [] when there's nothing to anchor on.
+
+    `anchor_lat_lon_int`/`bearing_deg` place them from an explicit point along a
+    chosen bearing instead — for a test whose measurement is about position, so
+    the path to the landing can't pass over its target by chance (e.g. the
+    NAV_TAKEOFF position check anchors on home and lands to the south-west).
+    """
+    from mavsdk.plugins.mission_raw import MissionItem
+
+    if anchor_lat_lon_int is not None:
+        ref_x, ref_y = anchor_lat_lon_int
+    else:
+        real = [(it.x, it.y) for it in items if 0 < abs(it.x) < 900_000_000 and 0 < abs(it.y) < 1_800_000_000]
+        if not real and fallback_lat_lon_int is not None:
+            real = [fallback_lat_lon_int]
+        if not real:
+            return []
+        ref_x, ref_y = max(real)  # furthest north
+    lat, lon = ref_x / 1e7, ref_y / 1e7
+
+    def _at(metres: float) -> tuple[int, int]:
+        n = metres * math.cos(math.radians(bearing_deg))
+        e = metres * math.sin(math.radians(bearing_deg))
+        return (int((lat + n / 111111.0) * 1e7),
+                int((lon + e / (111111.0 * math.cos(math.radians(lat)))) * 1e7))
+
+    common = dict(frame=6, current=0, autocontinue=1, param1=0.0, param2=0.0, param3=0.0,
+                  param4=float("nan"), mission_type=0)
+    ax, ay = _at(_LANDING_APPROACH_M)
+    lx, ly = _at(_LANDING_BEYOND_M)
+    return [
+        MissionItem(seq=len(items), command=16, x=ax, y=ay, z=_LANDING_APPROACH_ALT_M, **common),  # NAV_WAYPOINT
+        MissionItem(seq=len(items) + 1, command=21, x=lx, y=ly, z=0.0, **common),                  # NAV_LAND
+    ]
+
+
+async def start_mission_or_na(system) -> None:
+    """
+    start_mission(), turning a stack's DENIED into an explained NA skip.
+
+    For a test whose mission shape IS the thing under test (e.g. a mission
+    that must complete into Hold, or a single DO item executed on the ground),
+    so a landing can't simply be appended. A stack refusing to start it is a
+    protocol-level NACK — the one legitimate reason to skip (root CLAUDE.md
+    Tier 2 pattern #1) — not a failure of the command under test.
+    """
+    from mavsdk.plugins.mission_raw import MissionRawError, MissionRawResult
+
+    try:
+        await system.mission_raw.start_mission()
+    except MissionRawError as exc:
+        if exc.result == MissionRawResult.DENIED:
+            pytest.skip(
+                "NA: the stack refused to start this mission (DENIED) — its mission shape is "
+                "what's under test, so it can't be changed to suit. PX4 fixed-wing/VTOL refuse "
+                "missions without a landing (MIS_TKO_LAND_REQ) — see tests/mission/CLAUDE.md"
+            )
+        raise
 
 
 # ---------------------------------------------------------------------------

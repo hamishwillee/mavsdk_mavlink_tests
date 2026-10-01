@@ -112,6 +112,7 @@ from mavsdk.plugins.mission_raw import MissionItem
 
 from tests.command.conftest import probe_command_long
 from tests.flight_helpers import (
+    start_mission_or_na,
     _get_flight_mode,
     _get_home_position,
     _north_of,
@@ -440,7 +441,7 @@ async def _fly_jump_mission(system, home_item, home, *, send_reset_after_visit: 
 
     await _wait_armable(system)
     await system.action.arm()
-    await system.mission_raw.start_mission()
+    await start_mission_or_na(system)
     log.info("Armed and mission started")
 
     visits = 0
@@ -577,7 +578,7 @@ async def test_param2_restarts_completed_mission(gcs_system, home_item_for_missi
 
         await _wait_armable(gcs_system)
         await gcs_system.action.arm()
-        await gcs_system.mission_raw.start_mission()
+        await start_mission_or_na(gcs_system)
         log.info("Armed and mission started")
 
         completed_state = await _wait_for_mission_state(
@@ -705,7 +706,7 @@ async def test_param2_restarts_from_early_item_after_hold(gcs_system, home_item_
 
         await _wait_armable(gcs_system)
         await gcs_system.action.arm()
-        await gcs_system.mission_raw.start_mission()
+        await start_mission_or_na(gcs_system)
         log.info("Armed and mission started")
 
         completed_state = await _wait_for_mission_state(
