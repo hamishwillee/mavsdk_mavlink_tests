@@ -8,6 +8,7 @@ Detailed notes for each test subtree live in their own CLAUDE.md files:
 - `tests/mission/CLAUDE.md` — mission protocol, frame type tables, MAV_CMD methodology, shared Tier 1 mission-test framework
 - `tests/mission/nav_takeoff/CLAUDE.md` — NAV_TAKEOFF storage test results (all stacks)
 - `tests/mission/nav_vtol_takeoff/CLAUDE.md` — NAV_VTOL_TAKEOFF mission item (Tier 1 + Tier 2), with `tests/command/nav_vtol_takeoff/` for the command; per-stack verdicts, what param7 is used as (transition vs final altitude), and a PX4 INT32_MAX lat/lon fly-away
+- `tests/mission/camera_target_id/CLAUDE.md` — every mission camera command's target camera ID (one directory, one flight per id case); verifies PX4's camera-target-id change, plus a PX4 COMMAND_LONG queue bug that drops back-to-back camera commands
 - `tests/mission/do_reposition/CLAUDE.md` — DO_REPOSITION rejected as a mission item everywhere (UNSUPPORTED, spec-aligned); baseline-probe NaN pitfall
 - `tests/mission/condition_gate/CLAUDE.md` — CONDITION_GATE (`<wip/>`, needs the raw mavlink_direct transport); PX4 param-drop bug; a real PX4 mask fix that needed a SITL rebuild to take effect; a raw-transport bug found against ArduCopter's deprecated MISSION_REQUEST
 - `tests/mission/do_set_actuator/CLAUDE.md` / `tests/command/do_set_actuator/CLAUDE.md` — DO_SET_ACTUATOR, built to verify PX4 PR #28723's actuator-scaling fix; requires MAV_FRAME_MISSION as a mission item (unrelated PX4 finding); PWM-output Tier 2 observability mechanism; a stale-binary false-positive hit and resolved mid-verification
@@ -137,6 +138,7 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   test_frame_types.py    MAV_FRAME support matrix (65 tests, stack-agnostic)
   nav_takeoff/           NAV_TAKEOFF mission-protocol tests (Tier1MissionTestBase) — see nav_takeoff/CLAUDE.md
   nav_vtol_takeoff/      NAV_VTOL_TAKEOFF mission-protocol tests (Tier1MissionTestBase; Tier 2 flight) — see nav_vtol_takeoff/CLAUDE.md
+  camera_target_id/      Camera commands' target camera ID (11 commands; generated Tier1MissionTestBase classes; Tier 2 routing) — see camera_target_id/CLAUDE.md
   do_reposition/         DO_REPOSITION mission-protocol tests (Tier1MissionTestBase) — see do_reposition/CLAUDE.md
   condition_gate/        CONDITION_GATE mission-protocol tests (raw transport; Tier 1 + Tier 2 flight) — see condition_gate/CLAUDE.md
   do_set_actuator/       DO_SET_ACTUATOR mission-protocol tests (Tier1MissionTestBase; requires MAV_FRAME_MISSION) — see do_set_actuator/CLAUDE.md
