@@ -155,6 +155,31 @@ async def _get_heading(system, timeout_s: float = 5.0) -> float:
     raise TimeoutError("Heading not received")
 
 
+# MAV_TYPE_VTOL_* (minimal.xml): tailsitter duo/quad, tiltrotor, fixedrotor,
+# tailsitter, tiltwing, reserved5, gyrodyne.
+_VTOL_MAV_TYPES = {19, 20, 21, 22, 23, 24, 25, 47}
+
+
+async def vehicle_is_vtol(system, timeout_s: float = 5.0) -> bool | None:
+    """
+    Whether the vehicle says it's a VTOL, from its own HEARTBEAT `type` — never
+    `--vehicle-type` (root CLAUDE.md rule 5). None if no autopilot HEARTBEAT arrives.
+
+    Not EXTENDED_SYS_STATE.vtol_state: ArduCopter hard-codes MAV_VTOL_STATE_MC
+    (GCS_MAVLink_Copter.h), so "any state but UNDEFINED" calls a quadcopter a VTOL.
+    """
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for msg in system.mavlink_direct.message("HEARTBEAT"):
+                f = json.loads(msg.fields_json)
+                if f.get("autopilot") == 8:  # MAV_AUTOPILOT_INVALID — a GCS or companion, not the vehicle
+                    continue
+                return int(f["type"]) in _VTOL_MAV_TYPES
+    except TimeoutError:
+        return None
+    return None
+
+
 async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
     """Return current flight mode name as a string."""
     async with asyncio.timeout(timeout_s):

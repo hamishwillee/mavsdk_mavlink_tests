@@ -7,6 +7,7 @@ This file records protocol behaviour, design decisions, and change-tracking note
 Detailed notes for each test subtree live in their own CLAUDE.md files:
 - `tests/mission/CLAUDE.md` — mission protocol, frame type tables, MAV_CMD methodology, shared Tier 1 mission-test framework
 - `tests/mission/nav_takeoff/CLAUDE.md` — NAV_TAKEOFF storage test results (all stacks)
+- `tests/mission/nav_vtol_takeoff/CLAUDE.md` — NAV_VTOL_TAKEOFF mission item (Tier 1 + Tier 2), with `tests/command/nav_vtol_takeoff/` for the command; per-stack verdicts, what param7 is used as (transition vs final altitude), and a PX4 INT32_MAX lat/lon fly-away
 - `tests/mission/do_reposition/CLAUDE.md` — DO_REPOSITION rejected as a mission item everywhere (UNSUPPORTED, spec-aligned); baseline-probe NaN pitfall
 - `tests/mission/condition_gate/CLAUDE.md` — CONDITION_GATE (`<wip/>`, needs the raw mavlink_direct transport); PX4 param-drop bug; a real PX4 mask fix that needed a SITL rebuild to take effect; a raw-transport bug found against ArduCopter's deprecated MISSION_REQUEST
 - `tests/mission/do_set_actuator/CLAUDE.md` / `tests/command/do_set_actuator/CLAUDE.md` — DO_SET_ACTUATOR, built to verify PX4 PR #28723's actuator-scaling fix; requires MAV_FRAME_MISSION as a mission item (unrelated PX4 finding); PWM-output Tier 2 observability mechanism; a stale-binary false-positive hit and resolved mid-verification
@@ -103,6 +104,8 @@ What "support" and "fail" mean, tied strictly to a command's own MAVLink XML des
       - **Trust a "NEVER RECEIVED" before explaining it away.** The fourth blocker was flagged by the watcher from the first run ("HOME_POSITION: NEVER RECEIVED"), and was briefly exempted as "not streamed, MAVSDK has a cached value" — wrong: MAVSDK 4's `telemetry.home()` doesn't replay a cached value, so the next test's wait for home hung.
       - Teardown warnings are suppressed for a test shorter than `MIN_WATCH_S_FOR_MISSING` (5 s), which can end before a 1 Hz message arrives.
       - **A restart or reboot forgets every requested message rate, and leaves subscriptions on the dead connection.** `Endpoint.reopen()` bumps `SystemShim.generation`; `ensure_harness_streams(system)` (a no-op unless it changed) re-subscribes the watcher and re-requests ArduPilot's streams, and is called from `_wait_armable`, `_get_home_position` and `_reboot_sitl_if_degraded`. Found when a two-value test (rule 4c) restarted SITL after its first flight and its second arm timed out with no SYS_STATUS. A new helper that waits on vehicle data after a possible restart should call it too.
+      - **A fresh or restarted vehicle can send HOME_POSITION well before GLOBAL_POSITION_INT** (PX4 Gazebo VTOL: >30 s, 2026-10-01), so "home received" is not "position available", and a test starting right after a restart can time out on `heading()`/`position()`. `nav_vtol_takeoff`'s flight files wait up to `POSITION_READY_TIMEOUT_S` (120 s) for the heading. **Pending, harness-wide**: have `ensure_harness_streams()` wait for a GLOBAL_POSITION_INT after a generation change, so every module gets it.
+      - The watcher also told apart three different causes of the same timeout in one afternoon — a fresh boot (position arrives late), a PX4 checkout changed under the run (position never arrives, HOME_POSITION does), and a crashed SITL (nothing arrives). Read its counts before re-running anything.
 
 ## Project purpose
 
@@ -133,6 +136,7 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   test_mission_server.py Drone-side tests using mission_raw_server plugin
   test_frame_types.py    MAV_FRAME support matrix (65 tests, stack-agnostic)
   nav_takeoff/           NAV_TAKEOFF mission-protocol tests (Tier1MissionTestBase) — see nav_takeoff/CLAUDE.md
+  nav_vtol_takeoff/      NAV_VTOL_TAKEOFF mission-protocol tests (Tier1MissionTestBase; Tier 2 flight) — see nav_vtol_takeoff/CLAUDE.md
   do_reposition/         DO_REPOSITION mission-protocol tests (Tier1MissionTestBase) — see do_reposition/CLAUDE.md
   condition_gate/        CONDITION_GATE mission-protocol tests (raw transport; Tier 1 + Tier 2 flight) — see condition_gate/CLAUDE.md
   do_set_actuator/       DO_SET_ACTUATOR mission-protocol tests (Tier1MissionTestBase; requires MAV_FRAME_MISSION) — see do_set_actuator/CLAUDE.md

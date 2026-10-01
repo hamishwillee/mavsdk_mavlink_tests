@@ -23,8 +23,9 @@ one stays a blunt status table ("where is it actually adopted yet").
 
 ## Directories tracked
 
-**Mission** (`tests/mission/`): `nav_takeoff`, `do_reposition` (Tier 1 only —
-rejected everywhere, nothing to fly), `condition_gate`, `do_set_actuator`.
+**Mission** (`tests/mission/`): `nav_takeoff`, `nav_vtol_takeoff`, `do_reposition`
+(Tier 1 only — rejected everywhere, nothing to fly), `condition_gate`,
+`do_set_actuator`.
 **Command** (`tests/command/`): `nav_takeoff`, `nav_vtol_takeoff`, `nav_land`,
 `do_reposition`, `do_set_mission_current`, `do_set_global_origin` (Tier 1
 only — no Tier 2 flight semantics), `external_wind_estimate`,
@@ -41,6 +42,16 @@ it, `CommandSpec.has_location=True` and a real `PASS`). See
 `tests/command/nav_vtol_takeoff/CLAUDE.md` for the command-specific
 findings (two PX4 fix commits verified; a still-open, not-yet-root-caused
 instability in one bespoke test; a PX4 checkout branch-switch caveat).
+
+**`nav_vtol_takeoff` Tier 2** (both protocols, added 2026-10-01) is also not
+given a column: built with every current pattern from day one — shared
+Tier 1 base (both protocols), rule 8/9 naming, rule 4a/4b/4c verdicts (two
+values per "is it honoured" param; the Transition Heading enum per value),
+rule 7 cached flights, rule 10 param coverage (COMPLETE on PX4 VTOL), rule 11
+compat flag, pattern #8 restart cleanup, pattern #12 message watcher. Whether
+the vehicle is a VTOL comes from its HEARTBEAT type (`vehicle_is_vtol()` in
+`tests/flight_helpers.py`), not `vtol_state` — ArduCopter reports
+`vtol_state` MC. See `tests/mission/nav_vtol_takeoff/CLAUDE.md`.
 
 **`do_set_actuator`** (both protocols, added 2026-09-17 to verify PX4 PR
 #28723) is not added as its own column to the two tables below — it was
@@ -106,7 +117,7 @@ simplest happy-path test alone does not).
 | Mission shape a stack will fly — landing / approach waypoint, or NA on DENIED (`tests/mission/CLAUDE.md` § "Mission shape a stack will fly"; `mission_landing_items()`/`start_mission_or_na()` in `tests/flight_helpers.py`) | ✓ 2026-09-30. Landing appended: `nav_takeoff` (mission), `condition_gate`. NA on DENIED: `do_set_mission_current`, `do_set_actuator` (mission). Restart fallback on cleanup added to `nav_takeoff` (command) and `condition_gate` |
 | MAVSDK 4 native binding via `tests/mavsdk_compat.py` (Endpoint + SystemShim) | ✓ Migrated 2026-09-29, whole suite. No `mavsdk_server` processes; test bodies unchanged apart from import paths, `.name` for enum strings and `.result` on errors |
 | PX4 Gazebo SITL (`--px4-model=gz_*`, `tests/conftest.py`'s `_start_px4_process`) | ✓ Added 2026-09-29, opt-in by model name; SIH remains the default and its command line is unchanged. Validated: harness-managed launch + teardown (no gz left running), SIH regression check, and full `command/nav_takeoff` Tier 1 + Tier 2 runs |
-| Message-dependency watcher (`tests/message_watcher.py`; root `CLAUDE.md` Tier 2 pattern #12) — every standalone `gcs_system` test counts the messages its data comes from (`HARNESS_MESSAGES` + a module's `REQUIRED_MESSAGES`) plus recent STATUSTEXT; warns at teardown on any never received, appends its report to a failing test's output; waits that can time out on missing data cite `watcher.explain(...)` | ✓ Harness-wide 2026-10-01 (automatic for every `gcs_system` test). `REQUIRED_MESSAGES` declared in `command/do_set_actuator`, `mission/do_set_actuator` (ACTUATOR_OUTPUT_STATUS), `command/external_wind_estimate` (WIND_COV). `watcher.explain()` wired into `_wait_armable` and `_wait_ardupilot_ekf_position` only — **pending** for the other timeouts (position/altitude/landed-state/mission-progress waits in `tests/flight_helpers.py` and the per-module flight helpers). Class-scoped Tier 1 fixtures (`TestCommandProtocol` etc.) don't use `gcs_system` and aren't watched. |
+| Message-dependency watcher (`tests/message_watcher.py`; root `CLAUDE.md` Tier 2 pattern #12) — every standalone `gcs_system` test counts the messages its data comes from (`HARNESS_MESSAGES` + a module's `REQUIRED_MESSAGES`) plus recent STATUSTEXT; warns at teardown on any never received, appends its report to a failing test's output; waits that can time out on missing data cite `watcher.explain(...)` | ✓ Harness-wide 2026-10-01 (automatic for every `gcs_system` test). `REQUIRED_MESSAGES` declared in `command/do_set_actuator`, `mission/do_set_actuator` (ACTUATOR_OUTPUT_STATUS), `command/external_wind_estimate` (WIND_COV). `watcher.explain()` wired into `_wait_armable` and `_wait_ardupilot_ekf_position` only — **pending** for the other timeouts (position/altitude/landed-state/mission-progress waits in `tests/flight_helpers.py` and the per-module flight helpers). Class-scoped Tier 1 fixtures (`TestCommandProtocol` etc.) don't use `gcs_system` and aren't watched. **Pending**: wait for GLOBAL_POSITION_INT after a restart in `ensure_harness_streams()` (only `nav_vtol_takeoff` waits today, locally). |
 
 ## Process patterns (not technical, but part of the same discipline)
 

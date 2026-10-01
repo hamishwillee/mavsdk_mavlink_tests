@@ -52,12 +52,12 @@ commands, not evidence that the rule itself is unenforced everywhere.
 branch `hamishwillee/fix-vtol-takeoff-param-mask`) is a separate, earlier
 fix to `mavlink_command_params.hpp`'s param-mask table (`{ 84, 0x78, 0x7B }`,
 was `{ 84, 0x78, 0x7C }`) — unrelated to message-type exclusivity, but
-found and fixed in the same investigation. See `test_param1_loiter_height_accepted`'s
+found and fixed in the same investigation. See `test_nav_vtol_takeoff_param1_loiter_height_accepted`'s
 docstring and the finding below.
 
 ## Open finding, not yet root-caused (2026-09-17)
 
-`test_param1_loiter_height_accepted` (param1=20.0 via COMMAND_INT, verifying
+`test_nav_vtol_takeoff_param1_loiter_height_accepted` (param1=20.0 via COMMAND_INT, verifying
 the `aad2f0f3` fix above) passed cleanly (`ACCEPTED`) the first two times
 it was run against PX4 VTOL SITL this session. Re-run later the same
 session — against the same running binary, confirmed by an unchanged file
@@ -85,3 +85,76 @@ investigating this command. Both fix commits above are safe (pushed to
 re-verifying this command against that same checkout should first run
 `git status`/`git log -1` to confirm which commit is actually checked out
 — it may no longer be either fix branch.
+
+## Tier 2 (`test_flight.py`, added 2026-10-01)
+
+Same design as `tests/mission/nav_vtol_takeoff/` (read its CLAUDE.md): two
+values per "is it honoured" param, judged where the vehicle *settles*
+(rule 4b — mean over the last 30 s of a 150 s watch, so a fixed-wing's
+loiter centre counts), headings at the start of the transition, VTOL-ness
+from the HEARTBEAT type, an aborted transition (quad-chute) inconclusive and
+followed by a restart.
+
+| Param | PX4 `main` VTOL (Gazebo, `7cb65787b`) | ArduPlane QuadPlane | PX4 multicopter (`main`) | ArduCopter |
+|---|---|---|---|---|
+| command level | SUPPORTED — takes off and transitions | UNSUPPORTED (mission-only) — all flight tests skip | NA (not a VTOL) — ACCEPTED and flown as a multicopter takeoff | NA — DENIED (armed outside GUIDED) |
+| 7 Altitude | **FAIL (compat)** — transitions at 29.1 / 49.4 m, settles at ~80 m (VTO_LOITER_ALT) | — | to param7 (30.0 / 50.0 m) | REJECTED |
+| 5/6 Lat/Lon | SUPPORTED — loiter centre 5–8 m from both 400 m targets | — | **FAIL (compat)** — climbs in place | REJECTED |
+| 4 Yaw (with SPECIFIED) | SUPPORTED — transition 131° / 222° for 135° / 225° | — | NA | NA |
+| 2 Transition Heading | **FAIL (compat)** — SPECIFIED honoured, TAKEOFF accepted but ignored (transition 180° toward the loiter point, not the 91° ground heading) | — | NA | NA |
+| param7 used as | **transition altitude only** | — | NA | NA |
+
+Tier 1 on `7cb65787b`: param1 accepted (compatibility error — see the
+loiter-height note), param3 correctly DENIED, COMMAND_LONG accepted for this
+hasLocation command (compatibility error; branch commit `83e7afba56` isn't
+on `main`). So the `aad2f0f3` mask fix (param1/param2 allowed) has landed
+upstream, which is why SPECIFIED now works.
+
+**PX4: param7 is the transition altitude, not where the takeoff ends.**
+`navigator_main.cpp` passes param7 to `setTransitionAltitudeAbsolute()`;
+after the transition `vtol_takeoff.cpp` loiters at home + `VTO_LOITER_ALT`
+(default 80 m). A compatibility error under rule 4b, but the XML only says
+"Altitude" — and PX4's *mission item* uses param7 as both transition and
+final altitude. A candidate spec clarification.
+
+**PX4: param1 ("loiter height") is dead.** `setLoiterHeight(cmd.param1)`
+stores `_loiter_height`, which nothing reads; param1 = 40 still settled at
+80.2 m. (Corrects this file's 2026-09-17 notes and `test_command.py`.)
+
+**PX4: INT32_MAX lat/lon is flown as a coordinate.** Accepted; the vehicle
+transitions toward latitude 214.7° — settled centre 1689 m from home at the
+end of the watch. Same fly-away as the mission item.
+
+**PX4 bug: a below-ground NAV_VTOL_TAKEOFF sent while disarmed makes the next
+valid one a no-op.** Isolated by A/B on a fresh SIH boot each time
+(`scripts/px4_disarmed_vtol_takeoff_ab.py`, 2 runs per variant): a disarmed
+NAV_VTOL_TAKEOFF with a real position but z = 30 in frame 6 — which PX4 reads
+as 30 m AMSL, ~460 m below the vehicle, since it ignores the COMMAND_INT
+frame for z — is ACCEPTED; the next armed, valid NAV_VTOL_TAKEOFF is also
+ACCEPTED, but the vehicle stays in HOLD and never climbs. No disarmed send,
+a valid disarmed send, or a disarmed send with INT32_MAX lat/lon and a valid
+altitude: the takeoff climbs normally. This caused every "first flight of the
+session doesn't climb" seen here — after the (now removed) disarmed support
+probe, or after `test_command.py`'s disarmed probes in the same session. Run
+`test_flight.py` in its own session (or after a restart) for clean data.
+
+**ArduPilot bug: COMMAND_LONG with an out-of-range lat/lon crashes SITL.**
+`GCS_Common.cpp` `convert_COMMAND_LONG_loc_param()` (master `31d9b842cb`)
+does `return param * 1e7;` into an `int32_t` with no range check (NaN is
+handled). param5/6 = `float(INT32_MAX)` — `test_nav_vtol_takeoff_latlon_int32max_command_long`
+— overflows; SITL traps the FP exception and aborts
+(`ERROR: Floating point exception - aborting`), taking every later test with
+it. Reproduced in isolation; a control with real coordinates gets a normal
+ACK (`COMMAND_INT_ONLY`). Generic to every location command sent as
+COMMAND_LONG; on hardware it's undefined behaviour. Worth an ArduPilot issue.
+
+**PX4 v1.17.0** (tagged release): Tier 1 — param1/param3 real values and
+COMMAND_LONG accepted (no mask table, no int-only rule), all compatibility
+errors `main` has since fixed. Tier 2 mostly inconclusive: the v1.17 Gazebo
+`standard_vtol` quad-chutes during transitions (airspeed sensor dropout; see
+the mission CLAUDE.md). The one clean 50 m flight matched `main`
+(transition 49.4 m, settled 80.2 m). PX4 multicopter on v1.17: both takeoffs
+climbed (30.1 / 50.9 m).
+
+**Environment lessons from these runs**: see the mission CLAUDE.md (PX4
+checkout changed mid-run; fresh-boot position delay; quad-chutes).
