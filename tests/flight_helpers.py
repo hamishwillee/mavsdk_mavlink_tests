@@ -849,6 +849,19 @@ _UNSET = report._UNSET  # re-exported: record_compat_json's default for `support
 _tier2_key = report.key_from_module
 
 
+def _tier2_key_for(node) -> tuple[str, str, int | None] | None:
+    """
+    (protocol, cmd_name, cmd_id) for this test's report. A module covering several
+    commands (e.g. tests/mission/camera_target_id/) defines `_tier2_key_for(node)`
+    returning the same tuple per test; otherwise it's the module's `_CMD_NAME`/`_CMD_ID`.
+    """
+    hook = getattr(node.module, "_tier2_key_for", None)
+    if hook is not None:
+        return hook(node)
+    key = _tier2_key(node.module)
+    return None if key is None else (*key, getattr(node.module, "_CMD_ID", None))
+
+
 def record_tier2_detail(request, detail: str) -> None:
     """
     Attach a specific one-line detail (e.g. measured values) to the calling
@@ -871,10 +884,10 @@ def record_tier2_param_verdict(request, param_label: str, verdict: str) -> None:
     (Pitch)") — not from every test that happens to touch the param. `verdict` is a
     short human string: "SUPPORTED", "NOT SUPPORTED", "NOT TESTABLE (<why>)", etc.
     """
-    key = _tier2_key(request.node.module)
+    key = _tier2_key_for(request.node)
     if key is None:
         return
-    report.record_param_verdict(*key, param_label, verdict)
+    report.record_param_verdict(*key[:2], param_label, verdict)
 
 
 def record_compat_command_supported(
@@ -896,10 +909,10 @@ def record_compat_command_supported(
     record_command_fact(), keeping this name/signature stable for existing
     Tier 2 call sites.
     """
-    key = _tier2_key(request.node.module)
+    key = _tier2_key_for(request.node)
     if key is None:
         return
-    report.record_command_fact(*key, supported=supported, basis=basis, notes=notes)
+    report.record_command_fact(*key[:2], supported=supported, basis=basis, notes=notes)
 
 
 def record_compat_json(
@@ -923,11 +936,11 @@ def record_compat_json(
     `"1_Pitch"` — matches the shared `ParamSpec`/XML param label, not this
     harness's own `"param1 (Pitch)"` label used by record_tier2_param_verdict.
     """
-    key = _tier2_key(request.node.module)
+    key = _tier2_key_for(request.node)
     if key is None:
         return
     report.record_compat_fact(
-        *key, param_key, supported=supported, accept_nan_or_int32max=accept_nan_or_int32max,
+        *key[:2], param_key, supported=supported, accept_nan_or_int32max=accept_nan_or_int32max,
         nacks_on_non_sentinel_value=nacks_on_non_sentinel_value, notes=notes,
     )
 
@@ -962,12 +975,11 @@ def _tier2_auto_record(request):
     if explicit is not None:
         detail = explicit
 
-    key = _tier2_key(node.module)
+    key = _tier2_key_for(node)
     if key is None:
         return
-    protocol, cmd_name = key
+    protocol, cmd_name, cmd_id = key
     report.record_tier2_result(protocol, cmd_name, node.name, outcome, detail, compat)
-    cmd_id = getattr(node.module, "_CMD_ID", None)
     if cmd_id is None:
         return
     report.write(protocol, cmd_name, cmd_id, request.config)

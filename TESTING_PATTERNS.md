@@ -23,7 +23,7 @@ one stays a blunt status table ("where is it actually adopted yet").
 
 ## Directories tracked
 
-**Mission** (`tests/mission/`): `nav_takeoff`, `nav_vtol_takeoff`, `do_reposition`
+**Mission** (`tests/mission/`): `nav_takeoff`, `nav_vtol_takeoff`, `camera_target_id`, `do_reposition`
 (Tier 1 only — rejected everywhere, nothing to fly), `condition_gate`,
 `do_set_actuator`.
 **Command** (`tests/command/`): `nav_takeoff`, `nav_vtol_takeoff`, `nav_land`,
@@ -52,6 +52,15 @@ compat flag, pattern #8 restart cleanup, pattern #12 message watcher. Whether
 the vehicle is a VTOL comes from its HEARTBEAT type (`vehicle_is_vtol()` in
 `tests/flight_helpers.py`), not `vtol_state` — ArduCopter reports
 `vtol_state` MC. See `tests/mission/nav_vtol_takeoff/CLAUDE.md`.
+
+**`camera_target_id`** (mission, added 2026-10-01) covers eleven commands in
+one directory: one `Tier1MissionTestBase` class per command, generated from a
+table with params read from common.xml; Tier 2 flights cached per id case
+(rule 7) and shared by every command; two set ids per command (rule 4c); one
+module reporting into eleven command reports through a new per-test key hook,
+`_tier2_key_for(node)`, in `tests/flight_helpers.py`'s Tier 2 recorder — reuse
+it for any other multi-command module. Negative control run against the
+unpatched build (pattern from `do_set_actuator`).
 
 **`do_set_actuator`** (both protocols, added 2026-09-17 to verify PX4 PR
 #28723) is not added as its own column to the two tables below — it was
