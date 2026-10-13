@@ -64,6 +64,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import land_helpers as lh
 from tests import report
 from mavsdk.plugins.telemetry import LandedState, VtolState
 
@@ -91,6 +92,7 @@ from tests.flight_helpers import (
     require_real_stack,  # noqa: F401 — registers the real-stack skip gate for this module
     _get_position,
     record_tier2_detail,
+    record_compat_command_supported,
     record_compat_json,
     record_tier2_param_verdict,
 )
@@ -349,62 +351,99 @@ async def _arm_and_climb(
 
 
 # ---------------------------------------------------------------------------
-# "Is the landing position honoured" — rule 4 compat check, two targets
+# "Is it honoured" checks — shared flights (tests/land_helpers.py)
 # ---------------------------------------------------------------------------
-# NAV_LAND's lat/lon (hasLocation/isDestination) means "land here", read under
-# the XML's shared location convention (root CLAUDE.md rule 6). The comprehensive
-# tests below only characterise the landing; this is the definitive check: two
-# targets 90° apart (rule 4c), each flown as its own climb-and-land cycle, with
-# the touchdown point compared against the commanded one. NACKed = PASS (a
-# legitimate "not supported"); accepted but landed elsewhere = compatibility
-# error (rule 4). Not gated on vehicle type (rule 5).
-LAND_POSITION_TARGETS = (("60 m N", 60.0, 0.0), ("60 m E", 60.0, 90.0))
+# The comprehensive tests further down only characterise a landing, and are gated
+# on --vehicle-type. These are each param's definitive check (root CLAUDE.md
+# rules 4-4c, 8, 10), not gated on anything: Latitude/Longitude and Yaw share two
+# flights — 'N' of the start with yaw 135°, 'E' with 315° — judged at touchdown.
+# A VTOL (HEARTBEAT type) is put into forward flight before the landing is sent.
+
+_pair: list[dict] | None = None  # cached shared flights (rule 7)
+_restart = None
 
 
-@pytest.mark.timeout(900)  # two climb + land cycles
-async def test_nav_land_compat_position_honoured(gcs_system, request, restart_flight_stack):
-    """NAV_LAND lat/lon 60 m N and 60 m E of home — each NACKed, or the vehicle touches down there."""
-    autopilot = request.config.getoption("--autopilot")
-    await _request_position_stream(gcs_system)
-    home = await _get_home_position(gcs_system)
-    results = []
-    for label, dist, bearing in LAND_POSITION_TARGETS:
-        n = dist * math.cos(math.radians(bearing))
-        e = dist * math.sin(math.radians(bearing))
-        tgt_lat = home.latitude_deg + n / 111111.0
-        tgt_lon = home.longitude_deg + e / (111111.0 * math.cos(math.radians(home.latitude_deg)))
-        try:
-            await _arm_and_climb(gcs_system, autopilot, home, TAKEOFF_ALT_M)
-            if autopilot == "px4":
-                cmd_z, cmd_frame = home.absolute_altitude_m, 5   # ground level AMSL
-            else:
-                cmd_z, cmd_frame = 0.0, 3                         # ground level relative to home
-            ack = await probe_command_int(gcs_system, **_land_cmd(
-                x=int(tgt_lat * 1e7), y=int(tgt_lon * 1e7), z=cmd_z, frame=cmd_frame,
-            ))
-            if ack is None:
-                pytest.fail(f"No COMMAND_ACK for NAV_LAND to {label} — cannot classify")
-            if int(ack["result"]) not in (0, 5):
-                results.append({"ok": False, "nacked": True, "detail": f"{label}: REJECTED (result={int(ack['result'])})"})
-                continue
-            landed = await _wait_for_landed_state(gcs_system, LandedState.ON_GROUND, TOUCHDOWN_TIMEOUT_S)
-            pos = await _get_position(gcs_system)
-            d = _dist_m(pos.latitude_deg, pos.longitude_deg, tgt_lat, tgt_lon)
-            detail = f"{label}: touched down {d:.1f} m from target" + ("" if landed else " (ON_GROUND not reported)")
-            results.append({"ok": landed and d <= TOUCHDOWN_MATCH_M, "nacked": False, "detail": detail})
-            log.info(_FMT, _CMD, "land position honoured?", detail)
-        finally:
-            await _rtl_and_land(gcs_system, restart_flight_stack)
-    ok = all(r["ok"] for r in results)
-    nacked = all(r["nacked"] for r in results)
-    detail = "; ".join(r["detail"] for r in results)
-    record_tier2_detail(request, detail)
-    verdict = "REJECTED (NACKed)" if nacked else "SUPPORTED" if ok else "NOT SUPPORTED — COMPATIBILITY ERROR"
-    for lbl, key in (("param5 (Latitude)", "5_Latitude"), ("param6 (Longitude)", "6_Longitude")):
-        record_tier2_param_verdict(request, lbl, verdict)
-        record_compat_json(request, key, supported=ok, nacks_on_non_sentinel_value=None if ok else nacked)
-    if not all(r["ok"] or r["nacked"] for r in results):
-        report.compat_fail(f"NAV_LAND lat/lon accepted but not honoured: {detail} (root CLAUDE.md rule 4)")
+@pytest.fixture(autouse=True)
+def _bind_restart_flight_stack(restart_flight_stack):
+    """Every shared-flight cleanup restarts the stack if the vehicle doesn't land (Tier 2 pattern #8)."""
+    global _restart
+    _restart = restart_flight_stack
+    yield
+    _restart = None
+
+
+async def _flights(system) -> list[dict]:
+    global _pair
+    if _pair is None:
+        async def _fly(**kw):
+            return await lh.fly_command(system, _restart, _CMD_ID, **kw)
+        _pair = await lh.fly_pair(_fly, system)
+    return _pair
+
+
+@pytest.mark.timeout(1200)
+async def test_land_compat_lands(gcs_system, request):
+    """The XML's one requirement: the vehicle lands. PASS if every accepted NAV_LAND ends in a touchdown."""
+    flights = await _flights(gcs_system)
+    ok, detail = lh.lands_verdict(flights)
+    record_tier2_detail(request, f"PASS if the vehicle touches down: {detail}")
+    if ok is None:
+        pytest.skip(f"NA: every NAV_LAND was NACKed in flight — {detail}")
+    record_compat_command_supported(request, ok, notes=None if ok else "Accepted, but the vehicle does not land")
+    if not ok:
+        report.compat_fail(f"NAV_LAND accepted but the vehicle did not touch down: {detail}")
+
+
+@pytest.mark.timeout(1200)
+async def test_land_compat_position_honoured(gcs_system, request):
+    """params 5/6 = points N and E of the start — "is lat/lon honoured": NACKed, or the vehicle touches down there."""
+    lh.record_param(request, "param5/6 (Lat/Lon)", ("5_Latitude", "6_Longitude"), lh.position_verdict(await _flights(gcs_system)),
+                    f"PASS if each target is NACKed or the touchdown is within {lh.TOUCHDOWN_TOLERANCE_M:.0f} m of it")
+
+
+@pytest.mark.timeout(1200)
+async def test_land_compat_yaw_honoured(gcs_system, request):
+    """param4 = 135° and 315° — "is yaw honoured": NACKed, or the vehicle touches down on that heading."""
+    lh.record_param(request, "param4 (Yaw Angle)", ("4_Yaw Angle",), lh.yaw_verdict(await _flights(gcs_system)),
+                    f"PASS if each yaw is NACKed or the heading at touchdown is within ±{lh.YAW_TOLERANCE_DEG:.0f}° of it")
+
+
+@pytest.mark.timeout(1200)
+async def test_land_obs_approach(gcs_system, request):
+    """Characterisation: how the landing is flown — where it starts, any back-transition, where it is at half altitude."""
+    record_tier2_detail(request, "Observational — " + " | ".join(
+        f"{r['label']}: {lh.describe_landing(r)}" for r in await _flights(gcs_system)))
+
+
+@pytest.mark.timeout(600)
+async def test_land_obs_ground_altitude(gcs_system, request):
+    """
+    param7 = 15 m above home ("ground level in current frame") — characterisation: does the descent end there or on the ground?
+
+    The XML calls param7 the ground level, not a destination, so on flat simulated
+    terrain there is nothing to compare a touchdown against — recorded as untestable
+    (rule 10d); this records what a deliberately wrong ground level does.
+    """
+    report.record_compat_fact("command", _CMD_NAME, "7_Altitude", untestable=lh.GROUND_ALT_UNTESTABLE)
+    r = await lh.fly_command(gcs_system, _restart, _CMD_ID, groups={"altitude": {"z": 15.0}})
+    record_tier2_detail(request, f"Observational: z = 15 m — {lh.describe_landing(r)}"
+                        + ("" if r["nacked"] or not r["landed"] else f"; touchdown altitude {r['touchdown']['alt']:.1f} m"))
+
+
+async def test_land_compat_untestable_params(gcs_system, request):
+    """
+    params 1 (Abort Alt), 2 (Land Mode), 3 (Empty) and Yaw = NaN — no execution verdict possible; records why, without flying.
+
+    Abort Alt only matters in an aborted landing and Land Mode only with a
+    precision-landing beacon — neither is simulated. Tier 1 (test_command.py)
+    records the ACK for a real value of each; a NACK there is the verdict.
+    """
+    report.record_compat_fact("command", _CMD_NAME, "1_Abort Alt",
+                              untestable="Needs an aborted landing, which the harness can't trigger")
+    report.record_compat_fact("command", _CMD_NAME, "2_Land Mode", untestable="Needs a precision-landing beacon")
+    record_compat_json(request, "3_Empty", supported="not-applicable")
+    record_tier2_param_verdict(request, "Yaw sentinel (NaN)", lh.YAW_SENTINEL_NOT_TESTABLE)
+    pytest.skip("NA: Abort Alt, Land Mode and the Yaw sentinel can't be judged from a simulated landing — see docstring")
 
 
 # ---------------------------------------------------------------------------

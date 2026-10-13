@@ -1,9 +1,13 @@
 """
 MAV_CMD_NAV_LAND (cmd=21) via COMMAND_INT — direct command protocol tests.
 
-This tests the *command protocol* path (COMMAND_INT → COMMAND_ACK).  There is
-no mission-protocol counterpart test directory for NAV_LAND in this suite
-(unlike NAV_TAKEOFF) — these are the only NAV_LAND tests.
+This tests the *command protocol* path (COMMAND_INT → COMMAND_ACK). The
+mission-item counterpart is tests/mission/nav_land/.
+
+Built on Tier1CommandTestBase (tests/command/conftest.py): the seven mandatory
+common checks (always ACKs, not UNSUPPORTED, one terminal ACK, undefined/defined
+param sentinels, frame survey, message-type exclusivity) are inherited; the tests
+below are NAV_LAND's own per-parameter tests.
 
 NAV_LAND has hasLocation="true" isDestination="true" → COMMAND_INT is the
 correct message type (integer lat/lon preserves coordinate precision).
@@ -31,7 +35,7 @@ execution.  In particular:
   detection — and whether the commanded x/y/z represents the touchdown point
   or some other reference (e.g. an approach/finish point for fixed-wing) —
   is an execution-semantics question that requires flight observation
-  (Tier 2, tests/command/nav_land/test_flight.py, not yet implemented).
+  (Tier 2, tests/command/nav_land/test_flight.py).
 - Whether the vehicle flies directly toward the landing point (diagonal
   descent) or flies there at current altitude and then descends (dogleg) is
   likewise a Tier 2 question.
@@ -55,6 +59,9 @@ import logging
 import pytest
 
 from tests.command.conftest import (
+    CommandSpec,
+    ParamSpec,
+    Tier1CommandTestBase,
     probe_command_int,
     probe_command_long,
     gcs_system_cls,
@@ -65,7 +72,6 @@ from tests.command.conftest import (
 )
 from tests.mock_flight_stack import (
     MAV_RESULT_ACCEPTED,
-    MAV_RESULT_COMMAND_INT_ONLY,
     MAV_RESULT_DENIED,
     MAV_RESULT_UNSUPPORTED,
 )
@@ -86,6 +92,36 @@ _LON_INT = 85456000
 _PRECISION_LAND_MODE_DISABLED = 0
 _PRECISION_LAND_MODE_OPPORTUNISTIC = 1
 _PRECISION_LAND_MODE_REQUIRED = 2
+
+
+SPEC = CommandSpec(
+    cmd_id=_CMD_ID,
+    name=_CMD,
+    has_location=True,  # common.xml: hasLocation="true" — drives test_hasLocation_rejects_command_long
+    baseline=dict(
+        param1=0.0,   # Abort Alt: 0 = use system default
+        param2=float(_PRECISION_LAND_MODE_DISABLED),
+        param4=None,  # Yaw: NaN = use the current heading mode
+        long5=float(_LAT_INT), long6=float(_LON_INT), long7=0.0,
+        int_x=_LAT_INT, int_y=_LON_INT, int_z=0.0,
+    ),
+    params=[
+        ParamSpec(1, "Abort Alt", defined=True),
+        ParamSpec(2, "Land Mode", defined=True),
+        ParamSpec(3, "Empty", defined=False),
+        ParamSpec(4, "Yaw Angle", defined=True),
+        ParamSpec(5, "Latitude", defined=True),
+        ParamSpec(6, "Longitude", defined=True),
+        ParamSpec(7, "Altitude", defined=True),
+    ],
+)
+
+_ACCEPTED = (0, 5)  # MAV_RESULT_ACCEPTED, IN_PROGRESS
+
+
+def _ack_verdict(param_key: str, result: int) -> None:
+    """Rule 10a: a real value of a defined param NACKed is a verdict on its own; accepted needs Tier 2."""
+    report.record_nonsentinel_ack("command", _CMD_NAME, param_key, nacked=result not in _ACCEPTED)
 
 
 def _land_cmd(**overrides) -> dict:
@@ -113,36 +149,10 @@ async def _probe(system, **kwargs) -> dict | None:
 
 @pytest.mark.asyncio(loop_scope="class")
 @pytest.mark.timeout(300)
-class TestNavLandCommand:
-    """NAV_LAND via COMMAND_INT — ACK result tests."""
+class TestNavLandCommand(Tier1CommandTestBase):
+    """NAV_LAND via COMMAND_INT — ACK result tests (common checks inherited from Tier1CommandTestBase)."""
 
-    _supported: bool | None = None  # class-level cache; None = not yet probed
-
-    async def _ensure_supported(self, system, mock_stack) -> None:
-        """Probe NAV_LAND once per class; skip all subsequent tests if UNSUPPORTED."""
-        if TestNavLandCommand._supported is None:
-            ack = await _probe(system)
-            unsupported = (ack is not None and int(ack["result"]) == MAV_RESULT_UNSUPPORTED)
-            TestNavLandCommand._supported = not unsupported
-            report.record_command_fact("command", _CMD_NAME, supported=TestNavLandCommand._supported)
-        if not TestNavLandCommand._supported:
-            pytest.skip(f"{_CMD} (cmd={_CMD_ID}) is UNSUPPORTED on this platform — test not run")
-
-    # -----------------------------------------------------------------------
-    # Group A — Baseline
-    # -----------------------------------------------------------------------
-
-    async def test_nav_land_command_accepted(self, gcs_system_cls, mock_stack_cls):
-        """Baseline: NAV_LAND COMMAND_INT returns ACCEPTED (or non-UNSUPPORTED on real stack)."""
-        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
-        ack = await _probe(gcs_system_cls)
-        if ack is None:
-            pytest.skip("No ACK received — UNKNOWN (spec violation by stack)")
-        result = int(ack["result"])
-        log.info(_FMT, _CMD, "baseline COMMAND_INT", f"result={result}")
-        assert result != MAV_RESULT_UNSUPPORTED, (
-            f"NAV_LAND should be supported by any aerial flight stack; got UNSUPPORTED(3)"
-        )
+    SPEC = SPEC
 
     # -----------------------------------------------------------------------
     # Group B — param1 (Abort Altitude; 0 = undefined/use system default)
@@ -174,6 +184,7 @@ class TestNavLandCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param1 (Abort Alt) = 10.0 m", f"result={result}")
+        _ack_verdict("1_Abort Alt", result)
         # Observational — no assertion
 
     async def test_nav_land_param1_abort_alt_negative(self, gcs_system_cls, mock_stack_cls):
@@ -269,6 +280,7 @@ class TestNavLandCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param2 (Land Mode) = REQUIRED (2)", f"result={result}")
+        _ack_verdict("2_Land Mode", result)
         # Observational — no assertion
 
     async def test_nav_land_param2_land_mode_undefined(self, gcs_system_cls, mock_stack_cls):
@@ -313,6 +325,7 @@ class TestNavLandCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param4 (Yaw) = 90.0", f"result={result}")
+        _ack_verdict("4_Yaw Angle", result)
         # Observational — no assertion (see docstring: revisit once behaviour is known)
 
     async def test_nav_land_param4_yaw_nan_ack(self, gcs_system_cls, mock_stack_cls):
@@ -342,6 +355,8 @@ class TestNavLandCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "params 5/6 (Lat/Lon) specific", f"result={result}")
+        _ack_verdict("5_Latitude", result)
+        _ack_verdict("6_Longitude", result)
         assert result != MAV_RESULT_UNSUPPORTED, "Location coordinates should not cause UNSUPPORTED"
 
     async def test_nav_land_location_int32max_ack(self, gcs_system_cls, mock_stack_cls):
@@ -413,6 +428,7 @@ class TestNavLandCommand:
             return
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param7 (Alt/ground-level) = 5.0 m", f"result={result}")
+        _ack_verdict("7_Altitude", result)
         assert result != MAV_RESULT_UNSUPPORTED, "A ground-level altitude should not cause UNSUPPORTED"
 
     async def test_nav_land_altitude_nan_ack(self, gcs_system_cls, mock_stack_cls):
@@ -529,45 +545,3 @@ class TestNavLandCommand:
                 "expected ACCEPTED — INT32_MAX is the 'use current position' sentinel "
                 "(PX4 incorrectly rejects it as a protocol error, same as NAV_TAKEOFF)",
             )
-
-    # -----------------------------------------------------------------------
-    # Group G — message-type exclusivity (mandatory common test 7, root
-    # CLAUDE.md / tests/command/CLAUDE.md § Mandatory common tests). NAV_LAND
-    # is hasLocation="true" with no documented COMMAND_LONG exception (unlike
-    # DO_SET_GLOBAL_ORIGIN) — a hand-rolled equivalent of
-    # Tier1CommandTestBase.test_hasLocation_rejects_command_long, since this
-    # file predates that base class migration.
-    # -----------------------------------------------------------------------
-
-    async def test_nav_land_command_long_rejected(self, gcs_system_cls, mock_stack_cls):
-        """
-        COMMAND_LONG (baseline params) is rejected with MAV_RESULT_COMMAND_INT_ONLY(8).
-
-        NAV_LAND is hasLocation="true"/isDestination="true" — params 5/6
-        carry lat/lon and exist to be sent via COMMAND_INT (int32 ×1e7
-        precision). A COMMAND_LONG send of the same command should be
-        NACKed with MAV_RESULT_COMMAND_INT_ONLY(8) rather than silently
-        accepted through the imprecise float encoding.
-
-        Known result (FAIL): no known stack currently enforces this message-type
-        exclusivity rule (a genuine, widespread spec gap — see
-        tests/command/CLAUDE.md § Mandatory common tests, check 7).
-        """
-        await self._ensure_supported(gcs_system_cls, mock_stack_cls)
-        ack = await probe_command_long(
-            gcs_system_cls, _CMD_ID,
-            param1=0.0, param2=float(_PRECISION_LAND_MODE_DISABLED), param3=0.0, param4=None,
-            param5=float(_LAT_INT), param6=float(_LON_INT), param7=0.0,
-        )
-        result = int(ack["result"]) if ack is not None else None
-        if result is None:
-            log.warning(_FMT, _CMD, "COMMAND_LONG (hasLocation command)", "UNKNOWN — no ACK")
-            return
-        log.info(_FMT, _CMD, "COMMAND_LONG (hasLocation command)", f"result={result}")
-        if result != MAV_RESULT_COMMAND_INT_ONLY:
-            report.compat_fail(
-                f"Stack accepted COMMAND_LONG for a hasLocation command (result={result}); "
-                "expected MAV_RESULT_COMMAND_INT_ONLY(8) — no known stack currently enforces "
-                "this message-type exclusivity rule (spec gap)"
-            )
-        assert result == MAV_RESULT_COMMAND_INT_ONLY

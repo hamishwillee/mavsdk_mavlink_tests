@@ -25,3 +25,24 @@ PX4 SITL is managed automatically by the `--px4-sitl` fixture.
 No manual download needed beyond cloning PX4-Autopilot and running the standard build (`make px4_sitl_default`).
 
 See `CLAUDE.md` for pitfall notes (two-space readiness string, 64 KB log read limit).
+
+### PX4's pre-built SIH container image, without Docker
+
+PX4 publishes its SIH simulator as a container, `px4io/px4-sitl` (`latest` tracks `main`; release tags such as `v1.18.0-rc1`).
+The image is just PX4's `px4` .deb (`/opt/px4`) on Ubuntu 24.04, so the same binary runs natively on a matching host.
+`scripts/fetch_px4_sitl_image.py` pulls the image from Docker Hub, unpacks `/opt/px4` and adds the `build/px4_sitl_default` layout `--px4-sitl` expects:
+
+```bash
+python3 scripts/fetch_px4_sitl_image.py                  # px4io/px4-sitl:latest → ~/px4_sitl_images/latest
+python3 scripts/fetch_px4_sitl_image.py --tag v1.18.0-rc1
+
+pytest tests/command/nav_land/ --drone-address=udp://:14540 \
+  --px4-sitl=~/px4_sitl_images/latest --px4-model=sihsim_quadx --vehicle-type=quadcopter --autopilot=px4
+pytest tests/mission/nav_vtol_land/ --drone-address=udp://:14540 \
+  --px4-sitl=~/px4_sitl_images/latest --px4-model=sihsim_standard_vtol --vehicle-type=vtol --autopilot=px4
+```
+
+Nothing in the harness changes: it starts, restarts and stops this PX4 exactly as it does a source build.
+The image's exact build is in `<dest>/image.json`, and in every report's header (version and git hash).
+Unlike `docker run --rm`, parameters persist between runs (`<dest>/root/opt/px4/fs/`); delete that directory for a factory-fresh start.
+With Docker available, `docker run --rm --network host -e PX4_SIM_MODEL=sihsim_quadx px4io/px4-sitl:latest` and `--drone-address=udp://:14540` *without* `--px4-sitl` runs the same tests against the real container, but the harness then can't restart the stack (Tier 2 pattern #8), so flight tests that rely on a restart for cleanup aren't supported that way.

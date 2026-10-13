@@ -94,6 +94,9 @@ pytest tests/mission/nav_takeoff/ --drone-address=udp://:14540 -v --log-cli-leve
 # NAV_VTOL_TAKEOFF tests only — mission item and command, Tier 1 + Tier 2 (Gazebo for PX4 VTOL; see tests/mission/nav_vtol_takeoff/README.md)
 pytest tests/mission/nav_vtol_takeoff/ tests/command/nav_vtol_takeoff/ -v
 
+# NAV_LAND and NAV_VTOL_LAND — mission item and command, Tier 1 + Tier 2 (see tests/mission/nav_land/README.md; PX4's SIH container build: SETUP.md)
+pytest tests/mission/nav_land/ tests/mission/nav_vtol_land/ tests/command/nav_land/ tests/command/nav_vtol_land/ -v
+
 # Camera commands' target camera ID in missions (Tier 1 + Tier 2; see tests/mission/camera_target_id/README.md)
 pytest tests/mission/camera_target_id/ -v
 
@@ -166,6 +169,9 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
         ├── nav_takeoff/
         │   ├── test_protocol.py           # NAV_TAKEOFF param acceptance (Tier 1, Tier1MissionTestBase)
         │   └── test_flight.py             # NAV_TAKEOFF execution tests (Tier 2, requires real stack)
+        ├── nav_land/, nav_vtol_land/
+        │   ├── test_protocol.py           # NAV_LAND / NAV_VTOL_LAND param acceptance (Tier 1, Tier1MissionTestBase)
+        │   └── test_flight.py             # landing execution tests (Tier 2, shared flights in tests/land_helpers.py)
         ├── do_reposition/
         │   └── test_protocol.py           # DO_REPOSITION mission-item acceptance (Tier 1, Tier1MissionTestBase — UNSUPPORTED everywhere; no Tier 2, see README)
         ├── condition_gate/
@@ -242,6 +248,8 @@ Full per-param tables, source verification, and Tier 2 results live in each comm
 | Command | PX4 | ArduCopter/ArduPlane | Details |
 |---------|-----|----------------------|---------|
 | `MAV_CMD_NAV_TAKEOFF` (22) | Stores Yaw + location; never stores Pitch/Flags (v1.17.0, confirmed 2026-09-14) — a newer 1.18.0-beta dev build (2026-09-13) instead actively rejects non-default Pitch/Flags/unused values, so this appears to be a version-dependent validation change, not settled behaviour. MC takes off correctly via mission upload (v1.17.0); **fixed-wing does not** — accepts the mission but never climbs within 90 s, a genuine spec-compliance FAIL, not yet root-caused (v1.17.0, 2026-09-14). VTOL (Gazebo `gz_standard_vtol`, v1.17.0, 2026-09-29): same storage result — Pitch and Flags accepted then zeroed are FAIL (compat), and a real value in the Empty param2 is accepted, also FAIL (compat); mission-item Tier 2 flight not yet run on Gazebo (SIH VTOL can't fly — root `CLAUDE.md` item #10) | Stores Pitch + location only; rejects NaN in any param but Yaw and rejects the `INT32_MAX` location sentinel (spec violations) | [`nav_takeoff/README.md`](tests/mission/nav_takeoff/README.md) |
+| `MAV_CMD_NAV_LAND` (21) | Stores every param. Flies to the point, then descends: lat/lon honoured; **yaw stored but ignored** on `px4io/px4-sitl:latest` (v1.18.0-beta1-660), **honoured with [PX4 PR #28764](https://github.com/PX4/PX4-Autopilot/pull/28764)** (verified 2026-10-13, multicopter and VTOL) | Not tested | [`nav_land/README.md`](tests/mission/nav_land/README.md) |
+| `MAV_CMD_NAV_VTOL_LAND` (85) | VTOL: lat/lon honoured, lands in MC mode after a back-transition; yaw as for NAV_LAND (fixed by PR #28764); **Approach Altitude accepted but neither stored nor used**; non-default Land Options NACKed. Multicopter: uploads, but the mission is refused at start. As a *command*: `UNSUPPORTED` | Not tested | [`nav_vtol_land/README.md`](tests/mission/nav_vtol_land/README.md) |
 | `MAV_CMD_DO_REPOSITION` (192) | `UNSUPPORTED` — rejected outright as a mission item, on every vehicle type | Same | [`do_reposition/README.md`](tests/mission/do_reposition/README.md) |
 | `MAV_CMD_CONDITION_GATE` (4501) | Accepted (`<wip/>` tag needs the raw `mavlink_direct` transport — `mission_raw` blocks it client-side); never stores Geometry/UseAltitude; Tier 2 confirms mavlink-devguide PR #761's crossing-point claims | `UNSUPPORTED` — not implemented ([ardupilot#13778](https://github.com/ArduPilot/ardupilot/issues/13778)) | [`condition_gate/README.md`](tests/mission/condition_gate/README.md) |
 | `MAV_CMD_DO_SET_ACTUATOR` (187) | Accepted **only** under `MAV_FRAME_MISSION` (frame=2), rejected as `UNSUPPORTED` under location frames like GLOBAL_INT; param5/param6 (x/y) correctly round-trip at 1e7 scaling with independently-preserved sentinels ([PX4 PR #28723](https://github.com/PX4/PX4-Autopilot/pull/28723), verified 2026-09-17). Not tested against ArduCopter/ArduPlane this session | — | [`do_set_actuator/README.md`](tests/mission/do_set_actuator/README.md) |

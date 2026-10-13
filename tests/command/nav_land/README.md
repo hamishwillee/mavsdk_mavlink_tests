@@ -2,7 +2,40 @@
 
 > **Outcome labels (2026-09-30):** results recorded before 2026-09-29 used pytest XFAIL/XPASS. They're relabelled here under root `CLAUDE.md` rule 11 — FAIL (compat) = compatibility error, FAIL (harness) = not a compatibility error, PASS (observation) = a spec gap recorded rather than asserted, NA = compatibility check against the mock — not re-run.
 
-Command protocol only (COMMAND_INT → COMMAND_ACK) — NAV_LAND has no mission-protocol test directory, unlike NAV_TAKEOFF.
+Command protocol (COMMAND_INT → COMMAND_ACK). The mission-item tests are in `tests/mission/nav_land/`; `NAV_VTOL_LAND` is in `tests/command/nav_vtol_land/` and `tests/mission/nav_vtol_land/`. Design notes, source predictions and the PX4 PR #28764 comparison for all four: `tests/mission/nav_land/CLAUDE.md`.
+
+**Latest results are in § Results — 2026-10-13 below.** The sections after it are the older record (2026-06 to 2026-09) and are kept for the ArduPilot and PX4 FW/Rover runs, which weren't repeated.
+
+## Results — 2026-10-13, PX4 SIH
+
+Two builds: PX4's `px4io/px4-sitl:latest` container (v1.18.0-beta1-660-g61907962c9, unpacked by `scripts/fetch_px4_sitl_image.py` — `SETUP.md`) and PX4 PR #28764 "honor yaw in LAND and VTOL_LAND" (`17ed9c8c42`, built from source). **Every result below is the same on both builds** — the PR changes the mission executor only.
+
+```bash
+pytest tests/command/nav_land/test_command.py --drone-address=udp://:14540 \
+    --px4-sitl=~/px4_sitl_images/latest --px4-model=sihsim_quadx --vehicle-type=quadcopter --autopilot=px4 -v --log-cli-level=INFO
+pytest tests/command/nav_land/test_flight.py  ...same options...     # a separate session; VTOL: --px4-model=sihsim_standard_vtol --vehicle-type=vtol
+```
+
+**Tier 1** (`test_command.py`, now on `Tier1CommandTestBase` — the seven mandatory common checks are inherited): identical on multicopter and VTOL — **29 PASS, 1 FAIL (compat), 1 INCONCLUSIVE, 1 NA**.
+- FAIL (compat): `test_hasLocation_rejects_command_long` — COMMAND_LONG is ACCEPTED, not `COMMAND_INT_ONLY(8)`.
+- A real param3 (Empty) is DENIED; every sentinel is accepted; the frame survey is inconclusive (all 22 frames ACKed).
+- Changed since the older runs below: Abort Alt 10 m and −5 m are now ACCEPTED (were DENIED), and the out-of-range lat/lon (120°N, 200°E) is now ACCEPTED (was DENIED). `float(INT32_MAX)` lat/lon via COMMAND_LONG is still DENIED.
+
+**Tier 2** (`test_flight.py`) — the new `test_land_*` tests are each param's definitive check (root `CLAUDE.md` rules 4–4c, 10), on the flights shared by all four landing directories (`tests/land_helpers.py`): target due N with yaw 135°, due E with 315°. A VTOL is in forward flight when the command is sent.
+
+| | PX4 multicopter (`sihsim_quadx`) | PX4 VTOL (`sihsim_standard_vtol`) |
+|---|---|---|
+| lands | PASS — touchdown ~30 s after the command | PASS — back-transition at once (30 m), touchdown in MC mode after ~33 s |
+| 5/6 Lat/Lon | **FAIL (compat)** — touched down 60.1 / 59.9 m from the 60 m targets: lands in place | **FAIL (compat)** — touched down 391 / 385 m from the targets: lands where it was |
+| 4 Yaw Angle | **FAIL (compat)** — 135° → 359.5°, 315° → 359.4° | **FAIL (compat)** — 135° → 223.0°, 315° → 223.6° (the heading it was flying) |
+| 7 Altitude | untestable (flat terrain); z = 15 m still lands on the ground | same |
+| 1 Abort Alt, 2 Land Mode | untestable (no aborted landing, no beacon) | same |
+| Param coverage | COMPLETE | COMPLETE |
+
+- **A commanded NAV_LAND reads none of its params.** `Commander` switches to AUTO_LAND ("Landing at current position"); lat/lon and yaw are accepted and ignored — compatibility errors (rule 4). The mission item behaves differently: it flies to the point (`tests/mission/nav_land/README.md`).
+- **PR #28764 doesn't change this** — yaw is honoured for the mission item with that PR, not for the command (multicopter 0.7° / 0.1°, VTOL 223.8° / 224.0° on the PR build).
+- **A VTOL in forward flight lands in VTOL mode**: it back-transitions as soon as the command arrives and descends vertically.
+- The older `test_*_comprehensive` / `test_vtol_landing_behaviour` / `test_px4_rover_land_is_inert` tests are kept (they hold the fixed-wing and rover characterisation) but are gated on `--vehicle-type` and assert nothing about a param; `test_mc_landing_comprehensive` and `test_vtol_landing_behaviour` still pass here and agree with the above.
 
 ## Parameter definition (common.xml)
 
@@ -35,13 +68,13 @@ Tier 1 tests below are scoped to "was the value accepted", never "was it interpr
 
 | Group | Tests | Approach |
 |-------|-------|----------|
-| A — Baseline | `test_nav_land_command_accepted` | Assert not UNSUPPORTED |
+| A — Baseline | `test_command_supported` (inherited; was `test_nav_land_command_accepted`) | Assert not UNSUPPORTED |
 | B — param1 (Abort Alt) | `_zero/_specific/_negative/_nan` | `zero` asserts not UNSUPPORTED (spec-defined sentinel); rest observational |
 | C — param2 (Land Mode) | `_disabled/_opportunistic/_required/_undefined` | `disabled` asserts not UNSUPPORTED; rest observational — precision-landing *engagement* needs a simulated beacon (out of scope) |
 | D — param4 (Yaw) | `_specific_ack`, `_nan_ack` | Both observational (see below) |
 | E — Location (5/6/7) | `_specific_ack/_int32max_ack/_out_of_range_latlon_ack`, `_altitude_specific_ack/_nan_ack`, `_wrong_frame_ack` | `specific`/`altitude_specific` assert not UNSUPPORTED; `out_of_range_latlon` records the result as an observation (spec gap, mirrors NAV_TAKEOFF); rest observational |
 | F — COMMAND_LONG sentinels | `_latlon_nan_command_long_ack`, `_latlon_int32max_command_long` | Mirror NAV_TAKEOFF's; real-stack only |
-| G — Message-type exclusivity | `test_nav_land_command_long_rejected` | Hand-rolled equivalent of `Tier1CommandTestBase.test_hasLocation_rejects_command_long` (this file predates that base class migration) — see `../CLAUDE.md` § Mandatory common tests, check 7 |
+| G — Message-type exclusivity | `test_hasLocation_rejects_command_long` | Inherited from `Tier1CommandTestBase` since 2026-10-13 (was the hand-rolled `test_nav_land_command_long_rejected`) — see `../CLAUDE.md` § Mandatory common tests, check 7 |
 
 **Message-type exclusivity result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`)**: `test_nav_land_command_long_rejected` **FAIL (compat)** — COMMAND_LONG for NAV_LAND returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
 
