@@ -8,6 +8,7 @@ Detailed notes for each test subtree live in their own CLAUDE.md files:
 - `tests/mission/CLAUDE.md` — mission protocol, frame type tables, MAV_CMD methodology, shared Tier 1 mission-test framework
 - `tests/mission/nav_takeoff/CLAUDE.md` — NAV_TAKEOFF storage test results (all stacks)
 - `tests/mission/nav_vtol_takeoff/CLAUDE.md` — NAV_VTOL_TAKEOFF mission item (Tier 1 + Tier 2), with `tests/command/nav_vtol_takeoff/` for the command; per-stack verdicts, what param7 is used as (transition vs final altitude), and a PX4 INT32_MAX lat/lon fly-away
+- `tests/mission/nav_land/CLAUDE.md` — NAV_LAND and NAV_VTOL_LAND, both protocols (four directories sharing `tests/land_helpers.py`): per-stack verdicts, PX4's command NAV_LAND landing in place, NAV_VTOL_LAND being mission-only on PX4, and running PX4's SIH container build without Docker
 - `tests/mission/camera_target_id/CLAUDE.md` — every mission camera command's target camera ID (one directory, one flight per id case); verifies PX4's camera-target-id change, plus a PX4 COMMAND_LONG queue bug that drops back-to-back camera commands
 - `tests/mission/do_reposition/CLAUDE.md` — DO_REPOSITION rejected as a mission item everywhere (UNSUPPORTED, spec-aligned); baseline-probe NaN pitfall
 - `tests/mission/condition_gate/CLAUDE.md` — CONDITION_GATE (`<wip/>`, needs the raw mavlink_direct transport); PX4 param-drop bug; a real PX4 mask fix that needed a SITL rebuild to take effect; a raw-transport bug found against ArduCopter's deprecated MISSION_REQUEST
@@ -124,6 +125,8 @@ tests/mavsdk_compat.py   MAVSDK 4 adapter: Endpoint (one Mavsdk instance/identit
 tests/flight_helpers.py  Shared Tier 2 (flight/execution) helpers: arm/wait/observe scaffolding
                            used by both tests/command/ and tests/mission/ — protocol-neutral,
                            not command- or mission-specific execution semantics
+tests/land_helpers.py    Shared Tier 2 scaffolding for the landing commands (NAV_LAND, NAV_VTOL_LAND; command
+                           and mission): one flight routine per protocol, touchdown watch, verdict helpers
 tests/param_spec.py      ParamSpec — per-MAV_CMD-slot metadata (defined/undefined, sentinel policy)
                            shared by tests/command/ and tests/mission/'s Tier 1 bases, since
                            COMMAND_INT/LONG and MISSION_ITEM_INT share the same param1-4/x/y/z layout
@@ -138,6 +141,8 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   test_frame_types.py    MAV_FRAME support matrix (65 tests, stack-agnostic)
   nav_takeoff/           NAV_TAKEOFF mission-protocol tests (Tier1MissionTestBase) — see nav_takeoff/CLAUDE.md
   nav_vtol_takeoff/      NAV_VTOL_TAKEOFF mission-protocol tests (Tier1MissionTestBase; Tier 2 flight) — see nav_vtol_takeoff/CLAUDE.md
+  nav_land/              NAV_LAND mission-protocol tests (Tier1MissionTestBase; Tier 2 flight) — see nav_land/CLAUDE.md
+  nav_vtol_land/         NAV_VTOL_LAND mission-protocol tests (Tier1MissionTestBase; Tier 2 flight) — see nav_land/CLAUDE.md
   camera_target_id/      Camera commands' target camera ID (11 commands; generated Tier1MissionTestBase classes; Tier 2 routing) — see camera_target_id/CLAUDE.md
   do_reposition/         DO_REPOSITION mission-protocol tests (Tier1MissionTestBase) — see do_reposition/CLAUDE.md
   condition_gate/        CONDITION_GATE mission-protocol tests (raw transport; Tier 1 + Tier 2 flight) — see condition_gate/CLAUDE.md
@@ -149,6 +154,8 @@ tests/command/           Command protocol tests — see tests/command/CLAUDE.md
   test_survey.py         Probe all 168 MAV_CMD from common.xml; write support matrix to logs/
   test_protocol.py       Command protocol mechanics (ACK, retry, confirmation, in-progress)
   takeoff/               NAV_TAKEOFF via COMMAND_INT (test_command.py, README.md)
+  nav_land/              NAV_LAND command-protocol tests (Tier1CommandTestBase; Tier 2 flight) — see tests/mission/nav_land/CLAUDE.md
+  nav_vtol_land/         NAV_VTOL_LAND command-protocol tests (Tier1CommandTestBase; Tier 2 flight) — see tests/mission/nav_land/CLAUDE.md
   do_set_actuator/       DO_SET_ACTUATOR command-protocol tests (Tier1CommandTestBase; PWM-output Tier 2) — see do_set_actuator/CLAUDE.md
 ```
 
@@ -234,6 +241,7 @@ Current test result counts are in `README.md`.
 | PX4 MC (flight only) | `pytest tests/command/nav_takeoff/test_flight.py --drone-address=udp://:14540 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_quadx --vehicle-type=quadcopter --autopilot=px4` |
 | PX4 fixed-wing | `pytest tests/mission/nav_takeoff/test_protocol.py --drone-address=udp://:14540 --vehicle-type=fixed_wing --autopilot=px4 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_airplane` |
 | PX4 VTOL | `pytest tests/mission/nav_takeoff/test_protocol.py --drone-address=udp://:14540 --vehicle-type=vtol --autopilot=px4 --px4-sitl=~/github/PX4/PX4-Autopilot --px4-model=sihsim_standard_vtol` |
+| PX4 SIH container build | `python3 scripts/fetch_px4_sitl_image.py`, then any PX4 row with `--px4-sitl=~/px4_sitl_images/latest` (the `px4io/px4-sitl` image's PX4, run natively — `SETUP.md`) |
 | PX4 VTOL (Gazebo) | `pytest tests/command/nav_takeoff/ --drone-address=udp://:14540 --vehicle-type=vtol --autopilot=px4 --px4-sitl=~/github/px4/PX4-Autopilot --px4-model=gz_standard_vtol` |
 | ArduCopter | `pytest tests/ --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 --ardupilot-sitl=~/github/ardupilot/ardupilot/build/sitl/bin/arducopter --home-lat=37.6234 --home-lon=-122.0811 --home-alt=0 --vehicle-type=copter --autopilot=ardupilot` |
 | ArduPlane fixed-wing | `pytest tests/ --drone-address=tcp://127.0.0.1:5760 --connection-timeout=60 --ardupilot-sitl=~/ardu_sitl/arduplane --vehicle-type=fixed_wing --autopilot=ardupilot` |
@@ -315,6 +323,10 @@ Two ArduPilot instances follow the same shape with `--sitl-instance=N` and `--dr
 - **`paired_drone_server`/`paired_gcs_server`**: also offset by `10*instance` now, for the same reason as the standalone ports above — these fixtures start **unconditionally every session**, standalone included (`gcs_mavsdk_server` depends on `paired_gcs_server` in its own signature regardless of `--drone-address`), so two concurrent standalone sessions on different instances collided on these fixed ports even though neither was in paired mode. Confirmed by a real collision (2026-09-15): running PX4 instance 0 and ArduPlane instance 1 concurrently, PX4's session errored at setup entirely (`paired_drone_server` failed to bind port 50052, already held by ArduPlane's own concurrently-starting session) while ArduPlane's own run completed normally. `GCS_MAVLINK_PORT` (the paired loopback UDP port) is offset the same way.
 - **`_clear_px4_if_paired`**: only kills instance-0 PX4 now (the only instance whose default ports actually conflict with the paired mock loopback) — a concurrently-running non-zero instance is left alone.
 - **`gcs_mavsdk_server`** (standalone branch): binds its local mavsdk_server to `GCS_GRPC_PORT + 10*instance` instead of the fixed `50051`, so two concurrent pytest processes each get their own gRPC port too, not just their own MAVLink port.
+
+### Caveat: raw command/mission helpers address system ID 1 (found 2026-10-13)
+
+PX4 `-i N` runs as system ID N+1, but `tests/command/conftest.py`'s raw senders (`_DRONE_SYSID`), `tests/mission/conftest.py`'s raw transport (`_RAW_DRONE_SYSID`) and `request_message_rate()` all target system ID 1. On a non-zero instance every raw COMMAND_INT/LONG is silently ignored — no ACK, and e.g. a commanded takeoff that arms (through MAVSDK, which addresses the vehicle correctly) and never climbs. Anything that goes through a MAVSDK plugin (`mission_raw`, `action`, telemetry) works on any instance. **Run command-protocol files on instance 0** until those helpers take the vehicle's own system ID. See `tests/mission/nav_land/CLAUDE.md`.
 
 ### Known caveat (pre-existing, not introduced by this work)
 

@@ -23,10 +23,10 @@ one stays a blunt status table ("where is it actually adopted yet").
 
 ## Directories tracked
 
-**Mission** (`tests/mission/`): `nav_takeoff`, `nav_vtol_takeoff`, `camera_target_id`, `do_reposition`
+**Mission** (`tests/mission/`): `nav_takeoff`, `nav_vtol_takeoff`, `nav_land`, `nav_vtol_land`, `camera_target_id`, `do_reposition`
 (Tier 1 only — rejected everywhere, nothing to fly), `condition_gate`,
 `do_set_actuator`.
-**Command** (`tests/command/`): `nav_takeoff`, `nav_vtol_takeoff`, `nav_land`,
+**Command** (`tests/command/`): `nav_takeoff`, `nav_vtol_takeoff`, `nav_land`, `nav_vtol_land`,
 `do_reposition`, `do_set_mission_current`, `do_set_global_origin` (Tier 1
 only — no Tier 2 flight semantics), `external_wind_estimate`,
 `baseline_takeoff` (bespoke, predates the shared Tier 1 base),
@@ -52,6 +52,19 @@ compat flag, pattern #8 restart cleanup, pattern #12 message watcher. Whether
 the vehicle is a VTOL comes from its HEARTBEAT type (`vehicle_is_vtol()` in
 `tests/flight_helpers.py`), not `vtol_state` — ArduCopter reports
 `vtol_state` MC. See `tests/mission/nav_vtol_takeoff/CLAUDE.md`.
+
+**`nav_land` and `nav_vtol_land`** (both protocols, added 2026-10-13; `command/nav_land`
+existed and was brought up to date) are not given columns: built with every
+current pattern — shared Tier 1 bases (both protocols; `command/nav_land`
+migrated onto `Tier1CommandTestBase`), rule 8/9 naming, rule 4a/4b/4c verdicts,
+rule 7 cached flights, rule 10 param coverage (COMPLETE everywhere, with
+recorded untestable reasons), rule 11 compat flag, pattern #8 restart cleanup.
+New here: one flight routine shared by four modules (`tests/land_helpers.py`),
+several params on the same two flights with per-param NACK attribution, and an
+A/B against a PX4 PR build as the proof the yaw check discriminates (FAIL on
+the container build, PASS on PR #28764). `command/nav_land`'s older
+`--vehicle-type`-gated comprehensive tests are kept but superseded for
+verdicts. See `tests/mission/nav_land/CLAUDE.md`.
 
 **`camera_target_id`** (mission, added 2026-10-01) covers eleven commands in
 one directory: one `Tier1MissionTestBase` class per command, generated from a
@@ -122,7 +135,7 @@ simplest happy-path test alone does not).
 | mavlink-compat-data statement-schema migration (`tests/report.py`'s `render_json_doc`/`_statement`) | ✓ Done 2026-09-29 for upstream PR #14 (mdn-BCD-style `version_added` statements, absent-means-unknown params). Verified by splicing release + dev-build output into a scratch copy of mavlink-compat-data and passing its own `scripts/validate.py`, with the old format as a negative control. Applies to every command's JSON automatically (one renderer) |
 | Param coverage — every param ends a run with an explicit verdict (root `CLAUDE.md` rule 10; `tests/report.py`'s `param_coverage()`/`record_nonsentinel_ack()`/`untestable=`, session-end gap summary in `tests/conftest.py`) | ✓ Framework built 2026-09-29 and applies to every command's report automatically (gaps are *reported* everywhere). Gaps *closed* so far only in `command/nav_takeoff` (Flags via ACK/untestable, Latitude/Longitude via `test_position_is_honoured`, Pitch/Yaw via ACK + execution). Every other command/mission directory: gaps listed but not yet closed |
 | PASS/FAIL outcomes + separate Compat error column, no pytest xfail (root `CLAUDE.md` rule 11; `report.compat_fail()`/`classify_report()`) | ✓ Converted 2026-09-29 across **every** file — 43 `pytest.xfail()` calls, 2 markers, all `*_xfail_reason` fields (now `*_fail_reason`). Classified per case: spec contradiction → compat FAIL; inconclusive/harness → plain FAIL; spec gap → PASS with the observation logged. Mock mode reports compat failures as NA |
-| Two values per "is it honoured" check, mission and command (root `CLAUDE.md` rule 4c) | ✓ Rolled out 2026-09-30. **NAV_TAKEOFF** — command: altitude 30/50 m (now one `test_altitude_is_honoured`, replacing `_nominal`/`_higher`), relative-altitude frame 30/50 m, yaw 135°/225°, lat/lon 200 m N/E (settled centre), pitch 5° vs 45° (already); mission: altitude 10/35 m (already), yaw 137°/227°, pitch 10°/35° at 90% (was 10° at 50%), lat/lon 100 m N/E. **DO_REPOSITION** (command; rejected as a mission item) — location 50 m N then 50 m E, altitude +20 m then −10 m, both in one flight, now NACK-aware and settle-based. **DO_SET_ACTUATOR** — command: ±0.5 (default and local frame; actuators 1–4 already distinct); mission: ±0.5 (one mission each). **EXTERNAL_WIND_ESTIMATE** (command-only) — ground wind 8 m/s @ 90° then 5 m/s @ 225°. **NAV_LAND** (command) — new `test_nav_land_compat_position_honoured`, 60 m N/E touchdown. **CONDITION_GATE** (mission) — gate mirrored east/west (parametrised). Exempt: DO_SET_MISSION_CURRENT (enumerations, exhaustive at Tier 1). Verified 2026-09-30 on PX4 SIH multicopter (main `3fe7e7af35`) and fixed-wing (PR #28888 build): every changed file ran; results in `tests/command/CLAUDE.md` § Two-value results. The second value caught a real false PASS: PX4 FW NAV_TAKEOFF heads ~150° whatever yaw is commanded, so 135° 'passed' alone and 225° exposed it. Both former MC-only measurements were fixed 2026-09-30 to use MISSION_CURRENT events instead. Mission `nav_takeoff` position now measures the closest approach while the takeoff item is current. `condition_gate` now takes the trigger from MISSION_CURRENT moving past the gate. Both run on FW; see their CLAUDE.md files |
+| Two values per "is it honoured" check, mission and command (root `CLAUDE.md` rule 4c) | ✓ Rolled out 2026-09-30. **NAV_TAKEOFF** — command: altitude 30/50 m (now one `test_altitude_is_honoured`, replacing `_nominal`/`_higher`), relative-altitude frame 30/50 m, yaw 135°/225°, lat/lon 200 m N/E (settled centre), pitch 5° vs 45° (already); mission: altitude 10/35 m (already), yaw 137°/227°, pitch 10°/35° at 90% (was 10° at 50%), lat/lon 100 m N/E. **DO_REPOSITION** (command; rejected as a mission item) — location 50 m N then 50 m E, altitude +20 m then −10 m, both in one flight, now NACK-aware and settle-based. **DO_SET_ACTUATOR** — command: ±0.5 (default and local frame; actuators 1–4 already distinct); mission: ±0.5 (one mission each). **EXTERNAL_WIND_ESTIMATE** (command-only) — ground wind 8 m/s @ 90° then 5 m/s @ 225°. **NAV_LAND** (command) — `test_nav_land_compat_position_honoured`, 60 m N/E touchdown (since 2026-10-13 `test_land_compat_position_honoured`, with yaw 135°/315° on the same flights — and the same for NAV_VTOL_LAND and both mission items, plus approach altitude 50/70 m). **CONDITION_GATE** (mission) — gate mirrored east/west (parametrised). Exempt: DO_SET_MISSION_CURRENT (enumerations, exhaustive at Tier 1). Verified 2026-09-30 on PX4 SIH multicopter (main `3fe7e7af35`) and fixed-wing (PR #28888 build): every changed file ran; results in `tests/command/CLAUDE.md` § Two-value results. The second value caught a real false PASS: PX4 FW NAV_TAKEOFF heads ~150° whatever yaw is commanded, so 135° 'passed' alone and 225° exposed it. Both former MC-only measurements were fixed 2026-09-30 to use MISSION_CURRENT events instead. Mission `nav_takeoff` position now measures the closest approach while the takeoff item is current. `condition_gate` now takes the trigger from MISSION_CURRENT moving past the gate. Both run on FW; see their CLAUDE.md files |
 | Mission shape a stack will fly — landing / approach waypoint, or NA on DENIED (`tests/mission/CLAUDE.md` § "Mission shape a stack will fly"; `mission_landing_items()`/`start_mission_or_na()` in `tests/flight_helpers.py`) | ✓ 2026-09-30. Landing appended: `nav_takeoff` (mission), `condition_gate`. NA on DENIED: `do_set_mission_current`, `do_set_actuator` (mission). Restart fallback on cleanup added to `nav_takeoff` (command) and `condition_gate` |
 | MAVSDK 4 native binding via `tests/mavsdk_compat.py` (Endpoint + SystemShim) | ✓ Migrated 2026-09-29, whole suite. No `mavsdk_server` processes; test bodies unchanged apart from import paths, `.name` for enum strings and `.result` on errors |
 | PX4 Gazebo SITL (`--px4-model=gz_*`, `tests/conftest.py`'s `_start_px4_process`) | ✓ Added 2026-09-29, opt-in by model name; SIH remains the default and its command line is unchanged. Validated: harness-managed launch + teardown (no gz left running), SIH regression check, and full `command/nav_takeoff` Tier 1 + Tier 2 runs |
