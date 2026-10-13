@@ -1167,15 +1167,12 @@ async def test_altitude_zero_behaviour(gcs_system):
 
 
 # ---------------------------------------------------------------------------
-# Yaw tests (param4) — all observational
+# Yaw tests (param4)
 # ---------------------------------------------------------------------------
 #
-# Both PX4 and ArduPilot ignore param4 in the COMMAND_INT execution path:
-#   PX4: rep->current.yaw = NAN regardless (navigator_main.cpp:630)
-#   ArduCopter: "param4 : yaw angle   (not supported)" (GCS_MAVLink_Copter.cpp:585)
-#   ArduPlane: only altitude read from COMMAND_INT handler (GCS_MAVLink_Plane.cpp)
-#
-# These tests log the actual heading after takeoff but do not assert.
+# test_yaw_is_honoured is the "is it honoured" check (rule 4). The _observe_yaw
+# tests are characterisation: they log the heading after takeoff and assert
+# nothing, and make no assumption about whether a stack uses param4.
 # ---------------------------------------------------------------------------
 
 async def _observe_yaw(gcs_system, label: str, param4_deg) -> None:
@@ -1192,7 +1189,7 @@ async def _observe_yaw(gcs_system, label: str, param4_deg) -> None:
         log.info(
             _FMT, _CMD, label,
             f"altitude={pos.relative_altitude_m:.1f} m  heading={heading:.1f}° "
-            f"(param4={param4_deg}° — observational, all known stacks ignore param4 in COMMAND_INT path)",
+            f"(param4={param4_deg}° — observational)",
         )
     finally:
         await _rtl_and_land(gcs_system, _restart)

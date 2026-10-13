@@ -5,14 +5,15 @@ This tests the *command protocol* path (COMMAND_INT → COMMAND_ACK), which is
 distinct from the *mission protocol* path (MISSION_ITEM_INT upload → storage).
 The same command's parameters may behave very differently across these two paths:
 
-- PX4 stores param4 (Yaw) in mission items but unconditionally sets yaw=NaN
-  in the COMMAND_INT execution path (navigator_main.cpp:630).
-- ArduPilot does not store param4 in mission items, and ignores param4 in the
-  COMMAND_INT path with the comment "not supported" (GCS_MAVLink_Copter.cpp:585).
+e.g. a stack may store param4 (Yaw) in a mission item yet not act on it when the
+command is sent directly, or the reverse.
 
 The command protocol only provides COMMAND_ACK result; it does NOT provide
 access to stored parameter values.  Tests here are therefore limited to
-documenting what ACK result each parameter value produces.
+documenting what ACK result each parameter value produces.  In particular they
+never assume a defined param is ignored, or expect a particular result for a
+valid value of one: a NACK is a legitimate "not supported" (root CLAUDE.md rule
+4a), and an ACCEPTED value is checked for being honoured by test_flight.py.
 
 COMMAND_INT is the correct message type for NAV_TAKEOFF:
   hasLocation="true", isDestination="true" → use COMMAND_INT (integer lat/lon).
@@ -94,6 +95,48 @@ async def _probe(system, **kwargs) -> dict | None:
     return await probe_command_int(system, **defaults)
 
 
+async def _probe_real_value(system, label: str, param_key: str, **kwargs) -> bool | None:
+    """
+    Send a valid, non-sentinel value for one defined param and record its ACK.
+    Returns True if it was NACKed, False if not, None if there was no ACK.
+
+    Either outcome passes: DENIED is a legitimate "not supported" verdict, and
+    any other result only says the value wasn't NACKed — whether it is honoured
+    is test_flight.py's question (root CLAUDE.md rules 4a/10). The one thing a
+    valid param value must not do is make a supported command UNSUPPORTED.
+
+    Expecting a particular result (e.g. DENIED) would only be right if the
+    command's XML said the param is not supported on this vehicle type.
+    NAV_TAKEOFF's says no such thing for any param.
+
+    The same send without the value goes first: if that baseline isn't accepted
+    (e.g. ArduPilot DENIES every COMMAND_INT NAV_TAKEOFF in this frame while
+    disarmed), a NACK says nothing about the param, so the test reports NA and
+    records no verdict (rule 10: never record one the test didn't establish).
+    """
+    base = await _probe(system)
+    base_result = None if base is None else int(base["result"])
+    if base_result not in (MAV_RESULT_ACCEPTED, 5):  # 5 = IN_PROGRESS
+        log.info(_FMT, _CMD, label, f"NA — the same send without this value isn't accepted (result={base_result})")
+        pytest.skip(
+            f"NA: the same send without this value isn't accepted (result={base_result}), "
+            "so its ACK says nothing about the param"
+        )
+    ack = await _probe(system, **kwargs)
+    if ack is None:
+        log.warning(_FMT, _CMD, label, "UNKNOWN — no ACK")
+        return None
+    result = int(ack["result"])
+    nacked = result == MAV_RESULT_DENIED
+    log.info(
+        _FMT, _CMD, label,
+        f"result={result} — " + ("NACKed (not supported)" if nacked else "not NACKed (honoured? see test_flight.py)"),
+    )
+    report.record_nonsentinel_ack("command", _CMD, param_key, nacked=nacked)
+    assert result != MAV_RESULT_UNSUPPORTED, f"{label} should not make a supported command UNSUPPORTED"
+    return nacked
+
+
 @pytest.mark.asyncio(loop_scope="class")
 @pytest.mark.timeout(300)
 class TestNavTakeoffCommand(Tier1CommandTestBase):
@@ -108,32 +151,10 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
 
     SPEC = SPEC
 
-    async def test_param1_pitch_ack_denied(self, gcs_system_cls, mock_stack_cls):
-        """
-        param1 (Pitch) = 15.0 deg — expects MAV_RESULT_DENIED.
-
-        A non-NaN param1 expresses the caller's intent that pitch be honoured.
-        NaN is the correct way to say "no pitch preference".  A stack that cannot
-        honour the requested pitch must return MAV_RESULT_DENIED rather than
-        silently accepting and ignoring the parameter.
-
-        Known result (FAIL): all known stacks (PX4, ArduPilot) return ACCEPTED while ignoring
-        param1 in the COMMAND_INT execution path — each is a spec violation.
-        """
+    async def test_param1_pitch_ack(self, gcs_system_cls, mock_stack_cls):
+        """param1 (Pitch) = 15.0 deg — records whether a real value is NACKed; passes either way."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
-        ack = await _probe(gcs_system_cls, param1=15.0)
-        if ack is None:
-            log.warning(_FMT, _CMD, "param1 (Pitch) = 15.0", "UNKNOWN — no ACK")
-            return
-        result = int(ack["result"])
-        log.info(_FMT, _CMD, "param1 (Pitch) = 15.0", f"result={result}")
-        report.record_nonsentinel_ack("command", _CMD, "1_Pitch", nacked=result == MAV_RESULT_DENIED)
-        if result != MAV_RESULT_DENIED:
-            report.compat_fail(
-                f"Stack accepted param1=15° but ignores pitch (result={result}); "
-                "should return MAV_RESULT_DENIED"
-            )
-        assert result == MAV_RESULT_DENIED
+        await _probe_real_value(gcs_system_cls, "param1 (Pitch) = 15.0", "1_Pitch", param1=15.0)
 
     async def test_param1_nan_ack_result(self, gcs_system_cls, mock_stack_cls):
         """
@@ -151,36 +172,10 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         log.info(_FMT, _CMD, "param1 (Pitch) = NaN", f"result={result}")
         # Observational — no assertion
 
-    async def test_param4_yaw_ack_denied(self, gcs_system_cls, mock_stack_cls):
-        """
-        param4 (Yaw) = 90.0 deg — expects MAV_RESULT_DENIED.
-
-        A non-NaN param4 expresses the caller's intent that yaw be honoured.
-        NaN is the correct "use current heading" sentinel.  A stack that cannot
-        honour the requested yaw must return MAV_RESULT_DENIED rather than
-        silently accepting and ignoring the parameter.
-
-        All known stacks ignore param4 in the COMMAND_INT execution path:
-        - PX4: rep->current.yaw = NAN regardless of param4 (navigator_main.cpp:630)
-        - ArduCopter: "param4 : yaw angle   (not supported)" (GCS_MAVLink_Copter.cpp:585)
-        - ArduPlane: only altitude is read from the COMMAND_INT handler (GCS_MAVLink_Plane.cpp)
-
-        Known result (FAIL): all known stacks return ACCEPTED while ignoring param4 — spec violation.
-        """
+    async def test_param4_yaw_ack(self, gcs_system_cls, mock_stack_cls):
+        """param4 (Yaw) = 90.0 deg — records whether a real value is NACKed; passes either way."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
-        ack = await _probe(gcs_system_cls, param4=90.0)
-        if ack is None:
-            log.warning(_FMT, _CMD, "param4 (Yaw) = 90.0", "UNKNOWN — no ACK")
-            return
-        result = int(ack["result"])
-        log.info(_FMT, _CMD, "param4 (Yaw) = 90.0", f"result={result}")
-        report.record_nonsentinel_ack("command", _CMD, "4_Yaw", nacked=result == MAV_RESULT_DENIED)
-        if result != MAV_RESULT_DENIED:
-            report.compat_fail(
-                f"Stack accepted param4=90° but ignores yaw (result={result}); "
-                "should return MAV_RESULT_DENIED"
-            )
-        assert result == MAV_RESULT_DENIED
+        await _probe_real_value(gcs_system_cls, "param4 (Yaw) = 90.0", "4_Yaw", param4=90.0)
 
     async def test_param3_flags_ack(self, gcs_system_cls, mock_stack_cls):
         """
@@ -194,15 +189,8 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         coverage requirement: every param ends a run with an explicit verdict).
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
-        ack = await _probe(gcs_system_cls, param3=1.0)
-        if ack is None:
-            log.warning(_FMT, _CMD, "param3 (Flags) = 1", "UNKNOWN — no ACK")
-            return
-        result = int(ack["result"])
-        log.info(_FMT, _CMD, "param3 (Flags) = 1", f"result={result}")
-        nacked = result == MAV_RESULT_DENIED
-        report.record_nonsentinel_ack("command", _CMD, "3_Flags", nacked=nacked)
-        if not nacked:
+        nacked = await _probe_real_value(gcs_system_cls, "param3 (Flags) = 1", "3_Flags", param3=1.0)
+        if nacked is False:
             report.record_compat_fact(
                 "command", _CMD, "3_Flags",
                 untestable="Flag only matters without horizontal position control",
@@ -212,9 +200,8 @@ class TestNavTakeoffCommand(Tier1CommandTestBase):
         """
         param4 (Yaw) = NaN — observational: NaN means 'use current heading'.
 
-        Per the MAVLink spec, param4=NaN is valid and means the stack should maintain
-        its current heading.  Both PX4 and ArduPilot already ignore param4 in the
-        COMMAND_INT path (yaw reset to NaN in PX4, "not supported" in ArduPilot).
+        Per the MAVLink spec, param4=NaN is valid and means the stack should use
+        its current yaw heading mode.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param4=None)
