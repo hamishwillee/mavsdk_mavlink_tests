@@ -17,21 +17,34 @@ Coordinate fields aren't always meaningful lat/lon — they may carry sentinels:
 
 PX4 correctly converts INT32_MAX→NaN for COMMAND_INT and passes NaN through for COMMAND_LONG; sending `float(INT32_MAX)` in COMMAND_LONG is treated as a protocol error, not the sentinel.
 
-## Yaw ignored via COMMAND_INT
+## Yaw via COMMAND_INT
 
-Both PX4 (`navigator_main.cpp:630`: `rep->current.yaw = NAN` unconditionally) and ArduPilot (`GCS_MAVLink_Copter.cpp:585`: "not supported"; ArduPlane reads only altitude) ignore param4 in the COMMAND_INT path — see `../CLAUDE.md` § Command vs mission protocol differences for the full comparison with the mission-protocol path (where PX4 *does* store and use it).
+**PX4 PR #28930 (branch `feat-fw-takeoff-no-loiter`, `a06718d71`, SIH fixed-wing, 2026-10-13) uses param4 on fixed-wing**: the commanded takeoff climbs out on the launch heading, then holds param4 as a course and stays in Takeoff mode (NaN: loiters in Hold, as before). `test_param4_yaw_ack`: ACCEPTED. `test_yaw_is_honoured`: PASS — 135° → 135.5°, 225° → 225.2°. SIH has no wind, so this run doesn't separate course from heading.
 
-## Message-type exclusivity (check 7, added 2026-09-18)
-
-`test_hasLocation_rejects_command_long` (inherited — see `../CLAUDE.md` § Mandatory common tests, check 7): **FAIL (compat)** against PX4 MC (confirmed 2026-09-17 against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot`) — COMMAND_LONG for NAV_TAKEOFF returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. This is a real, currently-uneven gap: the sibling command `NAV_VTOL_TAKEOFF` genuinely enforces this on the very same PX4 build (PX4 commit `83e7afba56` adds a `command_is_int_only()` switch, but its case list currently has only `MAV_CMD_NAV_VTOL_TAKEOFF`, not this command) — see `../nav_vtol_takeoff/CLAUDE.md` for the full story. `test_float_params5_6_rejects_command_int` is SKIP (NA) — this command has no non-location float in param5/6.
+Everything else tested so far ignores it: both PX4 (`navigator_main.cpp:630`: `rep->current.yaw = NAN` unconditionally) and ArduPilot (`GCS_MAVLink_Copter.cpp:585`: "not supported"; ArduPlane reads only altitude) ignore param4 in the COMMAND_INT path (PX4 `main` and releases; source references as of the builds in the tables below) — see `../CLAUDE.md` § Command vs mission protocol differences for the full comparison with the mission-protocol path (where PX4 *does* store and use it).
 
 ## Tier 1 (ACK) results
 
-25 tests: `test_command_ack_received`, `test_command_supported`, `test_exactly_one_ack`, `test_frame_validation_survey`, `test_undefined_param_{sentinel_accepted,nonsentinel_rejected}[param2]`, `test_defined_param_sentinel_tolerated[param{1,3,4,5,6,7}]`, `test_hasLocation_rejects_command_long`, and `test_float_params5_6_rejects_command_int` are inherited from `Tier1CommandTestBase` (`../CLAUDE.md`); the rest are this command's own bespoke tests. All COMMAND_INT except the two rows marked COMMAND_LONG. The table below predates check 7's addition — see the section above for its result.
+26 tests. `test_command_ack_received`, `test_command_supported`, `test_exactly_one_ack`, `test_frame_validation_survey`, `test_undefined_param_{sentinel_accepted,nonsentinel_rejected}[param2]`, `test_defined_param_sentinel_tolerated[param{1,3,4,5,6,7}]`, `test_hasLocation_rejects_command_long` and `test_float_params5_6_rejects_command_int` are inherited from `Tier1CommandTestBase` (`../CLAUDE.md`); the rest are this command's own. All COMMAND_INT (frame 6) except the rows marked COMMAND_LONG.
 
-### PX4 MC / FW / VTOL / Rover (1.18.0-beta, re-verified 2026-09-11)
+All results below are from 2026-10-13:
 
-NAV_TAKEOFF SUPPORTED on every vehicle type — PX4 doesn't gate by vehicle type (unlike ArduRover's UNSUPPORTED, below). Byte-identical results across all four vehicle types **except** `test_param1_pitch_ack_denied`, where **PX4 Rover alone actually DENIES** a non-NaN pitch (MC/FW/VTOL ignore it, same as before): 21 PASS/2 FAIL (compat) (MC/FW/VTOL), 22 PASS/1 FAIL (compat) (Rover) — relabelled from the original 19/4 and 20/3 xfail counts per root `CLAUDE.md` rule 11 (the two out-of-range/INT32_MAX observations are PASSes). New finding from this run: PX4 genuinely validates the undefined param2 slot — a non-sentinel value is DENIED on all four vehicle types, unlike the mock's accept-everything default.
+- **PX4** 1.18.0-beta, `a06718d71` — `main` at `3fc3b141d7` plus the one commit of PR #28930, SIH (`sihsim_quadx`, `sihsim_airplane`, `sihsim_standard_vtol`, `sihsim_rover_ackermann`). The PR only changes the fixed-wing commanded takeoff's execution, so the ACKs are `main`'s.
+- **ArduPilot** 4.8.0-dev, `31d9b842cb` — ArduCopter, ArduPlane (`plane` and `quadplane`), ArduRover SITL.
+
+**How the real-value tests work** (`test_param1_pitch_ack`, `test_param3_flags_ack`, `test_param4_yaw_ack`): each sends a valid, non-sentinel value and records whether it is NACKed. They pass either way — a NACK is a legitimate "not supported", and an accepted value is checked for being honoured by `test_flight.py` (`test_pitch_is_honoured`, `test_yaw_is_honoured`); only accepted-but-not-honoured is the compatibility error (root `CLAUDE.md` rules 4a/10). They send the same command without the value first, and report **NA** if that baseline isn't accepted, since a NACK then says nothing about the param. Until 2026-10-13 the pitch and yaw tests were `test_param1_pitch_ack_denied`/`test_param4_yaw_ack_denied` and required `DENIED`, on the assumption that every stack ignores the value.
+
+| Stack | Passed | Failed | Skipped/NA | Failures (all compatibility errors) |
+|-------|--------|--------|------------|-------------------------------------|
+| PX4 MC / FW / VTOL / Rover | 24 | 1 | 1 | `test_hasLocation_rejects_command_long` |
+| ArduPlane FW / QuadPlane | 20 | 2 | 4 | `test_hasLocation_rejects_command_long`, `test_undefined_param_nonsentinel_rejected[param2]` |
+| ArduCopter | 21 | 1 | 4 | `test_undefined_param_nonsentinel_rejected[param2]` |
+| ArduRover | 1 | 0 | 25 | — (command UNSUPPORTED) |
+| Mock | 21 | 0 | 5 | — |
+
+### PX4
+
+NAV_TAKEOFF is ACCEPTED on every vehicle type, the rover included. The four vehicle types give identical results except for pitch.
 
 | Test | PX4 MC / FW / VTOL | PX4 Rover |
 |------|---------------------|-----------|
@@ -41,46 +54,52 @@ NAV_TAKEOFF SUPPORTED on every vehicle type — PX4 doesn't gate by vehicle type
 | `test_undefined_param_sentinel_accepted[param2]` | PASS — ACCEPTED | PASS — ACCEPTED |
 | `test_undefined_param_nonsentinel_rejected[param2]` | PASS — DENIED | PASS — DENIED |
 | `test_defined_param_sentinel_tolerated[param1,3,4,5,6,7]` | PASS ×6 — ACCEPTED | PASS ×6 — ACCEPTED |
-| `test_param1_pitch_ack_denied` (param1=15°) | **FAIL (compat)** — ACCEPTED; pitch ignored (spec violation) | **PASS** — DENIED |
-| `test_param1_nan_ack_result` | PASS (obs) — ACCEPTED | PASS (obs) |
-| `test_param4_yaw_ack_denied` (param4=90°) | **FAIL (compat)** — ACCEPTED; yaw ignored | **FAIL (compat)** — ACCEPTED |
-| `test_param4_yaw_nan_ack` | PASS (obs) — ACCEPTED | PASS (obs) |
+| `test_hasLocation_rejects_command_long` | **FAIL (compat)** — ACCEPTED, not `COMMAND_INT_ONLY` | **FAIL (compat)** — ACCEPTED |
+| `test_float_params5_6_rejects_command_int` | NA — no non-location float in param5/6 | NA |
+| `test_param1_pitch_ack` (param1=15°) | PASS — ACCEPTED (not NACKed) | PASS — DENIED (not supported) |
+| `test_param1_nan_ack_result` | PASS (obs) — ACCEPTED | PASS (obs) — ACCEPTED |
+| `test_param3_flags_ack` (param3=1) | PASS — DENIED (not supported) | PASS — DENIED (not supported) |
+| `test_param4_yaw_ack` (param4=90°) | PASS — ACCEPTED (not NACKed) | PASS — ACCEPTED (not NACKed) |
+| `test_param4_yaw_nan_ack` | PASS (obs) — ACCEPTED | PASS (obs) — ACCEPTED |
 | `test_location_specific_ack` | PASS — ACCEPTED | PASS — ACCEPTED |
-| `test_location_int32max_ack` | PASS (obs) — ACCEPTED | PASS (obs) |
-| `test_location_out_of_range_latlon_ack` | **PASS** (observation) — ACCEPTED; PX4 doesn't validate lat/lon range (spec gap, not asserted) | **PASS** (observation) — ACCEPTED |
-| `test_nan_altitude_ack` | PASS (obs) — ACCEPTED | PASS (obs) |
-| `test_wrong_frame_ack` | PASS (obs) — ACCEPTED | PASS (obs) |
-| `test_latlon_nan_command_long_ack` (COMMAND_LONG) | PASS — ACCEPTED; navigator uses current position when `PX4_ISFINITE(param5)=false` | PASS |
-| `test_latlon_int32max_command_long` (COMMAND_LONG) | **PASS** (observation) — DENIED; `mavlink_receiver.cpp:499` explicitly rejects it as a protocol error (INT32_MAX isn't a float param's sentinel, so not asserted) | **PASS** (observation) — DENIED |
+| `test_location_int32max_ack` | PASS (obs) — ACCEPTED | PASS (obs) — ACCEPTED |
+| `test_location_out_of_range_latlon_ack` | PASS (obs) — ACCEPTED; lat/lon range isn't validated (spec gap, not asserted) | PASS (obs) — ACCEPTED |
+| `test_nan_altitude_ack` | PASS (obs) — ACCEPTED | PASS (obs) — ACCEPTED |
+| `test_wrong_frame_ack` | PASS (obs) — ACCEPTED | PASS (obs) — ACCEPTED |
+| `test_latlon_nan_command_long_ack` (COMMAND_LONG) | PASS — ACCEPTED | PASS — ACCEPTED |
+| `test_latlon_int32max_command_long` (COMMAND_LONG) | PASS (obs) — DENIED; INT32_MAX isn't a float param's sentinel, so not asserted | PASS (obs) — DENIED |
 
-### ArduCopter MC / ArduPlane FW / ArduPlane QP
+Notes:
 
-**Stale** — last verified 2026-05-27 against the pre-migration 10-test suite (8 PASS, 2 formerly-xfail — now FAIL (compat) under rule 11, 0 SKIP; SUPPORTED on all three; ArduPlane QP inferred identical to FW, not independently tested; ArduPlane ignores lat/lon/pitch/yaw entirely, reading only altitude, but still rejects out-of-range coordinates at the command-handler level). Not re-verified against the current 23-test suite in this environment: ArduCopter SITL here shows an intermittent-connection issue independent of the documented `is_armable` boot problem (Tier 1 doesn't arm) — the first probe got a real but COMMAND_INT/COMMAND_LONG-inconsistent ACK (`DENIED(2)` vs `FAILED(4)`), then every subsequent send got no ACK at all. Needs a healthy SITL instance to re-verify.
+- **Message-type exclusivity (check 7)**: COMMAND_LONG for this `hasLocation` command is ACCEPTED rather than `MAV_RESULT_COMMAND_INT_ONLY(8)`. PX4's `command_is_int_only()` lists only `MAV_CMD_NAV_VTOL_TAKEOFF` — see `../nav_vtol_takeoff/CLAUDE.md`.
+- **Pitch**: only the rover NACKs a real value. MC/FW/VTOL accept it; whether it is honoured is `test_pitch_is_honoured`'s question.
+- **Flags**: `param3=1` is DENIED on all four. PX4 v1.17.0 accepted it (Gazebo VTOL section below).
+- **Yaw**: accepted on all four. On this build fixed-wing honours it (§ Yaw via COMMAND_INT); the others were not flown here.
 
-### ArduRover
+### ArduPilot
 
-**UNSUPPORTED** (ground vehicle, re-verified 2026-09-11) — baseline probe returns `MAV_RESULT_UNSUPPORTED(3)`; `_ensure_supported()` skips the remaining 22 tests.
+**The baseline is not accepted while disarmed, so these runs say little about individual params.** Every COMMAND_INT is `DENIED(2)` and every COMMAND_LONG is `FAILED(4)`, whatever the params — the tests send frame 6 (`GLOBAL_RELATIVE_ALT_INT`), while ArduCopter's handler requires `MAV_FRAME_GLOBAL_RELATIVE_ALT` (3) and ArduPlane's `MAV_FRAME_LOCAL_OFFSET_NED` (source: `GCS_MAVLink_Copter.cpp`, `GCS_MAVLink_Plane.cpp`). The inherited checks only require an ACK that isn't `UNSUPPORTED`, so they pass; the three real-value tests report NA. A Tier 1 baseline in the frame each stack accepts is still to do.
 
-### Mock (paired, re-verified 2026-09-11)
+| Test | ArduPlane FW / QuadPlane | ArduCopter |
+|------|--------------------------|------------|
+| `test_command_ack_received` / `test_command_supported` | PASS — DENIED (INT) / FAILED (LONG) | PASS — DENIED (INT) / FAILED (LONG) |
+| `test_exactly_one_ack` | PASS | PASS |
+| `test_frame_validation_survey` | INCONCLUSIVE — all 22 frames ACKed | INCONCLUSIVE |
+| `test_undefined_param_sentinel_accepted[param2]` | PASS — DENIED / FAILED, as the baseline | PASS — as the baseline |
+| `test_undefined_param_nonsentinel_rejected[param2]` | **FAIL (compat)** — FAILED(4), same as the baseline, so not a rejection of the value | **FAIL (compat)** — as ArduPlane |
+| `test_defined_param_sentinel_tolerated[param1,3,4,5,6,7]` | PASS ×6 — as the baseline | PASS (param1); UNKNOWN ×5 — no ACK |
+| `test_hasLocation_rejects_command_long` | **FAIL (compat)** — FAILED(4), not `COMMAND_INT_ONLY` | UNKNOWN — no ACK |
+| `test_float_params5_6_rejects_command_int` | NA | NA |
+| `test_param1_pitch_ack` / `test_param3_flags_ack` / `test_param4_yaw_ack` | NA — baseline DENIED | NA — baseline got no ACK |
+| The other nine observational tests | PASS (obs) — DENIED (INT) / FAILED (LONG) | PASS (obs) — no ACK |
 
-18 PASS, 2 SKIP, 3 NA (relabelled from xfail: compatibility checks report NA against the mock, rule 11). Mock ACCEPTs everything by default except out-of-range lat/lon (outside ±900_000_000/±1_800_000_000, non-INT32_MAX) and the two COMMAND_LONG-only tests (SKIP — mock doesn't model NaN-lat/lon or INT32_MAX-as-float semantics for COMMAND_LONG).
+**ArduCopter stops ACKing part-way through the file**: the first eight or so sends are ACKed, and nothing after that is. The same was seen on 2026-05-27. Not investigated — it may be the harness, so the UNKNOWN rows are not findings about ArduCopter.
 
-| Test | Result |
-|------|--------|
-| `test_command_ack_received` / `test_command_supported` | PASS — ACCEPTED |
-| `test_exactly_one_ack` | PASS |
-| `test_frame_validation_survey` | INCONCLUSIVE — mock accepts all frames |
-| `test_undefined_param_sentinel_accepted[param2]` | PASS — ACCEPTED |
-| `test_undefined_param_nonsentinel_rejected[param2]` | **NA** — mock accepts everything by default, no undefined-param validation |
-| `test_defined_param_sentinel_tolerated[param1,3,4,5,6,7]` | PASS ×6 — ACCEPTED |
-| `test_param1_pitch_ack_denied` | **NA** — mock ignores pitch too |
-| `test_param1_nan_ack_result` / `test_param4_yaw_nan_ack` / `test_nan_altitude_ack` | PASS (obs) — ACCEPTED |
-| `test_param4_yaw_ack_denied` | **NA** — yaw ignored |
-| `test_location_specific_ack` | PASS — ACCEPTED |
-| `test_location_int32max_ack` | PASS (obs) — ACCEPTED |
-| `test_location_out_of_range_latlon_ack` | PASS — DENIED (mock validates range) |
-| `test_wrong_frame_ack` | PASS (obs) — ACCEPTED |
-| `test_latlon_nan_command_long_ack` / `test_latlon_int32max_command_long` | SKIP — requires real stack |
+**ArduRover**: `UNSUPPORTED(3)` for the baseline, via both message types; the other 24 tests skip.
+
+### Mock (paired)
+
+The mock ACCEPTs everything except out-of-range lat/lon, so the three real-value tests pass with "not NACKed". `test_undefined_param_nonsentinel_rejected[param2]` and `test_hasLocation_rejects_command_long` report NA (compatibility checks are meaningless against the mock, rule 11), `test_float_params5_6_rejects_command_int` is NA, and the two COMMAND_LONG lat/lon tests skip (the mock doesn't model them). `test_location_out_of_range_latlon_ack` gets DENIED — the mock validates the range.
 
 ## Tier 2 flight tests (`test_flight.py`)
 
@@ -113,7 +132,7 @@ Per-stack summary blocks below (marked `TIER2_SUMMARY_START/END`) are auto-writt
 
 
 <!-- TIER2_SUMMARY_END px4-quadcopter -->
-Command tests: 8 PASS, 2 FAIL (compat) (yaw, pitch; out-of-range lat/lon is a PASS observation). Flight tests (2026-06-02): 22 PASS, 3 FAIL, 1 SKIP, 3 formerly-xfail (FAIL under rule 11 — yaw/pitch not honoured are compatibility errors), 2 formerly-xpass (PASS).
+Flight tests (2026-06-02): 22 PASS, 3 FAIL, 1 SKIP, 3 formerly-xfail (FAIL under rule 11 — yaw/pitch not honoured are compatibility errors), 2 formerly-xpass (PASS).
 
 The 3 FAILs (`test_unarmed_takeoff`, `test_required_flight_mode`, `test_mode_after_takeoff`) hit at the end of the session after 14 consecutive arm-takeoff-RTL cycles — PX4 SIH degrades after many cycles; operational, not protocol failures. Formerly XPASS, now plain PASS (observations): `test_altitude_zero_behaviour` (safety minimum applied) and `test_position_zero_treated_as_current` (PX4 navigates to (0,0) — a spec-expected FAIL that passed instead).
 
@@ -155,7 +174,7 @@ The 3 FAILs (`test_unarmed_takeoff`, `test_required_flight_mode`, `test_mode_aft
 
 <!-- TIER2_SUMMARY_END px4-fixed_wing -->
 
-Command tests: 8 PASS, 2 FAIL (compat) — same as PX4 MC. Flight tests: 8 PASS (7 command + 1 comprehensive observing ground roll), 20 SKIP, 3 formerly-xfail (FAIL under rule 11). `test_mc_takeoff_comprehensive` (vehicle_type=fixed_wing) confirms the SIH FW simulator performs a ground roll but never lifts off (altitude < 2m) — a simulator limitation, not a protocol issue.
+Flight tests: 8 PASS (7 command + 1 comprehensive observing ground roll), 20 SKIP, 3 formerly-xfail (FAIL under rule 11). `test_mc_takeoff_comprehensive` (vehicle_type=fixed_wing) confirms the SIH FW simulator performs a ground roll but never lifts off (altitude < 2m) — a simulator limitation, not a protocol issue.
 
 ### ArduCopter MC (4.8.0)
 
@@ -184,7 +203,7 @@ Command tests: 8 PASS, 2 FAIL (compat) — same as PX4 MC. Flight tests: 8 PASS 
 
 Other execution notes: requires `_request_position_stream()` first (ArduCopter doesn't stream `GLOBAL_POSITION_INT` without an explicit `MAV_CMD_SET_MESSAGE_INTERVAL(511)`); reads only `packet.z` — lat/lon ("not supported") and yaw/pitch are ignored; the handler requires `frame==MAV_FRAME_GLOBAL_RELATIVE_ALT` (3).
 
-Command tests: 8 PASS, 2 FAIL (compat) (pitch, yaw — both ACCEPTED not DENIED). Flight tests: 11 PASS (10 command-mode-gated SKIPs + 1 comprehensive), 20 SKIP — the 17 standard flight tests skip (no-climb without GUIDED setup); `test_mc_takeoff_comprehensive` runs and PASSES via the tiered probe.
+Flight tests: 11 PASS (10 command-mode-gated SKIPs + 1 comprehensive), 20 SKIP — the 17 standard flight tests skip (no-climb without GUIDED setup); `test_mc_takeoff_comprehensive` runs and PASSES via the tiered probe.
 
 **Behaviour summary**: command accepted (PASS); altitude respected via z/param7; lat/lon and yaw/pitch not supported (ignored, vehicle climbs vertically at home); requires GUIDED mode; mode stays GUIDED/OFFBOARD throughout, no auto-transition.
 
@@ -210,13 +229,13 @@ Command tests: 8 PASS, 2 FAIL (compat) (pitch, yaw — both ACCEPTED not DENIED)
 
 **COMMAND_INT NAV_TAKEOFF is not the execution path** — ArduPlane FW takes off via `DO_SET_MODE TAKEOFF(13)` + arm (full-throttle takeoff controller), not via the command. `do_takeoff()` (`commands_logic.cpp`) overwrites x/y with `home.lat+10 / home.lng+10`; pitch is controlled by the `TKOFF_PITCH_MIN` param, not `param1` (only the mission path feeds that). `_ensure_nav_takeoff_supported` skips the 17 regular tests (ACCEPTED but no climb); `test_arduplane_guided_takeoff_to_target` and `test_mc_takeoff_comprehensive` both run and PASS.
 
-Command tests: 8 PASS, 2 FAIL (compat). Flight tests: 12 PASS (8 command + 2 FW-specific), 19 SKIP.
+Flight tests: 12 PASS (8 command + 2 FW-specific), 19 SKIP.
 
 ### PX4 VTOL — Gazebo `gz_standard_vtol`, v1.17.0 (2026-09-29, MAVSDK 4)
 
 The first PX4 VTOL run where the vehicle actually flies (SIH VTOL never leaves the ground — root `CLAUDE.md` item #10). Run with `--px4-model=gz_standard_vtol` (harness-launched, headless). Outcomes per root `CLAUDE.md` rule 11.
 
-**Tier 1 (command)**: 20 PASS, 4 FAIL (compat), 1 INCONCLUSIVE (frame survey — every frame ACKed), 1 NA. The compatibility errors: Pitch and Yaw real values ACCEPTED rather than DENIED; a real value in the Empty param2 ACCEPTED (PX4 `main` DENIES it — a v1.17→main change); COMMAND_LONG for this `hasLocation` command ACCEPTED rather than `COMMAND_INT_ONLY`. Flags=1 is ACCEPTED (untestable beyond that — the flag only matters without horizontal position control).
+**Tier 1 (command)**, as run at the time: 20 PASS, 4 FAIL (compat), 1 INCONCLUSIVE (frame survey — every frame ACKed), 1 NA. Two of those failures were Pitch and Yaw real values being ACCEPTED rather than DENIED, which the tests no longer treat as a failure (§ Tier 1 results). The other two stand: a real value in the Empty param2 ACCEPTED (PX4 `main` DENIES it — a v1.17→main change), and COMMAND_LONG for this `hasLocation` command ACCEPTED rather than `COMMAND_INT_ONLY`. Flags=1 was ACCEPTED (`main` DENIES it).
 
 **Tier 2 (flight)**: 23 PASS, 2 FAIL (compat), 2 SKIP (MC/FW-only and ArduPlane-only tests).
 
@@ -246,7 +265,7 @@ For NAV_TAKEOFF (22), the vehicle behaviour is identical to PX4 MC: diagonal cli
 Yaw (param4) and pitch (param1) are ignored.
 <!-- TIER2_SUMMARY_END px4-vtol -->
 
-Command tests: 8 PASS, 2 FAIL (compat) — identical to PX4 MC. Flight tests: 21 PASS, 3 FAIL (same late-session SITL degradation as PX4 MC), 2 SKIP (`test_mc_takeoff_comprehensive` excludes vtol; `test_arduplane_guided_takeoff_to_target` is ardupilot-only), 3 formerly-xfail (FAIL under rule 11), 2 formerly-xpass (PASS).
+Flight tests: 21 PASS, 3 FAIL (same late-session SITL degradation as PX4 MC), 2 SKIP (`test_mc_takeoff_comprehensive` excludes vtol; `test_arduplane_guided_takeoff_to_target` is ardupilot-only), 3 formerly-xfail (FAIL under rule 11), 2 formerly-xpass (PASS).
 
 Behaviour: identical to PX4 MC (altitude respected, lat/lon used as target, yaw/pitch ignored) — `NAV_VTOL_TAKEOFF(84)` is the preferred VTOL-specific command, not this one; see `baseline_takeoff/README.md`.
 
@@ -264,7 +283,7 @@ This contrasts with ArduRover where NAV_TAKEOFF returns UNSUPPORTED (3).
 PX4's permissive command handling is a design choice but may be considered a protocol gap — a ground vehicle accepting a flight command without executing it or returning UNSUPPORTED is misleading.
 <!-- TIER2_SUMMARY_END px4-rover -->
 
-Command tests: 8 PASS, 2 FAIL (compat) — ACCEPTED, same as PX4 MC. Flight tests: 19 SKIP (no climb) + 2 SKIP (comprehensive/arduplane excluded). Gap: command accepted but silently inert on a vehicle that can't fly — should arguably return UNSUPPORTED or FAILED.
+Flight tests: 19 SKIP (no climb) + 2 SKIP (comprehensive/arduplane excluded). Gap: command accepted but silently inert on a vehicle that can't fly — should arguably return UNSUPPORTED or FAILED.
 
 ### ArduPlane QP (4.8.0)
 
@@ -280,7 +299,7 @@ The correct sequence is documented in `tests/command/baseline_takeoff/README.md`
 NAV_VTOL_TAKEOFF (84) is a mission-only command on ArduPlane QuadPlane (executed in AUTO mode); it cannot be sent as a direct COMMAND_INT.
 <!-- TIER2_SUMMARY_END ardupilot-quadplane -->
 
-Command tests: 8 PASS, 2 FAIL (compat) (pitch, yaw — ACCEPTED, not DENIED). Flight tests: 19 SKIP (no climb without GUIDED setup) + 2 SKIP (comprehensive/arduplane-guided tests exclude quadplane).
+Flight tests: 19 SKIP (no climb without GUIDED setup) + 2 SKIP (comprehensive/arduplane-guided tests exclude quadplane).
 
 ### ArduRover (4.8.0)
 
@@ -294,7 +313,7 @@ All 31 tests skip.
 This is the correct behaviour per the MAVLink spec.
 <!-- TIER2_SUMMARY_END ardupilot-rover -->
 
-Command tests: 10 SKIP (survey-gated, UNSUPPORTED). Flight tests: 21 SKIP.
+Flight tests: 21 SKIP.
 
 ### Baseline tests (`baseline_takeoff/test_baseline.py`)
 
@@ -309,9 +328,9 @@ See `baseline_takeoff/README.md` for the full mode-restriction analysis (which m
 
 Undefined/ambiguous behaviours for NAV_TAKEOFF via COMMAND_INT, all documented by `test_flight.py`:
 
-- **Unsupported params silently ACCEPTed instead of DENIED** (general principle): the spec never states that a stack must DENY a non-NaN value for a param it doesn't support — but `NaN` is the universal "no preference" sentinel, so a non-NaN value expresses real intent, and silently discarding it violates that contract. Concretely: **param1** (pitch) and **param4** (yaw) are both ignored-but-ACCEPTED by every tested stack (PX4, ArduPilot) — reported as FAIL (compat) in `test_param1_pitch_ack_denied`/`test_param4_yaw_ack_denied`. ArduPlane also ignores lat/lon this way (`convert_MAV_CMD_NAV_TAKEOFF_to_COMMAND_INT` hardcodes x=0,y=0). Suggest: the spec should require `DENIED` for a non-NaN value on any param the stack can't honour, as a general command-protocol rule.
+- **Unsupported params silently ACCEPTed instead of DENIED** (general principle): the spec never states that a stack must DENY a non-NaN value for a param it doesn't support — but `NaN` is the universal "no preference" sentinel, so a non-NaN value expresses real intent, and silently discarding it violates that contract. Concretely: **param1** (pitch) and **param4** (yaw) are both ignored-but-ACCEPTED by every released stack tested (PX4, ArduPilot) — reported as FAIL (compat) by `test_flight.py`'s `test_pitch_is_honoured`/`test_yaw_is_honoured` (PX4 PR #28930 would make fixed-wing yaw the first exception). ArduPlane also ignores lat/lon this way (`convert_MAV_CMD_NAV_TAKEOFF_to_COMMAND_INT` hardcodes x=0,y=0). Suggest: the spec should require `DENIED` for a non-NaN value on any param the stack can't honour, as a general command-protocol rule.
 - **param1 (MinPitch) range** — no min/max defined; values outside `[0,90]°` are accepted everywhere. For fixed-wing specifically, no vehicle-type-aware range exists either — 90° is physically impossible but nothing rejects it. Suggest a defined range, e.g. fixed-wing `[0°,30°]`, MC/VTOL NaN-only (non-NaN → DENIED or ignored).
-- **param4 (Yaw) range/normalisation** — no rule for negative values, wraparound (>360°), or very large values (e.g. 3600°); moot in practice since COMMAND_INT ignores param4 entirely on every tested stack, but the spec should still clarify.
+- **param4 (Yaw) range/normalisation** — no rule for negative values, wraparound (>360°), or very large values (e.g. 3600°); moot on every released stack tested, which ignore param4 via COMMAND_INT, but the spec should still clarify.
 - **param7 (Altitude)** — no minimum defined; `z=0` behaviour (safety minimum vs reject vs hover) and the NaN default are both implementation-defined.
 - **param5/6 (Lat/Lon) = 0** — whether `(0,0)` is a valid coordinate or a "use current position" sentinel isn't specified; most stacks treat it as current position, undocumented.
 - **param5/6 out-of-range** — no defined valid range or rejection requirement for geometrically impossible coordinates. ArduPilot correctly DENIES; PX4 ACCEPTs (recorded as an observation in `test_location_out_of_range_latlon_ack` — spec gap, not asserted). Suggest requiring `DENIED` outside `[±900_000_000]`(lat)/`[±1_800_000_000]`(lon), excepting the `INT32_MAX` sentinel.
