@@ -34,7 +34,7 @@ import asyncio
 import logging
 
 import pytest
-from mavsdk.mission_raw import MissionItem, MissionRawError
+from mavsdk.plugins.mission_raw import MissionItem, MissionRawError
 
 from .conftest import clear_all_mission_types
 

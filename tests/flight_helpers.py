@@ -28,11 +28,15 @@ import math
 import time as _time_m
 
 import pytest
-from mavsdk.mavlink_direct import MavlinkMessage
-from mavsdk.telemetry import LandedState
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
+from mavsdk.plugins.telemetry import LandedState
 
+from tests.mavsdk_compat import GCS_COMPID, GCS_SYSID
+from tests.message_watcher import (  # noqa: F401 — request_message_rate re-exported
+    MAV_AUTOPILOT_ARDUPILOTMEGA, ensure_harness_streams, request_message_rate,
+)
 from tests import report
-from tests.command.conftest import probe_command_long, send_command_int
+from tests.command.conftest import probe_command_int, probe_command_long, send_command_int
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +88,7 @@ async def _request_home_position(system) -> None:
     """
     await system.mavlink_direct.send_message(MavlinkMessage(
         message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
+        system_id=GCS_SYSID, component_id=GCS_COMPID,
         target_system_id=1, target_component_id=0,
         fields_json=json.dumps({
             "target_system": 1, "target_component": 0,
@@ -111,7 +115,7 @@ async def _request_position_stream(system, rate_hz: float = 5.0) -> None:
     interval_us = int(1_000_000 / rate_hz)
     await system.mavlink_direct.send_message(MavlinkMessage(
         message_name="COMMAND_LONG",
-        system_id=255, component_id=1,
+        system_id=GCS_SYSID, component_id=GCS_COMPID,
         target_system_id=1, target_component_id=0,
         fields_json=json.dumps({
             "target_system": 1, "target_component": 0,
@@ -128,6 +132,7 @@ async def _request_position_stream(system, rate_hz: float = 5.0) -> None:
 
 async def _get_home_position(system, timeout_s: float = 30.0):
     """Return the vehicle's home Position from telemetry."""
+    await ensure_harness_streams(system)  # ArduPilot only streams HOME_POSITION when asked
     async with asyncio.timeout(timeout_s):
         async for home in system.telemetry.home():
             return home
@@ -150,11 +155,36 @@ async def _get_heading(system, timeout_s: float = 5.0) -> float:
     raise TimeoutError("Heading not received")
 
 
+# MAV_TYPE_VTOL_* (minimal.xml): tailsitter duo/quad, tiltrotor, fixedrotor,
+# tailsitter, tiltwing, reserved5, gyrodyne.
+_VTOL_MAV_TYPES = {19, 20, 21, 22, 23, 24, 25, 47}
+
+
+async def vehicle_is_vtol(system, timeout_s: float = 5.0) -> bool | None:
+    """
+    Whether the vehicle says it's a VTOL, from its own HEARTBEAT `type` — never
+    `--vehicle-type` (root CLAUDE.md rule 5). None if no autopilot HEARTBEAT arrives.
+
+    Not EXTENDED_SYS_STATE.vtol_state: ArduCopter hard-codes MAV_VTOL_STATE_MC
+    (GCS_MAVLink_Copter.h), so "any state but UNDEFINED" calls a quadcopter a VTOL.
+    """
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for msg in system.mavlink_direct.message("HEARTBEAT"):
+                f = json.loads(msg.fields_json)
+                if f.get("autopilot") == 8:  # MAV_AUTOPILOT_INVALID — a GCS or companion, not the vehicle
+                    continue
+                return int(f["type"]) in _VTOL_MAV_TYPES
+    except TimeoutError:
+        return None
+    return None
+
+
 async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
     """Return current flight mode name as a string."""
     async with asyncio.timeout(timeout_s):
         async for fm in system.telemetry.flight_mode():
-            return str(fm)
+            return fm.name  # MAVSDK 4: str() of an enum is its int value
     raise TimeoutError("Flight mode not received")
 
 
@@ -163,9 +193,50 @@ async def _get_flight_mode(system, timeout_s: float = 5.0) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ESTIMATOR_STATUS_FLAGS that ArduPilot's own CI (Tools/autotest/
+# vehicle_test_suite.py, wait_ekf_happy(require_absolute=True)) waits for before
+# arming: attitude, velocity, relative/absolute/predicted position — and none
+# of const-pos mode, GPS glitch, accel error.
+_EKF_REQUIRED_FLAGS = 1 | 2 | 4 | 8 | 16 | 32 | 256 | 512
+_EKF_ERROR_FLAGS = 128 | 1024 | 2048
+_EKF_HOLD_S = 1.0  # flags must hold this long, not flicker true once
+
+
+async def _wait_ardupilot_ekf_position(system, timeout_s: float) -> None:
+    """
+    ArduPilot only: wait until EKF_STATUS_REPORT shows a usable absolute
+    position. ArduCopter reports is_armable about 1 s after the EKF origin is
+    set, before AUTO/GUIDED will accept it ("Mode change to Auto failed:
+    requires position", 2026-10-01) — arming in that window starts the test
+    on a vehicle that can't fly it.
+    """
+    since: float | None = None
+    last_flags = None
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for msg in system.mavlink_direct.message("EKF_STATUS_REPORT"):
+                last_flags = json.loads(msg.fields_json).get("flags", 0)
+                ok = (last_flags & _EKF_REQUIRED_FLAGS) == _EKF_REQUIRED_FLAGS and not last_flags & _EKF_ERROR_FLAGS
+                now = _time_m.monotonic()
+                if not ok:
+                    since = None
+                elif since is None:
+                    since = now
+                elif now - since >= _EKF_HOLD_S:
+                    return
+    except TimeoutError:
+        watcher = getattr(system, "watcher", None)
+        detail = f"; {watcher.explain('EKF_STATUS_REPORT')}" if watcher is not None else ""
+        raise TimeoutError(
+            f"ArduPilot EKF position not ready within {timeout_s:.0f}s "
+            f"(EKF_STATUS_REPORT flags={last_flags}, need {_EKF_REQUIRED_FLAGS} and none of {_EKF_ERROR_FLAGS}){detail}"
+        ) from None
+
+
 async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
     """
-    Block until the vehicle reports is_armable=True.
+    Block until the vehicle reports is_armable=True — and, on ArduPilot, until
+    its EKF has a usable absolute position (_wait_ardupilot_ekf_position).
 
     Uses fire-and-forget task + asyncio.Event to avoid leaving a dangling gRPC
     health stream after timeout cancellation (CLAUDE.md §4a pattern) — the
@@ -173,6 +244,9 @@ async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
     in a background task and only awaiting a plain Event ensures clean timeout
     handling.
     """
+    # After a mid-test flight-stack restart, SYS_STATUS must be re-requested
+    # (ArduPilot) and the watcher re-subscribed — no-op otherwise.
+    await ensure_harness_streams(system)
     armable_event = asyncio.Event()
 
     async def _watch() -> None:
@@ -184,8 +258,17 @@ async def _wait_armable(system, timeout_s: float = ARMABLE_TIMEOUT_S):
     task = asyncio.create_task(_watch())
     try:
         await asyncio.wait_for(armable_event.wait(), timeout=timeout_s)
+    except TimeoutError:
+        # is_armable is only ever SYS_STATUS's PREARM_CHECK bit — say whether
+        # that message arrived at all (tests/message_watcher.py).
+        watcher = getattr(system, "watcher", None)
+        detail = f": {watcher.explain('SYS_STATUS')}" if watcher is not None else ""
+        raise TimeoutError(f"is_armable not True within {timeout_s:.0f}s{detail}") from None
     finally:
         task.cancel()  # fire-and-forget — do NOT await (§4a)
+    # Keyed on the autopilot the vehicle's own HEARTBEAT reports (tests/conftest.py's gcs_system).
+    if getattr(system, "autopilot_type", None) == MAV_AUTOPILOT_ARDUPILOTMEGA:
+        await _wait_ardupilot_ekf_position(system, timeout_s)
 
 
 async def _takeoff_via_command(system, altitude_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S) -> None:
@@ -226,6 +309,56 @@ async def _wait_for_altitude(system, threshold_m: float, timeout_s: float = TAKE
     raise TimeoutError(
         f"Relative altitude {threshold_m:.1f} m not reached within {timeout_s:.0f} s"
     )
+
+
+async def _wait_for_climb_complete(
+    system, target_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S,
+    plateau_s: float = 5.0, plateau_tol_m: float = 0.3,
+):
+    """
+    Block until the takeoff climb is actually over, and return the Position.
+
+    Over = at >= 85% of `target_m`, or airborne (AIRBORNE_THRESHOLD_M) with
+    altitude no longer rising (< `plateau_tol_m` gained in `plateau_s`) — the
+    second case covers a stack that ignores the commanded altitude and stops at
+    its own default, without gating on vehicle type. For measuring a param's
+    effect once the takeoff has finished rather than part-way through it (a
+    heading sampled at 2 m can simply not have converged yet — 2026-09-29
+    mavlink-compat-data review of the NAV_TAKEOFF yaw result).
+    """
+    loop = asyncio.get_running_loop()
+    history: list[tuple[float, float]] = []
+    async with asyncio.timeout(timeout_s):
+        async for pos in system.telemetry.position():
+            now, alt = loop.time(), pos.relative_altitude_m
+            if alt >= 0.85 * target_m:
+                return pos
+            history.append((now, alt))
+            history = [(t, a) for t, a in history if now - t <= plateau_s]
+            if (
+                alt >= AIRBORNE_THRESHOLD_M
+                and now - history[0][0] >= plateau_s * 0.9
+                and alt - history[0][1] < plateau_tol_m
+            ):
+                return pos
+    raise TimeoutError(f"Climb toward {target_m:.1f} m did not complete within {timeout_s:.0f} s")
+
+
+async def _climb_with_peak_pitch(system, target_m: float, timeout_s: float = TAKEOFF_TIMEOUT_S):
+    """_wait_for_climb_complete(), also returning the max |pitch| sampled over the whole climb."""
+    peak_pitch: float = 0.0
+
+    async def _sample_pitch() -> None:
+        nonlocal peak_pitch
+        async for att in system.telemetry.attitude_euler():
+            peak_pitch = max(peak_pitch, abs(att.pitch_deg))
+
+    pitch_task = asyncio.create_task(_sample_pitch())
+    try:
+        pos = await _wait_for_climb_complete(system, target_m, timeout_s)
+    finally:
+        pitch_task.cancel()  # not awaited — see _wait_for_altitude_with_peak_pitch
+    return pos, peak_pitch
 
 
 async def _wait_for_altitude_with_peak_pitch(
@@ -372,6 +505,24 @@ async def _rtl_and_land(system, restart_flight_stack=None, timeout_s: float | No
     """
     if timeout_s is None:
         timeout_s = RTL_LAND_TIMEOUT_WITH_RESTART_S if restart_flight_stack is not None else RTL_LAND_TIMEOUT_S
+
+    # Nothing to bring home if the vehicle is already disarmed (e.g. a takeoff
+    # that never left the ground and was auto-disarmed). Sending RTL anyway is
+    # actively harmful: on PX4 v1.17 (gz_standard_vtol, 2026-09-29) it switched
+    # a disarmed, landed vehicle into RETURN_TO_LAUNCH and left it there with
+    # is_armable=False for good — every later test in the session then failed
+    # at _wait_armable(). Reproduced directly: armable in HOLD after the
+    # auto-disarm, not armable from the moment RTL was sent.
+    try:
+        async with asyncio.timeout(5.0):
+            async for armed in system.telemetry.armed():
+                break
+        if not armed:
+            log.info("Vehicle already disarmed — skipping RTL/land")
+            return
+    except Exception as exc:
+        log.warning("Could not read armed state before RTL (%s) — sending RTL anyway", exc)
+
     landed = False
     try:
         await system.action.return_to_launch()
@@ -381,7 +532,7 @@ async def _rtl_and_land(system, restart_flight_stack=None, timeout_s: float | No
                     landed = True
                     break
     except Exception as exc:
-        log.warning("RTL/land wait failed: %s", exc)
+        log.warning("RTL/land wait failed: %r", exc)  # %r: a bare TimeoutError's str() is empty
 
     if landed:
         await asyncio.sleep(2.0)
@@ -445,6 +596,7 @@ async def _reboot_sitl_if_degraded(system, label: str = "SITL") -> None:
     # Wait for PX4 SIH to boot and for EKF to begin converging before
     # re-requesting streams (streams silently timeout if PX4 isn't ready yet).
     await asyncio.sleep(15.0)
+    await ensure_harness_streams(system, force=True)  # a reboot forgets message intervals
     await _request_position_stream(system)
     await _request_home_position(system)
     log.info("%s SITL reboot: done — caller should now _wait_armable(120 s)", label)
@@ -483,6 +635,96 @@ def _north_of(lat_deg: float, metres: float) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Mission shape requirements a stack imposes before it will fly a mission
+# ---------------------------------------------------------------------------
+# PX4 fixed-wing and VTOL (both v1.17 and main, confirmed 2026-09-30) refuse to
+# start a mission that doesn't end in a landing, and a fixed-wing landing must
+# be entered from a waypoint:
+#   - MIS_TKO_LAND_REQ defaults to 2 ("Require a landing") in rc.fw_defaults /
+#     rc.vtol_defaults → event navigator_mis_land_missing, "Mission rejected:
+#     Landing waypoint/pattern required".
+#   - the item before a NAV_LAND must be a WAYPOINT or ORBIT_TO_ALT → event
+#     navigator_mis_unsupported_landing_approach_wp.
+# Either way the upload is accepted but start_mission() is DENIED ("Switching
+# to Mission is currently not available"). Full story: tests/mission/CLAUDE.md
+# § "Mission shape a stack will fly". Two tools, one per situation:
+
+_LANDING_APPROACH_M = 600.0
+_LANDING_BEYOND_M = 1200.0
+_LANDING_APPROACH_ALT_M = 30.0
+
+
+def mission_landing_items(items, fallback_lat_lon_int: tuple[int, int] | None = None, *,
+                          anchor_lat_lon_int: tuple[int, int] | None = None, bearing_deg: float = 0.0):
+    """
+    [approach NAV_WAYPOINT, NAV_LAND] to append to a flight mission whose end
+    doesn't matter to the test, so it stays valid under stack defaults that
+    require a landing. Placed 600 m / 1200 m past the mission's furthest-north
+    real coordinate (or `fallback_lat_lon_int`, e.g. home, when every item is
+    a sentinel) — far enough for a fixed-wing glide slope, and well clear of
+    anything a test measures, which all happens before the approach waypoint
+    becomes active. Items are `mavsdk.plugins.mission_raw.MissionItem`, seq
+    continuing from `items`. Returns [] when there's nothing to anchor on.
+
+    `anchor_lat_lon_int`/`bearing_deg` place them from an explicit point along a
+    chosen bearing instead — for a test whose measurement is about position, so
+    the path to the landing can't pass over its target by chance (e.g. the
+    NAV_TAKEOFF position check anchors on home and lands to the south-west).
+    """
+    from mavsdk.plugins.mission_raw import MissionItem
+
+    if anchor_lat_lon_int is not None:
+        ref_x, ref_y = anchor_lat_lon_int
+    else:
+        real = [(it.x, it.y) for it in items if 0 < abs(it.x) < 900_000_000 and 0 < abs(it.y) < 1_800_000_000]
+        if not real and fallback_lat_lon_int is not None:
+            real = [fallback_lat_lon_int]
+        if not real:
+            return []
+        ref_x, ref_y = max(real)  # furthest north
+    lat, lon = ref_x / 1e7, ref_y / 1e7
+
+    def _at(metres: float) -> tuple[int, int]:
+        n = metres * math.cos(math.radians(bearing_deg))
+        e = metres * math.sin(math.radians(bearing_deg))
+        return (int((lat + n / 111111.0) * 1e7),
+                int((lon + e / (111111.0 * math.cos(math.radians(lat)))) * 1e7))
+
+    common = dict(frame=6, current=0, autocontinue=1, param1=0.0, param2=0.0, param3=0.0,
+                  param4=float("nan"), mission_type=0)
+    ax, ay = _at(_LANDING_APPROACH_M)
+    lx, ly = _at(_LANDING_BEYOND_M)
+    return [
+        MissionItem(seq=len(items), command=16, x=ax, y=ay, z=_LANDING_APPROACH_ALT_M, **common),  # NAV_WAYPOINT
+        MissionItem(seq=len(items) + 1, command=21, x=lx, y=ly, z=0.0, **common),                  # NAV_LAND
+    ]
+
+
+async def start_mission_or_na(system) -> None:
+    """
+    start_mission(), turning a stack's DENIED into an explained NA skip.
+
+    For a test whose mission shape IS the thing under test (e.g. a mission
+    that must complete into Hold, or a single DO item executed on the ground),
+    so a landing can't simply be appended. A stack refusing to start it is a
+    protocol-level NACK — the one legitimate reason to skip (root CLAUDE.md
+    Tier 2 pattern #1) — not a failure of the command under test.
+    """
+    from mavsdk.plugins.mission_raw import MissionRawError, MissionRawResult
+
+    try:
+        await system.mission_raw.start_mission()
+    except MissionRawError as exc:
+        if exc.result == MissionRawResult.DENIED:
+            pytest.skip(
+                "NA: the stack refused to start this mission (DENIED) — its mission shape is "
+                "what's under test, so it can't be changed to suit. PX4 fixed-wing/VTOL refuse "
+                "missions without a landing (MIS_TKO_LAND_REQ) — see tests/mission/CLAUDE.md"
+            )
+        raise
+
+
+# ---------------------------------------------------------------------------
 # "Get airborne via NAV_TAKEOFF" utility
 # ---------------------------------------------------------------------------
 #
@@ -509,9 +751,14 @@ def _takeoff_cmd(**overrides) -> dict:
     return defaults
 
 
-async def _arm_and_send_takeoff(system, **overrides) -> None:
+async def _arm_and_send_takeoff(system, *, return_ack: bool = False, **overrides) -> dict | None:
     """
     Wait for armable -> arm -> send NAV_TAKEOFF COMMAND_INT.
+
+    `return_ack=True` sends via probe_command_int() instead and returns the
+    COMMAND_ACK fields dict (None if no ACK) — for an "is it honoured" test
+    that must tell a NACK (legitimately not supported, rule 4a) apart from
+    accepted-but-ignored. Default (False) keeps the fire-and-forget send.
 
     PX4 treats the z field in COMMAND_INT as absolute AMSL altitude (it
     ignores the frame field). The caller passes z as a RELATIVE altitude
@@ -549,7 +796,10 @@ async def _arm_and_send_takeoff(system, **overrides) -> None:
     await system.action.arm()
     await asyncio.sleep(0.5)  # brief settle after arm before command
     kw = _takeoff_cmd(**merged)
+    if return_ack:
+        return await probe_command_int(system, **kw)
     await send_command_int(system, **kw)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +849,19 @@ _UNSET = report._UNSET  # re-exported: record_compat_json's default for `support
 _tier2_key = report.key_from_module
 
 
+def _tier2_key_for(node) -> tuple[str, str, int | None] | None:
+    """
+    (protocol, cmd_name, cmd_id) for this test's report. A module covering several
+    commands (e.g. tests/mission/camera_target_id/) defines `_tier2_key_for(node)`
+    returning the same tuple per test; otherwise it's the module's `_CMD_NAME`/`_CMD_ID`.
+    """
+    hook = getattr(node.module, "_tier2_key_for", None)
+    if hook is not None:
+        return hook(node)
+    key = _tier2_key(node.module)
+    return None if key is None else (*key, getattr(node.module, "_CMD_ID", None))
+
+
 def record_tier2_detail(request, detail: str) -> None:
     """
     Attach a specific one-line detail (e.g. measured values) to the calling
@@ -621,10 +884,10 @@ def record_tier2_param_verdict(request, param_label: str, verdict: str) -> None:
     (Pitch)") — not from every test that happens to touch the param. `verdict` is a
     short human string: "SUPPORTED", "NOT SUPPORTED", "NOT TESTABLE (<why>)", etc.
     """
-    key = _tier2_key(request.node.module)
+    key = _tier2_key_for(request.node)
     if key is None:
         return
-    report.record_param_verdict(*key, param_label, verdict)
+    report.record_param_verdict(*key[:2], param_label, verdict)
 
 
 def record_compat_command_supported(
@@ -646,10 +909,10 @@ def record_compat_command_supported(
     record_command_fact(), keeping this name/signature stable for existing
     Tier 2 call sites.
     """
-    key = _tier2_key(request.node.module)
+    key = _tier2_key_for(request.node)
     if key is None:
         return
-    report.record_command_fact(*key, supported=supported, basis=basis, notes=notes)
+    report.record_command_fact(*key[:2], supported=supported, basis=basis, notes=notes)
 
 
 def record_compat_json(
@@ -673,11 +936,11 @@ def record_compat_json(
     `"1_Pitch"` — matches the shared `ParamSpec`/XML param label, not this
     harness's own `"param1 (Pitch)"` label used by record_tier2_param_verdict.
     """
-    key = _tier2_key(request.node.module)
+    key = _tier2_key_for(request.node)
     if key is None:
         return
     report.record_compat_fact(
-        *key, param_key, supported=supported, accept_nan_or_int32max=accept_nan_or_int32max,
+        *key[:2], param_key, supported=supported, accept_nan_or_int32max=accept_nan_or_int32max,
         nacks_on_non_sentinel_value=nacks_on_non_sentinel_value, notes=notes,
     )
 
@@ -706,34 +969,17 @@ def _tier2_auto_record(request):
     if rep is None:
         return  # e.g. collection error before any phase ran
 
-    if getattr(rep, "skipped", False):
-        outcome = "XFAIL" if hasattr(rep, "wasxfail") else "SKIP"
-    elif getattr(rep, "passed", False):
-        outcome = "XPASS" if hasattr(rep, "wasxfail") else "PASS"
-    else:
-        outcome = "FAIL"
+    doc = (node.function.__doc__ or "").strip()
+    outcome, compat, detail = report.classify_report(rep, doc.splitlines()[0].strip() if doc else "")
+    explicit = _TIER2_DETAILS.pop(node.nodeid, None)
+    if explicit is not None:
+        detail = explicit
 
-    detail = _TIER2_DETAILS.pop(node.nodeid, None)
-    if detail is None:
-        if outcome == "SKIP" and isinstance(rep.longrepr, tuple) and len(rep.longrepr) == 3:
-            # Skip reason reprs as (path, lineno, "Skipped: <reason>") — take just the reason.
-            reason = str(rep.longrepr[2]).removeprefix("Skipped: ")
-            if reason.startswith("NA: "):
-                outcome = "NA"
-                reason = reason.removeprefix("NA: ")
-            detail = reason[:160]
-        elif outcome in ("FAIL", "XFAIL") and rep.longrepr:
-            detail = str(rep.longrepr).strip().splitlines()[-1][:160]
-        else:
-            doc = (node.function.__doc__ or "").strip()
-            detail = doc.splitlines()[0].strip() if doc else ""
-
-    key = _tier2_key(node.module)
+    key = _tier2_key_for(node)
     if key is None:
         return
-    protocol, cmd_name = key
-    report.record_tier2_result(protocol, cmd_name, node.name, outcome, detail)
-    cmd_id = getattr(node.module, "_CMD_ID", None)
+    protocol, cmd_name, cmd_id = key
+    report.record_tier2_result(protocol, cmd_name, node.name, outcome, detail, compat)
     if cmd_id is None:
         return
     report.write(protocol, cmd_name, cmd_id, request.config)

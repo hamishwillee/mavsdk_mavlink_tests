@@ -144,8 +144,23 @@ Per the user's request, ran the Tier 2 suite against the latest *tagged release*
 
 The altitude-tracking test pair (`test_takeoff_obs_altitude_tracks_low`/`test_takeoff_compat_altitude_tracks_high`) was changed this session from an NA-gated pair (skipped when a since-removed single-value test passed) to **always running, unconditionally** — the user's own call, after two real runs showed the NA-gate meant the comparison logic was never actually exercised in practice. All three successful runs above (PX4 MC, ArduPlane FW, QuadPlane) confirm `TRACKS commanded value` with real data now.
 
+## 2026-09-30 Position check measured while the takeoff item is current
+
+`_position_once` used to sample once at 85% of the climb. That was too early for a multicopter that climbs vertically first, and for a fixed-wing still on its climb-out. It now takes the **closest approach to the target while MISSION_CURRENT equals the takeoff item's seq**, from the moment the item starts until the mission moves on. The landing is anchored at home toward the south-west (`_LANDING_AWAY_BEARING_DEG=225`), so the next leg can't pass over the N/E targets by chance.
+
+Results:
+- **PX4 main `3fe7e7af35`, SIH MC:** closest approach 1.9 m (N) and 1.2 m (E), so SUPPORTED. The *mission* item flies to its lat/lon on this build, although the *command* (COMMAND_INT) ignores it (`tests/command/CLAUDE.md` § Two-value results).
+- **PR #28888, SIH FW:** closest approach 39.0 m (N) and 48.8 m (E), with the item ending 62 m and 57 m from home, so FAIL (compat). The vehicle climbs out straight toward the target: 62 m from home + 39 m to go ≈ the 100 m offset. But PX4 marks the takeoff complete on reaching altitude, about 40–60 m short of the point, and then flies the next item.
+  - So on PX4 FW the takeoff lat/lon behaves as a climb-out course, not a destination.
+  - Whether that is a compatibility error depends on reading the takeoff lat/lon as a destination (rule 6, via `isDestination`). That reading is open for the user to confirm; the test currently applies it.
+
 ## Log references
 
 - 2026-05-25 (PX4 FW/VTOL, ArduPlane FW/QuadPlane — not re-verified since): `logs/nav_takeoff_px4_fw_20260525b.log`, `logs/nav_takeoff_px4_vtol_20260525b.log`, `logs/nav_takeoff_arduplane_20260525b.log`, `logs/nav_takeoff_quadplane_20260525b.log`
 - 2026-09-13 (PX4 MC, ArduCopter MC — post-migration re-verification): `logs/mission_nav_takeoff_tier1_px4_quadcopter_1.18.0-beta_20260913_*.log`, `logs/mission_nav_takeoff_tier1_ardupilot_copter_4.8.0-dev_20260913_*.log`
 - 2026-09-14 (PX4 v1.17.0 MC, fixed-wing — Tier 1 + Tier 2): `logs/mission_nav_takeoff_tier1_px4_quadcopter_1.17.0-official_20260914_*.log`, `logs/mission_nav_takeoff_tier2_px4_quadcopter_1.17.0-official_20260914_*.log`, `logs/mission_nav_takeoff_tier1_px4_fixed_wing_1.17.0-official_20260914_*.log`, `logs/mission_nav_takeoff_tier2_px4_fixed_wing_1.17.0-official_20260914_*.log`
+
+## 2026-10-01 ArduCopter Tier 2 — first real run
+
+Previously blocked as "SITL never armable"; that was the harness (root `CLAUDE.md` future-work #7, Tier 2 pattern #12). Against ArduCopter 4.8.0-dev SITL (`~/github/ardupilot/ardupilot`, `31d9b842cb`): Altitude SUPPORTED; Yaw, Pitch and Lat/Lon accepted but not honoured (compat errors); dependent yaw/pitch tests NA; NaN pitch and INT32_MAX lat/lon NACKed at upload. `test_takeoff_info_implicit_from_waypoint` hits a real ArduCopter rule ("Auto: Missing Takeoff Cmd") but surfaces it as an uncaught `start_mission()` `MissionRawError` — it should catch that and route it through `_explicit_takeoff_confirmed` like a climb timeout. Every RTL from 35 m outlasts the 30 s land wait, so most flights end in a `restart_flight_stack` (~4 s, harmless). Full file: 11m45s.
+

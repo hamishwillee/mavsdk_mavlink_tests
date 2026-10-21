@@ -21,7 +21,7 @@ Both are rewritten unconditionally after every test that touches this report
 hangs or is force-killed still leaves whatever ran so far on disk.
 
 The mavlink-compat-data JSON schema (github.com/hamishwillee/
-mavlink-compat-data, PR #9) is rendered in exactly one place (render_json_doc
+mavlink-compat-data, statement schema from PR #14) is rendered in exactly one place (render_json_doc
 below) so a future schema change is a one-function edit, not a per-test-file
 hunt — this is the "framework approach used by all tests" the schema export
 was redesigned around on 2026-09-16.
@@ -56,15 +56,101 @@ Key = tuple[str, str]  # (protocol, cmd_name)
 
 _UNSET = object()  # distinct from a real None ("not independently tested")
 
-_TIER1_RESULTS: dict[Key, list[tuple[str, str, str, object]]] = {}
+_TIER1_RESULTS: dict[Key, list[tuple[str, str, str, object, bool]]] = {}  # name, outcome, description, result, compat
 _TIER1_DETAILS: dict[Key, list[str]] = {}
-_TIER2_RESULTS: dict[Key, list[tuple[str, str, str]]] = {}
+_TIER2_RESULTS: dict[Key, list[tuple[str, str, str, bool]]] = {}  # name, outcome, detail, compat
 _PARAM_VERDICTS: dict[Key, list[tuple[str, str]]] = {}
 _COMPAT_PARAMS: dict[Key, dict[str, dict]] = {}
 _COMPAT_COMMAND: dict[Key, dict] = {}
 _ALL_PARAM_KEYS: dict[Key, list[str]] = {}
 _CMD_ID: dict[Key, int] = {}
 _TIMESTAMP: dict[Key, str] = {}
+
+# ---------------------------------------------------------------------------
+# Cross-run accumulation (user-specified 2026-09-29)
+# ---------------------------------------------------------------------------
+# A report is the combined picture for one exact build — (protocol, command,
+# autopilot, vehicle, firmware version, git hash) — not just whatever this one
+# pytest invocation happened to run. Every write saves the merged state to
+# reports/.state/<build key>.json; the next session against the same build
+# loads it and merges its own results on top (this session wins per test row
+# and per fact field). So running test_command.py and test_flight.py in two
+# separate invocations, or re-running a single failed test, still yields one
+# complete report + JSON. Rows carried over from an earlier session are
+# marked "*" with that session's timestamp. --fresh-report ignores saved state.
+_PRIOR: dict[Key, dict] = {}       # loaded saved state, per key (empty dict = none)
+_STATE_FORMAT = 2  # bump when the saved row shape changes (2: rows carry a compat flag)
+_STATE_PATH: dict[Key, Path] = {}
+
+
+def _state_path(protocol: str, cmd_name: str, info: dict) -> Path:
+    ap = _safe((info.get("autopilot") or "unknown").lower().replace("ardupilotmega", "ardupilot"))
+    vt = _safe((info.get("vehicle_type") or "unknown").lower())
+    ver = _safe(info.get("firmware_version") or "unknown")
+    git = _safe(info.get("git_hash") or "unknown")
+    return Path("reports") / ".state" / f"{protocol}_{_safe(cmd_name.lower())}_{ap}_{vt}_{ver}_{git}.json"
+
+
+def _load_prior(key: Key, config) -> None:
+    if key in _PRIOR:
+        return
+    info = getattr(config, "_autopilot_info", {}) or {}
+    path = _state_path(*key, info)
+    _STATE_PATH[key] = path
+    _PRIOR[key] = {}
+    if config.getoption("--fresh-report") or not path.exists():
+        return
+    try:
+        prior = json.loads(path.read_text(encoding="utf-8"))
+        if prior.get("format") != _STATE_FORMAT:
+            log.info("Ignoring saved report state in an older format: %s", path)
+            return
+        _PRIOR[key] = prior
+        log.info("Merging saved report state from earlier session(s): %s", path)
+    except (OSError, ValueError) as exc:
+        log.warning("Ignoring unreadable report state %s (%s)", path, exc)
+
+
+def _merge_rows(prior: list, current: list, now: str) -> list:
+    """Rows as [name, *fields, run_ts]; this session's row replaces a prior row of the same name, in place."""
+    cur = {r[0]: list(r) + [now] for r in current}
+    out = []
+    for r in prior:
+        out.append(cur.pop(r[0]) if r[0] in cur else list(r))
+    out += [cur.pop(r[0]) for r in current if r[0] in cur]
+    return out
+
+
+def _view(key: Key) -> dict:
+    """This session's results merged over any saved state for the same build."""
+    prior = _PRIOR.get(key) or {}
+    now = _TIMESTAMP.get(key, "")
+    params = {k: dict(v) for k, v in (prior.get("params") or {}).items()}
+    for k, v in (_COMPAT_PARAMS.get(key) or {}).items():
+        params.setdefault(k, {}).update(v)
+    command = dict(prior.get("command") or {})
+    command.update(_COMPAT_COMMAND.get(key) or {})
+    verdicts = dict(prior.get("verdicts") or [])
+    verdicts.update(dict(_PARAM_VERDICTS.get(key) or []))
+    return {
+        "format": _STATE_FORMAT,
+        "now": now,
+        "tier1": _merge_rows(prior.get("tier1") or [], _TIER1_RESULTS.get(key) or [], now),
+        "tier1_details": _TIER1_DETAILS.get(key) or prior.get("tier1_details") or [],
+        "tier2": _merge_rows(prior.get("tier2") or [], _TIER2_RESULTS.get(key) or [], now),
+        "verdicts": list(verdicts.items()),
+        "params": params,
+        "command": command or None,
+        "param_keys": _ALL_PARAM_KEYS.get(key) or prior.get("param_keys") or [],
+    }
+
+
+def _save_state(key: Key) -> None:
+    path = _STATE_PATH.get(key)
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_view(key), indent=1, default=str), encoding="utf-8")
 
 
 def declare_command(protocol: str, cmd_name: str, cmd_id: int) -> None:
@@ -77,11 +163,9 @@ def declare_params(protocol: str, cmd_name: str, param_keys: list[str]) -> None:
     Register the command's full canonical param-slot key list (mavlink-compat-data
     "<slot>_<Label>" form, e.g. "1_Pitch") once. Idempotent — first caller wins
     (Tier 1, if it runs in this session; a Tier-2-only run falls back to
-    whatever the Tier 2 module itself declares). Every key in this list always
-    appears in the rendered JSON, "supported": null for any that never got a
-    fact recorded this run — distinct from a param this command doesn't cover
-    at all (silently absent), which would be indistinguishable from "we forgot
-    to test it".
+    whatever the Tier 2 module itself declares). Not used to pad the rendered
+    JSON: since mavlink-compat-data's PR #14 statement redesign an absent param
+    means "unknown", so only params with a recorded fact are rendered.
     """
     _ALL_PARAM_KEYS.setdefault((protocol, cmd_name), param_keys)
 
@@ -94,8 +178,68 @@ def has_tier2_results(protocol: str, cmd_name: str) -> bool:
     return bool(_TIER2_RESULTS.get((protocol, cmd_name)))
 
 
-def record_tier1_result(protocol: str, cmd_name: str, test_name: str, outcome: str, description: str, result) -> None:
-    _TIER1_RESULTS.setdefault((protocol, cmd_name), []).append((test_name, outcome, description, result))
+# ---------------------------------------------------------------------------
+# Outcomes: a test passes or fails; whether a FAIL is a compatibility error is
+# a separate fact (user-specified 2026-09-29 — replaces pytest xfail, which
+# reads as "expected, fine" and doesn't fail the run).
+# ---------------------------------------------------------------------------
+
+COMPAT_MARKER = "COMPATIBILITY ERROR: "
+
+# Set at session start (tests/conftest.py's pytest_configure): True when no
+# real flight stack is connected (--drone-address omitted, MockFlightStack).
+MOCK_MODE = False
+
+
+def compat_fail(reason: str) -> None:
+    """
+    Fail the calling test and mark the failure as a compatibility error — the
+    stack did something the spec says it mustn't (e.g. accepted a defined param
+    and then ignored it). Any other pytest.fail()/assert failure is a plain,
+    non-compatibility FAIL (a harness problem, an informational check, ...).
+    The report's "Compat error" column reads this marker.
+
+    In mock mode there's no real flight stack to be compatible or not — the
+    verdict would only describe the MockFlightStack test double, which
+    deliberately doesn't model every stack behaviour — so the test is reported
+    NA instead.
+    """
+    if MOCK_MODE:
+        pytest.skip(f"NA: mock flight stack doesn't model this (on a real stack: {reason})")
+    pytest.fail(COMPAT_MARKER + reason, pytrace=False)
+
+
+def classify_report(rep, doc: str = "") -> tuple[str, bool, str]:
+    """
+    (outcome, compat_error, detail) for a pytest report — shared by both tiers'
+    auto-record fixtures. Outcomes: PASS, FAIL, SKIP, NA ("NA: "-prefixed skip
+    reason). Any leftover pytest xfail/xpass is reported as the plain FAIL/PASS
+    it really is.
+    """
+    text = str(rep.longrepr) if rep.longrepr else ""
+    if getattr(rep, "skipped", False) and not hasattr(rep, "wasxfail"):
+        reason = ""
+        if isinstance(rep.longrepr, tuple) and len(rep.longrepr) == 3:
+            reason = str(rep.longrepr[2]).removeprefix("Skipped: ")
+        if reason.startswith("NA: "):
+            return "NA", False, reason.removeprefix("NA: ")[:160]
+        return "SKIP", False, reason[:160]
+    if getattr(rep, "passed", False) and not hasattr(rep, "wasxfail"):
+        return "PASS", False, doc
+    # failed, or an old-style xfail (skipped + wasxfail) — both are failures
+    reason = getattr(rep, "wasxfail", "") or text
+    compat = COMPAT_MARKER in reason
+    lines = [ln for ln in reason.strip().splitlines() if ln.strip()]
+    detail = (lines[-1] if lines else "").replace(COMPAT_MARKER, "").removeprefix("Failed: ")
+    if COMPAT_MARKER in reason:
+        detail = reason[reason.index(COMPAT_MARKER) + len(COMPAT_MARKER):].strip().splitlines()[0]
+    return "FAIL", compat, detail[:160]
+
+
+def record_tier1_result(
+    protocol: str, cmd_name: str, test_name: str, outcome: str, description: str, result, compat: bool = False,
+) -> None:
+    _TIER1_RESULTS.setdefault((protocol, cmd_name), []).append((test_name, outcome, description, result, compat))
 
 
 def record_tier1_detail(protocol: str, cmd_name: str, text: str) -> None:
@@ -103,8 +247,8 @@ def record_tier1_detail(protocol: str, cmd_name: str, text: str) -> None:
     _TIER1_DETAILS.setdefault((protocol, cmd_name), []).append(text)
 
 
-def record_tier2_result(protocol: str, cmd_name: str, test_name: str, outcome: str, detail: str) -> None:
-    _TIER2_RESULTS.setdefault((protocol, cmd_name), []).append((test_name, outcome, detail))
+def record_tier2_result(protocol: str, cmd_name: str, test_name: str, outcome: str, detail: str, compat: bool = False) -> None:
+    _TIER2_RESULTS.setdefault((protocol, cmd_name), []).append((test_name, outcome, detail, compat))
 
 
 def record_param_verdict(protocol: str, cmd_name: str, label: str, verdict: str) -> None:
@@ -128,6 +272,7 @@ def record_compat_fact(
     accept_nan_or_int32max: bool | None = None,
     nacks_on_non_sentinel_value: bool | None = None,
     notes: str | list[str] | None = None,
+    untestable: str | None = None,
 ) -> None:
     """
     Merge one param's compatibility fact, mavlink-compat-data schema shape.
@@ -138,8 +283,8 @@ def record_compat_fact(
     clobber. Only pass the field(s) *this* call actually has evidence for.
 
     `param_key`: mavlink-compat-data's "<index>_<name>" form, e.g. "1_Pitch".
-    `supported`: `True` (confirmed working — rendered as the
-    `{"added_version": true}` object form), `False` (confirmed not working),
+    `supported`: `True` (confirmed working — rendered as `version_added:
+    "≤<tested version>"`), `False` (confirmed not working),
     `None` (not independently tested this run), or `"not-applicable"` (a
     reserved/"Empty" param slot).
     `accept_nan_or_int32max`: does this param's sentinel value get accepted.
@@ -148,8 +293,15 @@ def record_compat_fact(
     is not `True`.
     `notes`: extremely terse per mavlink-compat-data's own convention — a
     fragment, ~10 words, no period, describing observable behaviour only.
+    `untestable`: why this harness can't establish `supported` for this param
+    (terse, same style as `notes`) — an explicit verdict in its own right for
+    the param-coverage check (see param_coverage()), but deliberately NOT
+    rendered to JSON: mavlink-compat-data's convention is that an unevaluated
+    param is simply absent, with no null placeholder (2026-09-29 review).
     """
     facts = _COMPAT_PARAMS.setdefault((protocol, cmd_name), {}).setdefault(param_key, {})
+    if untestable is not None:
+        facts["untestable"] = untestable
     if supported is not _UNSET:
         facts["supported"] = supported
     if accept_nan_or_int32max is not None:
@@ -186,6 +338,20 @@ def record_command_fact(
     facts["basis"] = basis
     if notes is not None:
         _merge_notes(facts, notes)
+
+
+def record_nonsentinel_ack(protocol: str, cmd_name: str, param_key: str, nacked: bool) -> None:
+    """
+    Record what an ACK for a real (non-sentinel) value of a *defined* param
+    tells us. NACKed: a legitimate "not supported" verdict on its own (the
+    stack correctly refuses a value it can't act on — root CLAUDE.md rule
+    4a). Accepted: only that it doesn't NACK — whether the value is actually
+    honoured still needs an execution test (or an untestable reason).
+    """
+    if nacked:
+        record_compat_fact(protocol, cmd_name, param_key, supported=False, nacks_on_non_sentinel_value=True)
+    else:
+        record_compat_fact(protocol, cmd_name, param_key, nacks_on_non_sentinel_value=False)
 
 
 def _merge_notes(facts: dict, notes) -> None:
@@ -232,44 +398,93 @@ def _dev_build_comment(firmware_version: str) -> str:
     return (
         f"# NOTE: {firmware_version} is a dev/pre-release build — per mavlink-compat-data's\n"
         f"# own convention, retest against a tagged release before treating this as durable\n"
-        f"# data (this is why the earliest/last_checked_version field is omitted below —\n"
-        f"# a git commit isn't a stable, re-comparable version identity).\n"
+        f"# data. Supported facts below render as version_added \"main\" and no\n"
+        f"# last_checked_version is written (a git commit isn't a stable, re-comparable\n"
+        f"# version identity) — don't copy this JSON into mavlink-compat-data as-is.\n"
     )
 
 
-def _render_param(fact: dict) -> dict:
-    supported = fact.get("supported")  # a param may accumulate only sentinel facts, never a supported call
+def _statement(value, version: str | None, *, last_checked: bool = False) -> dict:
+    """
+    One mavlink-compat-data support statement (compatibility-entry.schema.json's
+    `subStatement`) for a tri-state fact recorded by this harness.
+
+    `value`: True (confirmed supported/yes), False (confirmed not), None (not
+    evaluated), or "not-applicable". `version`: the bare release version this
+    run tested (e.g. "1.17.0"), or None for a dev/pre-release build.
+
+    True renders as `"≤<version>"` — confirmed present as of the tested
+    release, earlier releases unchecked (a lower bound; this harness only ever
+    tests one release per run, so it can never know the *first* version). On a
+    dev build there's no release to bound, so it renders `"main"`.
+    `last_checked_version` ("still true as of") is written on every False
+    statement from a release build (the schema's own recommendation — an
+    unimplemented feature can change in a later release), and on a True one
+    only when `last_checked` is set (the frame's own statement — a param/
+    subfeature inherits it from there, so repeating it per-param is noise).
+    """
+    if value is True:
+        stmt: dict = {"version_added": f"≤{version}" if version else "main"}
+        if last_checked and version:
+            stmt["last_checked_version"] = version
+        return stmt
+    if value is False:
+        stmt = {"version_added": False}
+        if version:
+            stmt["last_checked_version"] = version
+        return stmt
+    if value == "not-applicable":
+        return {"version_added": "not-applicable"}
+    return {"version_added": None}
+
+
+def _render_param(key: str, fact: dict, version: str | None) -> dict | None:
+    """
+    One param's `paramStatus` object, or None if nothing renderable was
+    recorded (absent means unknown in the schema — no placeholder stubs).
+
+    - A reserved "<n>_Empty" param's `supported` may only be "not-applicable".
+    - `nacks_on_non_sentinel_value` is only meaningful while the param isn't
+      supported (validate.py rejects overlapping ranges), so it's dropped when
+      `supported` is True.
+    - paramStatus has no `notes` of its own — notes attach to the param's
+      `supported` statement, or failing that its first subfeature statement.
+    """
     out: dict = {}
-    if supported is True:
-        sup: dict = {"added_version": True}
-        if fact.get("accept_nan_or_int32max") is not None:
-            sup["accept_nan_or_int32max"] = fact["accept_nan_or_int32max"]
-        out["supported"] = sup
-    else:
-        out["supported"] = supported  # False / None / "not-applicable"
-        if fact.get("accept_nan_or_int32max") is not None:
-            out["accept_nan_or_int32max"] = fact["accept_nan_or_int32max"]
-        if fact.get("nacks_on_non_sentinel_value") is not None:
-            out["nacks_on_non_sentinel_value"] = fact["nacks_on_non_sentinel_value"]
+    supported = fact.get("supported")
+    if key.endswith("_Empty"):
+        if supported is not None:
+            out["supported"] = _statement("not-applicable", version)
+    elif supported is not None:
+        out["supported"] = _statement(supported, version)
+    if fact.get("accept_nan_or_int32max") is not None:
+        out["accept_nan_or_int32max"] = _statement(fact["accept_nan_or_int32max"], version)
+    if fact.get("nacks_on_non_sentinel_value") is not None and supported is not True:
+        out["nacks_on_non_sentinel_value"] = _statement(fact["nacks_on_non_sentinel_value"], version)
+    if not out:
+        return None
     if fact.get("notes"):
-        out["notes"] = fact["notes"]
+        _merge_notes(out[next(iter(out))], fact["notes"])
     return out
 
 
 def render_json_doc(protocol: str, cmd_name: str, config) -> dict | None:
     """
-    Build the mavlink-compat-data-shaped dict for this (protocol, cmd_name),
-    or None if nothing was ever recorded this run. A frame-mapping failure
-    (unrecognised --autopilot/--vehicle-type) renders as {"error": "..."}
-    rather than returning None, so the .json report file is always either
-    absent or valid, parseable JSON — never a comment-only non-JSON string.
+    Build this run's `compatibility` fragment for (protocol, cmd_name) in
+    mavlink-compat-data's statement schema (compatibility-entry.schema.json,
+    redesigned upstream in PR #14 as mdn-BCD-style version statements), or
+    None if nothing was ever recorded this run. Shape:
+    `{<stack>: {"frames": {<frame>: frameStatus}}}` — directly pasteable
+    under a `mav_cmd/<context>/<NAME>.json` doc's `compatibility` key.
+
+    A frame-mapping failure (unrecognised --autopilot/--vehicle-type)
+    renders as {"error": "..."} rather than returning None, so the .json
+    report file is always either absent or valid, parseable JSON.
     """
     key = (protocol, cmd_name)
-    params = _COMPAT_PARAMS.get(key)
-    command = _COMPAT_COMMAND.get(key)
-    all_keys = _ALL_PARAM_KEYS.get(key)
-    if all_keys:
-        params = {k: (params or {}).get(k, {}) for k in all_keys}
+    view = _view(key)
+    params = view["params"]
+    command = view["command"]
     if not params and not command:
         return None
 
@@ -286,60 +501,136 @@ def render_json_doc(protocol: str, cmd_name: str, config) -> dict | None:
             )
         }
 
-    firmware_version = info.get("firmware_version", "") or ""
     # mavlink-compat-data's own convention: never record a version fact
-    # purely from a dev/pre-release snapshot — a specific git commit isn't a
-    # stable, re-comparable identity. Still render the JSON, just omit the
-    # version field (basis is unaffected — see below, it's always "testing"
-    # regardless of dev/release).
-    is_dev_build = _is_dev_build(firmware_version)
-    bare_version = firmware_version.split("-")[0] if firmware_version else None
+    # purely from a dev/pre-release snapshot — see _statement()/_dev_build_comment().
+    firmware_version = info.get("firmware_version", "") or ""
+    version = None
+    if firmware_version and not _is_dev_build(firmware_version):
+        version = firmware_version.split("-")[0]
 
-    # required by frameStatus: `supported`+`basis` must always be present.
-    # Default to the schema's own "nothing established yet" pair when this
-    # command never got an explicit record_command_fact() call (e.g. only
-    # per-param facts were recorded) — matches upstream's own precedent for
-    # an unestablished fact (`"supported": null, "basis": "unknown"`).
+    # frameStatus.supported is a full `statement` (basis required). A command
+    # that never got an explicit record_command_fact() call (only per-param
+    # facts recorded) is "not evaluated": version_added null, basis unknown.
     cmd_supported = command.get("supported") if command is not None else None
-    confirmed_supported = cmd_supported is True  # the schema's "confirmed-implemented object" case
-    frame_obj: dict = {
-        "supported": {"added_version": True} if confirmed_supported else cmd_supported,
-        # "testing": this tool's own dynamic-SITL-observation basis, always —
-        # never "verified", which the schema reserves for a human project
-        # maintainer's manual sign-off, not anything we can claim ourselves.
-        "basis": "testing" if command is None else command.get("basis", "testing"),
-    }
+    frame_supported = _statement(cmd_supported, version, last_checked=True)
+    # "testing": this tool's own dynamic-SITL-observation basis — never
+    # "verified", which the schema reserves for a human maintainer's sign-off.
+    frame_supported["basis"] = (
+        command.get("basis", "testing") if command is not None and cmd_supported is not None else "unknown"
+    )
     if command is not None and command.get("notes"):
-        frame_obj["notes"] = command["notes"]
-    if bare_version and not is_dev_build:
-        # earliest_checked_version: a lower bound on "added_version: true"
-        # (known supported, exact introduction version unrecorded) — only
-        # meaningful in the confirmed-supported case. Everywhere else
-        # (unsupported, untested, not-applicable) there's no "when was it
-        # added" question to bound; last_checked_version ("still true as of
-        # this version we most recently ran") is the field that applies.
-        if confirmed_supported:
-            frame_obj["earliest_checked_version"] = bare_version
-        else:
-            frame_obj["last_checked_version"] = bare_version
+        frame_supported["notes"] = command["notes"]
+    frame_obj: dict = {"supported": frame_supported}
 
-    if params:
-        # Per schema (frameStatus.params): an ordinary (non-"<n>_Empty") param
-        # may appear only when this frame's own `supported` is the confirmed-
-        # implemented object form — a reserved "<n>_Empty" key is exempt
-        # (it carries protocol-level sentinel facts independent of whether
-        # the command itself is supported). Drop everything else when this
-        # frame isn't confirmed supported.
-        rendered_params = {k: v for k, v in params.items() if confirmed_supported or k.endswith("_Empty")}
-        if rendered_params:
-            frame_obj["params"] = {k: _render_param(v) for k, v in sorted(rendered_params.items())}
+    # params (and frame-level sentinel subfeatures) are only valid once the
+    # frame is implemented (validate.py). Only params with at least one
+    # recorded fact appear — an absent param means unknown.
+    if cmd_supported is True:
+        # accept_nan_or_int32max: one frame-level value when every declared
+        # param was tested and all agree (mavlink-compat-data CLAUDE.md: a
+        # frame-level subfeature is the default for every param; only write it
+        # when every param it would apply to was actually evaluated). Params
+        # that disagree keep their own override. Not done for
+        # nacks_on_non_sentinel_value, which is only tested per param.
+        declared = view["param_keys"] or list(params)
+        sentinel = {k: params.get(k, {}).get("accept_nan_or_int32max") for k in declared}
+        frame_sentinel = None
+        if sentinel and all(v is not None for v in sentinel.values()):
+            values = list(sentinel.values())
+            frame_sentinel = max(set(values), key=values.count)
+            frame_obj["accept_nan_or_int32max"] = _statement(frame_sentinel, version)
+        rendered = {}
+        for k in sorted(params, key=lambda k: (int(k.split("_", 1)[0]), k)):
+            fact = params[k]
+            if frame_sentinel is not None and fact.get("accept_nan_or_int32max") == frame_sentinel:
+                fact = {f: v for f, v in fact.items() if f != "accept_nan_or_int32max"}
+            r = _render_param(k, fact, version)
+            if r is not None:
+                rendered[k] = r
+        if rendered:
+            frame_obj["params"] = rendered
 
     return {autopilot: {"frames": {frame: frame_obj}}}
 
 
+# ---------------------------------------------------------------------------
+# Param coverage — every param must end a run with an explicit verdict
+# ---------------------------------------------------------------------------
+# General requirement (user-specified 2026-09-29): after a run, every param of
+# the command must be explicitly known to be supported or not — from the ACK
+# (a real value NACKed = legitimately not supported), from an execution test,
+# as not-applicable ("Empty" slot, or the command itself unsupported), or as
+# explicitly untestable with a stated reason. Anything else is a coverage gap
+# and is reported as one (report text + end-of-session summary), never left
+# silently absent.
+
+NO_VERDICT = "NO VERDICT"
+
+
+def _param_verdict(key: str, fact: dict, cmd_supported) -> str:
+    if key.endswith("_Empty"):
+        return "NOT APPLICABLE (Empty param)"
+    if cmd_supported is False:
+        return "NOT APPLICABLE (command not supported)"
+    supported = fact.get("supported")
+    if supported is True:
+        return "SUPPORTED"
+    if supported is False:
+        nacked = fact.get("nacks_on_non_sentinel_value")
+        if nacked is True:
+            return "NOT SUPPORTED (real value NACKed)"
+        if nacked is False:
+            return "NOT SUPPORTED — COMPATIBILITY ERROR (accepted but ignored)"
+        return "NOT SUPPORTED"
+    if supported == "not-applicable":
+        return "NOT APPLICABLE"
+    if fact.get("untestable"):
+        return f"UNTESTABLE — {fact['untestable']}"
+    return NO_VERDICT
+
+
+def param_coverage(protocol: str, cmd_name: str) -> list[tuple[str, str]]:
+    """
+    [(param_key, verdict), ...] for every declared param (plus any recorded
+    but undeclared), in slot order. `verdict` is NO_VERDICT for a gap.
+    """
+    key = (protocol, cmd_name)
+    view = _view(key)
+    facts = view["params"]
+    keys = list(view["param_keys"])
+    keys += [k for k in facts if k not in keys]
+    command = view["command"] or {}
+    cmd_supported = command.get("supported")
+    ordered = sorted(keys, key=lambda k: (int(k.split("_", 1)[0]) if k.split("_", 1)[0].isdigit() else 99, k))
+    return [(k, _param_verdict(k, facts.get(k, {}), cmd_supported)) for k in ordered]
+
+
+def coverage_gaps() -> dict[Key, list[str]]:
+    """{(protocol, cmd_name): [param_key, ...]} for every report written this session with gaps."""
+    gaps = {}
+    for key in _TIMESTAMP:  # only reports actually written this session
+        missing = [k for k, v in param_coverage(*key) if v == NO_VERDICT]
+        if missing:
+            gaps[key] = missing
+    return gaps
+
+
+def _render_coverage(protocol: str, cmd_name: str) -> list[str]:
+    cov = param_coverage(protocol, cmd_name)
+    if not cov:
+        return []
+    missing = [k for k, v in cov if v == NO_VERDICT]
+    status = (
+        "COMPLETE — every param has a verdict" if not missing
+        else f"INCOMPLETE — no verdict for {', '.join(missing)} (needs an ACK, execution test, or recorded untestable reason)"
+    )
+    width = max(len(k) for k, _ in cov)
+    return ["", "Param coverage", "=" * 100, status, "-" * 100] + [f"{k:<{width}}  {v}" for k, v in cov]
+
+
 def render_json(protocol: str, cmd_name: str, config) -> str | None:
     doc = render_json_doc(protocol, cmd_name, config)
-    return None if doc is None else json.dumps(doc, indent=2)
+    return None if doc is None else json.dumps(doc, indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -356,27 +647,42 @@ def render_text(protocol: str, cmd_name: str, cmd_id: int, config) -> str:
     header = _format_autopilot_header(info, drone_address)
 
     lines: list[str] = []
+    view = _view(key)
+    earlier: set[str] = set()
 
-    t1 = _TIER1_RESULTS.get(key)
+    def _mark(outcome: str, run_ts: str) -> str:
+        if run_ts and run_ts != view["now"]:
+            earlier.add(run_ts)
+            return outcome + "*"
+        return outcome
+
+    t1 = view["tier1"]
     if t1:
         counts: dict[str, int] = {}
         lines += [
             f"Tier 1 results: MAV_CMD_{cmd_name} (cmd={cmd_id})",
             "=" * 100,
-            f"{'Test':<52} {'Outcome':<12} {'Result':<20} Pass case",
+            f"{'Test':<52} {'Outcome':<9} {'Compat error':<13} {'Result':<8} Pass case / failure",
             "-" * 100,
         ]
-        for name, outcome, description, result in t1:
+        compat_n = 0
+        for name, outcome, description, result, compat, run_ts in t1:
             counts[outcome] = counts.get(outcome, 0) + 1
+            compat_n += bool(compat)
             result_str = "-" if result is None else str(result)
-            lines.append(f"{name:<52} {outcome:<12} {result_str:<20} {description}")
+            lines.append(
+                f"{name:<52} {_mark(outcome, run_ts):<9} {'YES' if compat else '-':<13} {result_str:<8} {description}"
+            )
         lines.append("-" * 100)
-        lines.append(f"Total: {len(t1)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-        details = _TIER1_DETAILS.get(key)
+        lines.append(
+            f"Total: {len(t1)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            + f"  (compatibility errors: {compat_n})"
+        )
+        details = view["tier1_details"]
         if details:
             lines += ["", "Supplementary detail", "=" * 100, *details]
 
-    t2 = _TIER2_RESULTS.get(key)
+    t2 = view["tier2"]
     if t2:
         if lines:
             lines.append("")
@@ -384,21 +690,32 @@ def render_text(protocol: str, cmd_name: str, cmd_id: int, config) -> str:
         lines += [
             f"Tier 2 results: MAV_CMD_{cmd_name} (cmd={cmd_id})",
             "=" * 100,
-            f"{'Test':<46} {'Outcome':<9} Detail",
+            f"{'Test':<46} {'Outcome':<9} {'Compat error':<13} Detail",
             "-" * 100,
         ]
-        for test_name, outcome, detail in t2:
+        compat_n = 0
+        for test_name, outcome, detail, compat, run_ts in t2:
             counts[outcome] = counts.get(outcome, 0) + 1
-            lines.append(f"{test_name:<46} {outcome:<9} {detail}")
+            compat_n += bool(compat)
+            lines.append(f"{test_name:<46} {_mark(outcome, run_ts):<9} {'YES' if compat else '-':<13} {detail}")
         lines.append("-" * 100)
-        lines.append(f"Total: {len(t2)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        lines.append(
+            f"Total: {len(t2)}  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            + f"  (compatibility errors: {compat_n})"
+        )
 
-    verdicts = _PARAM_VERDICTS.get(key)
+    if earlier:
+        lines += ["", "* = result carried over from an earlier session against this same build "
+                  f"(firmware + git hash): {', '.join(sorted(earlier))}. Re-run with --fresh-report to drop them."]
+
+    verdicts = view["verdicts"]
     if verdicts:
         lines += ["", "Compatibility summary", "=" * 100]
         width = max(len(p) for p, _ in verdicts)
         for param_label, verdict in verdicts:
             lines.append(f"{param_label:<{width}}  {verdict}")
+
+    lines += _render_coverage(protocol, cmd_name)
 
     compat_json = render_json(protocol, cmd_name, config)
     if compat_json:
@@ -440,6 +757,7 @@ def write(protocol: str, cmd_name: str, cmd_id: int, config) -> None:
     ver_raw = info.get("firmware_version", "")
     ver = f"_{_safe(ver_raw)}" if ver_raw and ver_raw != "N/A" else ""
     timestamp = _TIMESTAMP.setdefault(key, time.strftime("%Y%m%d_%H%M%S"))
+    _load_prior(key, config)
 
     reports_dir = Path("reports")
     reports_dir.mkdir(exist_ok=True)
@@ -449,13 +767,14 @@ def write(protocol: str, cmd_name: str, cmd_id: int, config) -> None:
     text = render_text(protocol, cmd_name, cmd_id, config)
     log.info("\n%s", text)
     log_path = reports_dir / f"{base}.log"
-    log_path.write_text(text)
+    log_path.write_text(text, encoding="utf-8")
 
     compat_json = render_json(protocol, cmd_name, config)
     if compat_json:
         json_path = reports_dir / f"{base}.json"
-        json_path.write_text(compat_json + "\n")
+        json_path.write_text(compat_json + "\n", encoding="utf-8")
 
+    _save_state(key)
     log.info("%-14s | %-44s | %s", cmd_name, "Report written", str(log_path))
 
 
@@ -522,27 +841,16 @@ def _tier1_auto_record(request):
     if rep is None:
         return  # e.g. collection error before any phase ran
 
-    if getattr(rep, "skipped", False):
-        outcome = "XFAIL" if hasattr(rep, "wasxfail") else "SKIP"
-    elif getattr(rep, "passed", False):
-        outcome = "XPASS" if hasattr(rep, "wasxfail") else "PASS"
-    else:
-        outcome = "FAIL"
-
-    if outcome == "SKIP" and isinstance(rep.longrepr, tuple) and len(rep.longrepr) == 3:
-        reason = str(rep.longrepr[2]).removeprefix("Skipped: ")
-        detail = reason[:160]
-    elif outcome in ("FAIL", "XFAIL") and rep.longrepr:
-        detail = str(rep.longrepr).strip().splitlines()[-1][:160]
-    else:
-        doc = (node.function.__doc__ or "").strip()
-        detail = doc.splitlines()[0].strip() if doc else ""
+    doc = (node.function.__doc__ or "").strip()
+    outcome, compat, detail = classify_report(rep, doc.splitlines()[0].strip() if doc else "")
 
     key = key_from_module(node.module)
     if key is None:
         return
     protocol, cmd_name = key
-    record_tier1_result(protocol, cmd_name, node.name, outcome, detail, None)
+    if any(row[0] == node.name for row in _TIER1_RESULTS.get(key, [])):
+        return  # a base-class test that already recorded its own (richer) row
+    record_tier1_result(protocol, cmd_name, node.name, outcome, detail, None, compat)
     cmd_id = getattr(node.module, "_CMD_ID", None)
     if cmd_id is not None:
         write(protocol, cmd_name, cmd_id, request.config)

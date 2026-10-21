@@ -1,0 +1,11 @@
+# Extra SITL defaults for ArduCopter, loaded after upstream's copter.parm.
+#
+# This harness flies with no RC input. ArduCopter's AUTO mode won't start a
+# mission takeoff until the pilot raises the throttle
+# (ModeAuto::takeoff_run(), ArduCopter/mode_auto.cpp), and after DISARM_DELAY
+# (10 s) on the ground it disarms: observed 2026-10-01 as "Mission: 1 Takeoff"
+# then "Disarming motors" 10 s later, no climb. ArduPilot's own CI sets the
+# same value for GCS-driven missions (Tools/autotest/arducopter.py,
+# AUTO_OPTIONS 3). Bit 0: allow arming in AUTO; bit 1: allow takeoff without
+# raising the throttle.
+AUTO_OPTIONS 3

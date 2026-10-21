@@ -136,6 +136,10 @@ Notes:
   Unlike geofence, PX4 rally storage does retain `altitude_is_relative`, so frames 3 and 6 are returned with their relative-alt category intact (as `GLOBAL_RELATIVE_ALT_INT`).
 - ArduCopter rally: correctly preserves frame category for all accepted frames (unique among its three mission types — flight and geofence both lose altitude reference on storage).
 
+### Per-command tests
+
+Each mission command with its own tests has a directory with a README: `nav_takeoff/`, `nav_vtol_takeoff/`, `nav_land/`, `nav_vtol_land/` (both landing commands share `nav_land/CLAUDE.md`), `camera_target_id/`, `do_reposition/`, `condition_gate/`, `do_set_actuator/`. The root `README.md` has the one-line-per-command index.
+
 ### Other protocol differences
 
 | Behaviour | PX4 | ArduCopter |
@@ -145,4 +149,4 @@ Notes:
 | `clear_mission()` result | Empty | Home waypoint (seq=0) retained |
 | Geofence command values | 5000-based (RETURN_POINT=5000, INCLUSION=5001) | 5000-based (same) |
 | Home slot required for flight missions | No | Yes — seq=0 must carry home position (spec violation) |
-| Test suite result | 79 passed, 2 failed, 1 skipped, 3 xfailed | 73 passed, 10 failed, 1 skipped, 1 xfailed |
+| Test suite result | 79 passed, 5 failed (3 are the frame-roundtrip FAIL (harness) rows, formerly xfail), 1 skipped | 73 passed, 11 failed (1 is the flight-roundtrip FAIL (harness) row, formerly xfail), 1 skipped |

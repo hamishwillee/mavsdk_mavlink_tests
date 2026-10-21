@@ -78,8 +78,8 @@ specific reason** if not — rather than every test failing with a
 misleading `pwm=None`/`measured=900` that looks like "scaling is wrong"
 but actually means "can't observe this stack this way at all." Not yet
 run against a real non-PX4 stack to confirm the skip path fires correctly
-in practice (ArduCopter SITL is blocked in this environment — see root
-`CLAUDE.md` future-work item #7) — the logic is verified by code review
+in practice (ArduCopter SITL was blocked in this environment until 2026-10-01 — see root
+`CLAUDE.md` future-work item #7, now resolved; not re-run since) — the logic is verified by code review
 and by the fact that the *positive* path (PX4, working mechanism) is
 proven working, but the skip path itself is currently unexercised.
 

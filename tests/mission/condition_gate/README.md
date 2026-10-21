@@ -66,7 +66,7 @@ Tested: 2026-09-13. PX4 v1.18.0-beta (SIH, `sihsim_quadx`), ArduCopter V4.8.0-de
 |------|--------|------------|------|
 | Baseline: accepted as a mission item at all | ACCEPTED | UNSUPPORTED¹ | ACCEPTED |
 | Undefined param3/4: sentinel (NaN) accepted | ACCEPTED | *(skipped)* | ACCEPTED |
-| Undefined param3/4: non-sentinel value rejected | **ACCEPTED — correctly rejected** (`INVALID_PARAM3`/`4`) | *(skipped)* | XFAIL (mock doesn't validate) |
+| Undefined param3/4: non-sentinel value rejected | **ACCEPTED — correctly rejected** (`INVALID_PARAM3`/`4`) | *(skipped)* | NA (mock doesn't validate) |
 | Defined params 1/2/5/6/7: sentinel tolerated | ACCEPTED (all 5) | *(skipped)* | ACCEPTED (all 5) |
 | Geometry (param1) = 0 | ACCEPTED | *(skipped)* | ACCEPTED |
 | Geometry (param1) = 7 (undocumented) | ACCEPTED, observational | *(skipped)* | ACCEPTED, observational |

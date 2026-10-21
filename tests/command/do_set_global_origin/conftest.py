@@ -13,9 +13,9 @@ Two fixture pairs:
 import asyncio
 
 import pytest_asyncio
-from mavsdk import System
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
 
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
+from tests.conftest import _wait_for_connection
 from tests.mock_flight_stack import MAV_RESULT_DENIED, MockFlightStack
 
 _CMD_ID = 611  # MAV_CMD_DO_SET_GLOBAL_ORIGIN
@@ -32,8 +32,7 @@ async def mock_stack_origin_cls(request) -> MockFlightStack | None:
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
+    system = await open_paired_drone()
     stack = MockFlightStack(
         require_valid_location_cmds={_CMD_ID},
         emit_gps_global_origin=True,
@@ -52,8 +51,7 @@ async def mock_stack_origin_cls(request) -> MockFlightStack | None:
 async def gcs_system_origin_cls(gcs_mavsdk_server, mock_stack_origin_cls, request) -> System:
     """Class-scoped GCS System paired with mock_stack_origin_cls."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, int(request.config.getoption("--connection-timeout")))
     await _wait_for_connection(system, timeout_s)
     if request.config.getoption("--drone-address") is not None:
         await asyncio.sleep(3.0)
@@ -72,8 +70,7 @@ async def mock_stack_nack_cls(request) -> MockFlightStack | None:
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
+    system = await open_paired_drone()
     stack = MockFlightStack(
         require_valid_location_cmds={_CMD_ID},
         emit_gps_global_origin=True,
@@ -93,8 +90,7 @@ async def mock_stack_nack_cls(request) -> MockFlightStack | None:
 async def gcs_system_nack_cls(gcs_mavsdk_server, mock_stack_nack_cls, request) -> System:
     """Class-scoped GCS System paired with mock_stack_nack_cls."""
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, int(request.config.getoption("--connection-timeout")))
     await _wait_for_connection(system, timeout_s)
     if request.config.getoption("--drone-address") is not None:
         await asyncio.sleep(3.0)

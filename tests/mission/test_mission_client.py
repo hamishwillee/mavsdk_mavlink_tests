@@ -81,8 +81,10 @@ import json
 import logging
 
 import pytest
-from mavsdk.mission_raw import MissionItem, MissionRawError, MissionRawResult
-from mavsdk.mavlink_direct import MavlinkMessage
+
+from tests import report
+from mavsdk.plugins.mission_raw import MissionItem, MissionRawError, MissionRawResult
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
 
 from .conftest import clear_all_mission_types, collect_incoming_mission, items_match
 
@@ -251,7 +253,7 @@ class TestFlightMission:
                 for u, d in zip(flight_plan_items, downloaded)
             )
             if frame_changed:
-                pytest.xfail(
+                pytest.fail(
                     "Autopilot converted coordinate frames on storage "
                     "(e.g. PX4 transforms MAV_FRAME_GLOBAL_RELATIVE_ALT→local NED). "
                     "Full field roundtrip not possible without frame-aware comparison."
@@ -337,7 +339,7 @@ class TestGeofence:
                 for u, d in zip(geofence_items, downloaded)
             )
             if frame_changed:
-                pytest.xfail(
+                pytest.fail(
                     "Autopilot converted coordinate frames on storage "
                     "(PX4 converts MAV_FRAME_GLOBAL→MAV_FRAME_GLOBAL_INT). "
                     "Full field roundtrip not possible without frame-aware comparison."
@@ -391,7 +393,7 @@ class TestRallyPoints:
         PX4 accepts the upload and preserves WGS84 coordinates (x/y unchanged)
         but relabels the coordinate frame from 0 (MAV_FRAME_GLOBAL) to 5
         (MAV_FRAME_GLOBAL_INT) on storage.  Field-by-field roundtrip comparison
-        fails because of the frame mismatch; the test xfails dynamically.
+        fails because of the frame mismatch; the test fails (harness limitation — not a compatibility error).
         """
         async with asyncio.timeout(TRANSFER_TIMEOUT_S):
             await gcs_system.mission_raw.upload_rally_points(rally_items)
@@ -400,7 +402,7 @@ class TestRallyPoints:
             downloaded = await gcs_system.mission_raw.download_rallypoints()
 
         if not downloaded:
-            pytest.xfail(
+            report.compat_fail(
                 "Rally points not persisted by connected autopilot "
                 "(PX4 does not support rally points)."
             )
@@ -411,7 +413,7 @@ class TestRallyPoints:
                 for u, d in zip(rally_items, downloaded)
             )
             if frame_changed:
-                pytest.xfail(
+                pytest.fail(
                     "Autopilot relabeled coordinate frame on storage "
                     "(PX4 relabels MAV_FRAME_GLOBAL→MAV_FRAME_GLOBAL_INT; "
                     "coordinates are preserved but frame field differs). "
@@ -521,6 +523,6 @@ class TestErrorHandling:
         with pytest.raises(MissionRawError) as exc_info:
             await gcs_system.mission_raw.upload_mission([])
         assert (
-            exc_info.value._result.result
+            exc_info.value.result
             == MissionRawResult.Result.INT_MESSAGES_NOT_SUPPORTED
         )

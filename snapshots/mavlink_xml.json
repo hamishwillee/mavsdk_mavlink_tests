@@ -709,7 +709,6 @@
    "params": [
     "1:Abort Alt",
     "2:Land Mode",
-    "3:Empty",
     "4:Yaw Angle",
     "5:Latitude",
     "6:Longitude",
@@ -745,12 +744,7 @@
    "name": "MAV_CMD_DO_AUTOTUNE_ENABLE",
    "params": [
     "1:Enable",
-    "2:Axis",
-    "3:Empty",
-    "4:Empty",
-    "5:Empty",
-    "6:Empty",
-    "7:Empty"
+    "2:Axis"
    ],
    "wip": false
   },
@@ -1544,13 +1538,7 @@
    "hasLocation": false,
    "name": "MAV_CMD_CAN_FORWARD",
    "params": [
-    "1:bus",
-    "2:Empty",
-    "3:Empty",
-    "4:Empty",
-    "5:Empty",
-    "6:Empty",
-    "7:Empty"
+    "1:bus"
    ],
    "wip": false
   },
@@ -1730,10 +1718,7 @@
     "1:Yaw",
     "2:CompassMask",
     "3:Latitude",
-    "4:Longitude",
-    "5:Empty",
-    "6:Empty",
-    "7:Empty"
+    "4:Longitude"
    ],
    "wip": false
   },
@@ -1746,10 +1731,7 @@
     "1:Instance",
     "2:Action",
     "3:Length",
-    "4:Rate",
-    "5:Empty",
-    "6:Empty",
-    "7:Empty"
+    "4:Rate"
    ],
    "wip": false
   },
@@ -2115,12 +2097,7 @@
    "hasLocation": false,
    "name": "MAV_CMD_DO_SET_SAFETY_SWITCH_STATE",
    "params": [
-    "1:Desired State",
-    "2:Empty",
-    "3:Empty",
-    "5:Empty",
-    "6:Empty",
-    "7:Empty"
+    "1:Desired State"
    ],
    "wip": false
   },

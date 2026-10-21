@@ -11,7 +11,9 @@ Tests for the MAVLink **command protocol** — `COMMAND_INT`/`COMMAND_LONG` sent
 | `test_protocol.py` | Protocol mechanics: ACK receipt/echo/result, retry, IN_PROGRESS |
 | `nav_takeoff/test_command.py` | NAV_TAKEOFF (22) via COMMAND_INT — ACK tests |
 | `nav_vtol_takeoff/test_command.py` | NAV_VTOL_TAKEOFF (84) via COMMAND_INT — ACK tests; verifies PX4 commit `aad2f0f3` (param1/param2 mask fix). See `nav_vtol_takeoff/README.md` |
-| `nav_land/test_command.py` | NAV_LAND (21) via COMMAND_INT — ACK tests |
+| `nav_land/test_command.py` | NAV_LAND (21) via COMMAND_INT — ACK tests (`Tier1CommandTestBase`) |
+| `nav_land/test_flight.py` | NAV_LAND — Tier 2: lands; lat/lon and yaw honoured? (shared landing flights, `tests/land_helpers.py`). See `nav_land/README.md` |
+| `nav_vtol_land/test_command.py`, `test_flight.py` | NAV_VTOL_LAND (85) via COMMAND_INT — ACK tests + Tier 2. UNSUPPORTED as a command on PX4 (mission-only). See `nav_vtol_land/README.md` |
 | `do_set_mission_current/test_command.py` | DO_SET_MISSION_CURRENT (224) via COMMAND_LONG — ACK tests |
 | `do_set_mission_current/test_flight.py` | DO_SET_MISSION_CURRENT — Tier 2: does param2 reset a `DO_JUMP` counter / make a completed mission restartable? See `do_set_mission_current/README.md` |
 | `external_wind_estimate/test_command.py` | EXTERNAL_WIND_ESTIMATE (43004, development.xml) — mandatory common tests + per-parameter tests, both message types. See `external_wind_estimate/README.md` |

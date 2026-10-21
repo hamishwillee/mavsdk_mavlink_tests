@@ -1,5 +1,7 @@
 # MAV_CMD_DO_REPOSITION (cmd=192) — command protocol tests
 
+> **Outcome labels (2026-09-30):** results recorded before 2026-09-29 used pytest XFAIL/XPASS. They're relabelled here under root `CLAUDE.md` rule 11 — FAIL (compat) = compatibility error, FAIL (harness) = not a compatibility error, PASS (observation) = a spec gap recorded rather than asserted, NA = compatibility check against the mock — not re-run.
+
 Reposition the vehicle to a specific WGS84 global position. Intended for guided commands; for missions use MAV_CMD_NAV_WAYPOINT.
 
 ## Parameter definition
@@ -34,7 +36,7 @@ Before the fix, PX4 returned `UNSUPPORTED` for all inputs. After (`dakejahl/do-r
 
 ## Message-type exclusivity (check 7, added 2026-09-18)
 
-`test_do_reposition_command_long_rejected` — hand-rolled equivalent of `Tier1CommandTestBase.test_hasLocation_rejects_command_long` (this file predates that base class migration; see `../CLAUDE.md` § Mandatory common tests, check 7). Result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot` with the reposition-ack fix applied): **XFAIL** — COMMAND_LONG returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
+`test_do_reposition_command_long_rejected` — hand-rolled equivalent of `Tier1CommandTestBase.test_hasLocation_rejects_command_long` (this file predates that base class migration; see `../CLAUDE.md` § Mandatory common tests, check 7). Result (2026-09-17, against a PX4-Autopilot checkout at `~/github/PX4/PX4-Autopilot` with the reposition-ack fix applied): **FAIL (compat)** — COMMAND_LONG returns `ACCEPTED(0)`, not the expected `MAV_RESULT_COMMAND_INT_ONLY(8)`. Contrast with `NAV_VTOL_TAKEOFF`, which genuinely enforces this on the same build (PX4 commit `83e7afba56`'s `command_is_int_only()` switch currently lists only that one command) — see `../nav_vtol_takeoff/CLAUDE.md`.
 
 ## Tier 1 test results
 
@@ -44,11 +46,11 @@ All tests SKIP — `DO_REPOSITION` returns `UNSUPPORTED` (confirmed by survey).
 
 ### PX4 MC 1.18.0-alpha — patched (dakejahl/do-reposition-ack, git `78716e23bc`) — 2026-06-04
 
-27 passed, 4 xfailed.
+29 passed, 2 failed — 1 FAIL (compat) (below-minValue speed accepted), 1 FAIL (harness) (not-in-Hold precondition); the out-of-range and INT32_MAX rows are PASS observations. Relabelled from 27 passed, 4 xfailed.
 
 | Test | Result | ACK | Notes |
 |------|--------|-----|-------|
-| `test_do_reposition_denied_not_in_hold` | XFAIL | 0 | PX4 SIH auto-transitions to AUTO_LOITER after EKF convergence before the test runs, so param2=0 → ACCEPTED (branch 2), not DENIED (branch 3). Only verifiable on real hardware or with an explicit pre-test mode reset. |
+| `test_do_reposition_denied_not_in_hold` | FAIL (harness) | 0 | PX4 SIH auto-transitions to AUTO_LOITER after EKF convergence before the test runs, so param2=0 → ACCEPTED (branch 2), not DENIED (branch 3). Only verifiable on real hardware or with an explicit pre-test mode reset. |
 | `test_do_reposition_accepted_change_mode` | PASS | 0 | CHANGE_MODE → ACCEPTED, switches to AUTO_LOITER |
 | `test_do_reposition_accepted_already_in_hold` | PASS | 0 | param2=0 while in Hold → ACCEPTED (branch 2) |
 | `test_do_reposition_command_accepted` | PASS | 0 | |
@@ -61,7 +63,7 @@ All tests SKIP — `DO_REPOSITION` returns `UNSUPPORTED` (confirmed by survey).
 | `test_do_reposition_param1_positive_speed` | PASS | 0 | |
 | `test_do_reposition_param1_zero_speed` | PASS | 0 | treated same as −1 (use default) |
 | `test_do_reposition_param1_nan_speed` | PASS | 0 | treated same as −1 (use default) |
-| `test_do_reposition_param1_below_min` | XFAIL | 0 | PX4 treats any param1 ≤ 0 as default; −5 accepted silently |
+| `test_do_reposition_param1_below_min` | FAIL (compat) | 0 | PX4 treats any param1 ≤ 0 as default; −5 accepted silently |
 | `test_do_reposition_param4_yaw_nan` | PASS | 0 | |
 | `test_do_reposition_param4_yaw_zero` | PASS | 0 | applied as heading setpoint |
 | `test_do_reposition_param4_yaw_specific` | PASS | 0 | |
@@ -72,17 +74,17 @@ All tests SKIP — `DO_REPOSITION` returns `UNSUPPORTED` (confirmed by survey).
 | `test_do_reposition_param3_negative` | PASS | 0 | negative radius accepted |
 | `test_do_reposition_location_specific` | PASS | 0 | |
 | `test_do_reposition_location_int32max` | PASS | 0 | |
-| `test_do_reposition_location_out_of_range_latlon` | XFAIL | 0 | coordinate range not validated — spec gap |
+| `test_do_reposition_location_out_of_range_latlon` | PASS (observation) | 0 | coordinate range not validated — spec gap |
 | `test_do_reposition_altitude_nan` | PASS | 0 | |
 | `test_do_reposition_altitude_zero` | PASS | 0 | |
 | `test_do_reposition_altitude_only_reposition` | PASS | 0 | |
 | `test_do_reposition_all_nan_pause` | PASS | 0 | all-NaN "pause" accepted via COMMAND_LONG |
 | `test_do_reposition_command_long_nan_latlon` | PASS | 0 | |
-| `test_do_reposition_command_long_int32max_float` | XFAIL | 2 | DENIED — PX4 treats float(INT32_MAX) as a protocol error rather than the valid "use current position" sentinel |
+| `test_do_reposition_command_long_int32max_float` | PASS (observation) | 2 | DENIED — PX4 treats float(INT32_MAX) as a protocol error rather than the valid "use current position" sentinel |
 
 ### ArduCopter MC — 2026-06-08
 
-26 passed, 3 failed, 1 skipped, 1 xfailed. Log: `logs/command_do_reposition_arducopter_20260608.log`.
+26 passed, 4 failed (one of them the below-minValue FAIL (compat), formerly xfail), 1 skipped. Log: `logs/command_do_reposition_arducopter_20260608.log`.
 
 | Test | Result | ACK | Notes |
 |------|--------|-----|-------|
@@ -102,7 +104,7 @@ All tests SKIP — `DO_REPOSITION` returns `UNSUPPORTED` (confirmed by survey).
 | `test_do_reposition_location_out_of_range_latlon` | PASS | 2 | out-of-range lat/lon correctly DENIED |
 | `test_do_reposition_altitude_nan` | PASS | 2 | NaN ("use current altitude") → DENIED — spec violation, should accept |
 | `test_do_reposition_altitude_zero` / `test_do_reposition_altitude_only_reposition` / `test_do_reposition_all_nan_pause` / `test_do_reposition_command_long_nan_latlon` / `test_do_reposition_command_long_int32max_float` | PASS | — | UNKNOWN — no ACK within 5s (see finding 2 below) |
-| `test_do_reposition_param1_below_min` | XFAIL | 4 | −5.0 (below minValue=−1) accepted instead of denied — spec gap, same as PX4 |
+| `test_do_reposition_param1_below_min` | FAIL (compat) | 4 | −5.0 (below minValue=−1) accepted instead of denied — spec gap, same as PX4 |
 
 **Source-traced root causes** (`ArduCopter/GCS_MAVLink_Copter.cpp:430-470` `handle_command_int_do_reposition()`; `ArduCopter/mode_guided.cpp:466` `set_destination()`; `libraries/AC_WPNav/AC_WPNav.cpp:322,983`):
 
@@ -122,13 +124,13 @@ Same outward pattern as ArduCopter (mode-gated DENIED when correctly gated, FAIL
 
 ### Mock (paired mode) — 2026-06-04
 
-20 passed, 10 skipped, 1 xfailed.
+20 passed, 10 skipped, 1 NA.
 
 | Test | Result | Notes |
 |------|--------|-------|
 | `test_do_reposition_denied_not_in_hold` / `test_do_reposition_accepted_change_mode` / `test_do_reposition_accepted_already_in_hold` | SKIP | mock has no mode state |
 | `test_do_reposition_param1_nan_speed` / `test_do_reposition_param4_relative_yaw_with_flag` / `test_do_reposition_param3_nan` / `test_do_reposition_altitude_nan` / `test_do_reposition_all_nan_pause` / `test_do_reposition_command_long_nan_latlon` / `test_do_reposition_command_long_int32max_float` | SKIP | requires real stack |
-| `test_do_reposition_param1_below_min` | XFAIL | mock accepts −5 m/s (below minValue=−1) |
+| `test_do_reposition_param1_below_min` | NA | mock accepts −5 m/s (below minValue=−1) |
 | `test_do_reposition_location_out_of_range_latlon` | PASS | mock correctly DENIEDs out-of-range coordinates |
 | everything else | PASS | mock always accepts |
 

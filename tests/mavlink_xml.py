@@ -96,7 +96,7 @@ def _entry_to_cmd(entry: ET.Element, dialect: str) -> CmdDef:
     for p in entry.findall("param"):
         label = p.get("label")
         text = (p.text or "").strip()
-        empty = (text == "" and label is None) or text == "Empty"
+        empty = (text == "" and label is None) or text.rstrip(".") == "Empty"  # XML writes both "Empty" and "Empty."
         params.append(ParamDef(int(p.get("index")), label or "Empty", empty))
     return CmdDef(
         id=int(entry.get("value")),

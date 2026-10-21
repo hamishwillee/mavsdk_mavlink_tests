@@ -70,11 +70,11 @@ import math
 
 import pytest
 import pytest_asyncio
-from mavsdk import System
-from mavsdk.mission_raw import MissionItem, MissionRawError
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
+from mavsdk.plugins.mission_raw import MissionItem, MissionRawError
 
 from .conftest import clear_all_mission_types
-from tests.conftest import DRONE_GRPC_PORT, _wait_for_connection
+from tests.conftest import _wait_for_connection
 from tests.mock_flight_stack import MockFlightStack
 
 log = logging.getLogger(__name__)
@@ -268,8 +268,7 @@ async def mock_stack_cls(request):
         yield None
         return
 
-    system = System(mavsdk_server_address="localhost", port=DRONE_GRPC_PORT)
-    await system.connect()
+    system = await open_paired_drone()
 
     stack = MockFlightStack()
     task = asyncio.create_task(stack.run(system))
@@ -285,8 +284,7 @@ async def mock_stack_cls(request):
 @pytest_asyncio.fixture(scope="class", loop_scope="class")
 async def gcs_system_cls(gcs_mavsdk_server, mock_stack_cls, request):
     timeout_s = int(request.config.getoption("--connection-timeout"))
-    system = System(mavsdk_server_address="localhost", port=gcs_mavsdk_server)
-    await system.connect()
+    system = await open_system(gcs_mavsdk_server, int(request.config.getoption("--connection-timeout")))
     await _wait_for_connection(system, timeout_s)
     yield system
 

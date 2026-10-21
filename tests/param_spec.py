@@ -94,10 +94,10 @@ class ParamSpec:
     sentinel_policy: str = "tolerate"  # defined params only: "tolerate"
         # (default) or "deny_required" (a mandatory field with no sentinel
         # fallback, e.g. DO_SET_GLOBAL_ORIGIN's lat/lon/altitude).
-    reject_xfail_reason: str | None = None  # undefined params only: a
+    reject_fail_reason: str | None = None  # undefined params only: a
         # per-command known-behaviour xfail reason. Falls back to a generic
         # message (no known stack validates undefined params) if not given.
-    sentinel_xfail_reason: str | None = None  # defined params with
+    sentinel_fail_reason: str | None = None  # defined params with
         # sentinel_policy="tolerate" only: a known stack legitimately rejects
         # THIS param's own sentinel (e.g. ArduPilot's blanket sanity_check_params
         # nan_mask, which permits NaN only in a command-specific subset of

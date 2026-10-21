@@ -246,7 +246,7 @@ class TestDoSetGlobalOriginCommand:
         Sending 0.0 is a common GCS mistake (treating 0 as "no value") but is
         still a spec violation; it must also be DENIED.
 
-        xfail: no known stack currently enforces NaN for reserved params — all
+        Known result (FAIL): no known stack currently enforces NaN for reserved params — all
         return ACCEPTED while silently ignoring the value.
         """
         ack = await _probe(system, **probe_kwargs)
@@ -256,34 +256,34 @@ class TestDoSetGlobalOriginCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, label, f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for reserved param={value}; expected DENIED — "
                 "no known stack enforces NaN for 'Empty' params (spec gap)"
             )
         assert result == MAV_RESULT_DENIED
 
     async def test_do_set_global_origin_reserved_param1_zero_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
-        """param1=0.0 (zero, not NaN) — reserved ("Empty"); must be DENIED; xfail all stacks."""
+        """param1=0.0 (zero, not NaN) — reserved ("Empty"); must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param1=0.0 (zero, not NaN)", 0.0, param1=0.0)
 
     async def test_do_set_global_origin_reserved_param1_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
-        """param1=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param1=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param1=1.0 (non-NaN reserved)", 1.0, param1=1.0)
 
     async def test_do_set_global_origin_reserved_param2_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
-        """param2=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param2=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param2=1.0 (non-NaN reserved)", 1.0, param2=1.0)
 
     async def test_do_set_global_origin_reserved_param3_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
-        """param3=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param3=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param3=1.0 (non-NaN reserved)", 1.0, param3=1.0)
 
     async def test_do_set_global_origin_reserved_param4_nonnan_ack(self, gcs_system_origin_cls, mock_stack_origin_cls):
-        """param4=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param4=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
         await self._check_reserved_param(gcs_system_origin_cls, "param4=1.0 (non-NaN reserved)", 1.0, param4=1.0)
 
@@ -335,7 +335,7 @@ class TestDoSetGlobalOriginCommand:
         DO_SET_GLOBAL_ORIGIN requires an explicit GNSS coordinate.  INT32_MAX is
         not a valid sentinel for this command; it must be DENIED.
 
-        xfail: PX4 maps INT32_MAX → NaN lat/lon (standard COMMAND_INT sentinel
+        Known result (FAIL): PX4 maps INT32_MAX → NaN lat/lon (standard COMMAND_INT sentinel
         convention) and EKF2 then returns FAILED when it cannot set a NaN origin —
         reasonable behaviour but the wrong result code (DENIED is expected).
         """
@@ -347,7 +347,7 @@ class TestDoSetGlobalOriginCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "x=y=INT32_MAX (no sentinel semantic)", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for INT32_MAX lat/lon; expected DENIED — "
                 "PX4 converts INT32_MAX → NaN and EKF2 returns FAILED instead of DENIED "
                 "(spec gap: command should reject the sentinel, not attempt to apply NaN)"
@@ -360,7 +360,7 @@ class TestDoSetGlobalOriginCommand:
 
         Setting an impossible coordinate as the global origin is invalid.
 
-        xfail: PX4 converts the value to 91.0°N and EKF2 returns FAILED when
+        Known result (FAIL): PX4 converts the value to 91.0°N and EKF2 returns FAILED when
         `setEkfGlobalOrigin` rejects the out-of-range coordinate — reasonable
         behaviour but the wrong result code (DENIED is expected for bad input).
         """
@@ -373,7 +373,7 @@ class TestDoSetGlobalOriginCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "x=910_000_000 (91°N, out-of-range)", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for out-of-range lat 91°N; expected DENIED — "
                 "PX4 passes the value to EKF2 which returns FAILED; "
                 "rejection should happen before the command is attempted (DENIED)"
@@ -388,7 +388,7 @@ class TestDoSetGlobalOriginCommand:
         altitude"), DO_SET_GLOBAL_ORIGIN requires an explicit MSL altitude to
         define the origin.  NaN is not valid for this command.
 
-        xfail: PX4 currently accepts NaN altitude without error — EKF2 does not
+        Known result (FAIL): PX4 currently accepts NaN altitude without error — EKF2 does not
         validate the altitude field for this command (spec gap).
         """
         await self._ensure_supported(gcs_system_origin_cls, mock_stack_origin_cls)
@@ -399,7 +399,7 @@ class TestDoSetGlobalOriginCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "z=NaN (altitude must be real)", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for NaN altitude; expected DENIED — "
                 "PX4/EKF2 does not validate the altitude field and accepts NaN "
                 "(spec gap: NaN altitude is not meaningful for a global origin)"

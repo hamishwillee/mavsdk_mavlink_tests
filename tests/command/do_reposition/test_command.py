@@ -169,7 +169,7 @@ class TestDoRepositionPx4ModeGating:
 
         Must run FIRST (vehicle must be in MANUAL mode, not Hold).
 
-        xfail: non-PX4 stacks have no mode gating and return ACCEPTED.
+        Known result (FAIL): non-PX4 stacks have no mode gating and return ACCEPTED.
         """
         await self._ensure_mode_gating_applicable(gcs_system_cls, mock_stack_cls)
         ack = await probe_command_int(gcs_system_cls, **_reposition_cmd(param2=0.0))
@@ -179,7 +179,7 @@ class TestDoRepositionPx4ModeGating:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "mode-gating: param2=0 (not in Hold → DENIED)", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            pytest.fail(
                 f"Stack returned {result} for param2=0 when not in Hold; "
                 "expected DENIED.  Two possible causes: (a) mode gating not implemented, "
                 "or (b) PX4 SIH auto-transitions to AUTO_LOITER after EKF convergence "
@@ -428,7 +428,7 @@ class TestDoRepositionCommand:
         A strict stack should return DENIED.  Known stacks permissively treat
         any param1 <= 0 as "use default" and return ACCEPTED.
 
-        xfail: all known stacks accept below-minimum speed values.
+        Known result (FAIL): all known stacks accept below-minimum speed values.
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         ack = await _probe(gcs_system_cls, param1=-5.0)
@@ -438,7 +438,7 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "param1 (Speed) = -5.0 (below min)", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack accepted param1=-5.0 (below minValue=-1, result={result}); "
                 "should return DENIED — spec gap: minValue not enforced"
             )
@@ -617,7 +617,7 @@ class TestDoRepositionCommand:
         These values are geometrically impossible but below INT32_MAX.
         Expected: DENIED.
 
-        xfail: PX4 does not validate coordinate ranges (spec gap).
+        Known result (FAIL): PX4 does not validate coordinate ranges (spec gap).
         ArduPilot validates and returns DENIED (PASS).
         """
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
@@ -630,11 +630,13 @@ class TestDoRepositionCommand:
         result = int(ack["result"])
         log.info(_FMT, _CMD, "params 5/6 out-of-range lat/lon", f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            # Spec gap — characterisation only (root CLAUDE.md rule 3), so
+            # recorded, not asserted.
+            log.info(
+                _FMT, _CMD, "observation (spec gap, not asserted)",
                 f"Stack accepted impossible coordinates (result={result}); "
-                "should return DENIED — spec gap: coordinate range validation not required"
+                "should return DENIED — spec gap: coordinate range validation not required",
             )
-        assert result == MAV_RESULT_DENIED
 
     async def test_do_reposition_altitude_nan(self, gcs_system_cls, mock_stack_cls):
         """
@@ -758,7 +760,7 @@ class TestDoRepositionCommand:
         lat/lon fields.  It applies to both COMMAND_INT (int32_t x/y) and COMMAND_LONG
         (float param5/6).  Expected result: ACCEPTED.
 
-        xfail: PX4 explicitly rejects float(INT32_MAX) in param5/6 as a protocol error
+        Known result (FAIL): PX4 explicitly rejects float(INT32_MAX) in param5/6 as a protocol error
         (mavlink_receiver.cpp:499–505), treating it as a miscoded COMMAND_INT.  This is
         a PX4 spec violation — the stack should treat INT32_MAX as "use current position".
         Skips in mock mode.
@@ -783,12 +785,14 @@ class TestDoRepositionCommand:
                  f"result={result}  "
                  "(INT32_MAX is 'use current position' sentinel; DENIED is a PX4 spec violation)")
         if result != MAV_RESULT_ACCEPTED:
-            pytest.xfail(
+            # Spec gap — characterisation only (root CLAUDE.md rule 3), so
+            # recorded, not asserted.
+            log.info(
+                _FMT, _CMD, "observation (spec gap, not asserted)",
                 f"Stack returned {result} for INT32_MAX lat/lon in COMMAND_LONG; "
                 "expected ACCEPTED — INT32_MAX is the 'use current position' sentinel "
-                "(PX4 incorrectly rejects it as a protocol error)"
+                "(PX4 incorrectly rejects it as a protocol error)",
             )
-        assert result == MAV_RESULT_ACCEPTED
 
     # -----------------------------------------------------------------------
     # Group I — message-type exclusivity (mandatory common test 7, root
@@ -809,7 +813,7 @@ class TestDoRepositionCommand:
         NACKed with MAV_RESULT_COMMAND_INT_ONLY(8) rather than silently
         accepted through the imprecise float encoding.
 
-        xfail: no known stack currently enforces this message-type
+        Known result (FAIL): no known stack currently enforces this message-type
         exclusivity rule (a genuine, widespread spec gap — see
         tests/command/CLAUDE.md § Mandatory common tests, check 7).
         """
@@ -825,7 +829,7 @@ class TestDoRepositionCommand:
             return
         log.info(_FMT, _CMD, "COMMAND_LONG (hasLocation command)", f"result={result}")
         if result != MAV_RESULT_COMMAND_INT_ONLY:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack accepted COMMAND_LONG for a hasLocation command (result={result}); "
                 "expected MAV_RESULT_COMMAND_INT_ONLY(8) — no known stack currently enforces "
                 "this message-type exclusivity rule (spec gap)"

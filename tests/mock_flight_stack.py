@@ -25,8 +25,8 @@ import json
 import logging
 import math
 
-from mavsdk import System
-from mavsdk.mavlink_direct import MavlinkMessage
+from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
+from mavsdk.plugins.mavlink_direct import MavlinkMessage
 
 log = logging.getLogger(__name__)
 
@@ -55,9 +55,8 @@ _INT32_MAX = 0x7FFF_FFFF       # "use current position" sentinel
 _MAX_LAT_INT = 900_000_000     # ±90° × 1e7
 _MAX_LON_INT = 1_800_000_000   # ±180° × 1e7
 
-# MAVLink identity of the GCS peer (sysid=255, compid=1 in paired loopback)
-_GCS_SYSID = 255
-_GCS_COMPID = 1
+# MAVLink identity of the GCS peer (MAVSDK GROUND_STATION — see tests/mavsdk_compat.GCS_SYSID)
+from tests.mavsdk_compat import GCS_COMPID as _GCS_COMPID, GCS_SYSID as _GCS_SYSID  # MAVSDK GROUND_STATION identity
 
 def _f(val, default: float = 0.0) -> float:
     """Convert a JSON field value to float, treating None (JSON null) as NaN."""

@@ -24,7 +24,7 @@ test — generic and bespoke alike — is skipped via `_skip_if_unsupported`),
 NAV_TAKEOFF is genuinely supported everywhere, so the generic
 `test_defined_param_sentinel_tolerated` test actually exercises real
 per-stack quirks: ArduPilot's `sanity_check_params` rejects NaN in any
-float param but param4 (see `ParamSpec.sentinel_xfail_reason` on params
+float param but param4 (see `ParamSpec.sentinel_fail_reason` on params
 1/3/7 below).  Per tests/mission/CLAUDE.md's documented convention, a
 defined param's NaN sentinel is NOT itself spec-mandated (unlike an
 undefined param's, or a hasLocation param's INT32_MAX) — a real-stack
@@ -63,7 +63,10 @@ import logging
 import math
 
 import pytest
-from mavsdk.mission_raw import MissionRawError
+
+from tests import report
+from tests.report import _tier1_auto_record  # noqa: F401 — autouse: bespoke tests show in the report too
+from mavsdk.plugins.mission_raw import MissionRawError
 
 from ..conftest import MissionItemSpec, Tier1MissionTestBase, clear_all_mission_types
 from tests.param_spec import ParamSpec
@@ -71,6 +74,8 @@ from tests.param_spec import ParamSpec
 log = logging.getLogger(__name__)
 
 _CMD = "NAV_TAKEOFF"
+_CMD_NAME = _CMD  # read by tests/report.py's key_from_module()
+_CMD_ID = 22  # MAV_CMD_NAV_TAKEOFF
 _FMT = "%-14s | %-44s | %s"
 
 NAN = float("nan")
@@ -116,13 +121,13 @@ SPEC = MissionItemSpec(
         z=50.0,        # Altitude: 50 m AMSL
     ),
     params=[
-        ParamSpec(1, "Pitch", defined=True, sentinel_xfail_reason=_ARDUPILOT_NAN_MASK_REASON),
+        ParamSpec(1, "Pitch", defined=True, sentinel_fail_reason=_ARDUPILOT_NAN_MASK_REASON),
         ParamSpec(2, "Empty", defined=False),
-        ParamSpec(3, "Flags", defined=True, sentinel_xfail_reason=_ARDUPILOT_NAN_MASK_REASON),
+        ParamSpec(3, "Flags", defined=True, sentinel_fail_reason=_ARDUPILOT_NAN_MASK_REASON),
         ParamSpec(4, "Yaw", defined=True),  # NaN sentinel IS spec-mandated here — no xfail
         ParamSpec(5, "Latitude", defined=True),  # INT32_MAX sentinel IS spec-mandated — no xfail
         ParamSpec(6, "Longitude", defined=True),
-        ParamSpec(7, "Altitude", defined=True, sentinel_xfail_reason=_ARDUPILOT_ALTITUDE_NAN_REASON),
+        ParamSpec(7, "Altitude", defined=True, sentinel_fail_reason=_ARDUPILOT_ALTITUDE_NAN_REASON),
     ],
 )
 
@@ -152,7 +157,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
             ok = abs(dl.param1 - 15.0) < 1e-4
             log.info(_FMT, _CMD, "param1 (Pitch)", f"PRESERVED ({dl.param1:.4f})" if ok else f"NOT preserved (downloaded {dl.param1})")
             if not ok:
-                pytest.xfail(
+                report.compat_fail(
                     f"param1 (Pitch) not preserved: uploaded 15.0, downloaded {dl.param1} — "
                     "accepted but silently zeroed instead of NACKed (cross-stack gap, see module docstring)"
                 )
@@ -174,7 +179,7 @@ class TestNavTakeoff(Tier1MissionTestBase):
             ok = abs(dl.param3 - 1.0) < 1e-4
             log.info(_FMT, _CMD, "param3 (Flags)", f"PRESERVED ({dl.param3:.4f})" if ok else f"NOT preserved (downloaded {dl.param3})")
             if not ok:
-                pytest.xfail(
+                report.compat_fail(
                     f"param3 (Flags) not preserved: uploaded 1.0, downloaded {dl.param3} — "
                     "accepted but silently zeroed instead of NACKed (cross-stack gap, see module docstring)"
                 )

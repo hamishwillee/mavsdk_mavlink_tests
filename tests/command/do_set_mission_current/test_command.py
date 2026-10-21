@@ -98,7 +98,7 @@ import logging
 
 import pytest
 import pytest_asyncio
-from mavsdk.mission_raw import MissionItem
+from mavsdk.plugins.mission_raw import MissionItem
 
 from tests.command.conftest import (
     ACK_TIMEOUT_S,
@@ -229,7 +229,7 @@ class TestDoSetMissionCurrentNoMission:
                 "DOC DISCREPANCY: DO_SET_MISSION_CURRENT with no mission uploaded (%s) "
                 "returned result=%d, not the spec-mandated MAV_RESULT_FAILED(4)", label, result,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for {label} with no mission uploaded; "
                 "spec mandates MAV_RESULT_FAILED(4) regardless of param1/param2"
             )
@@ -417,7 +417,7 @@ class TestDoSetMissionCurrentWithMission:
                 "DOC DISCREPANCY: DO_SET_MISSION_CURRENT param1=-1 with a mission loaded "
                 "returned result=%d, not the spec-mandated MAV_RESULT_ACCEPTED(0)", result,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for param1=-1 with a mission loaded; spec says "
                 "-1 keeps the current item unchanged and should be ACCEPTED"
             )
@@ -466,7 +466,7 @@ class TestDoSetMissionCurrentWithMission:
                 "DOC DISCREPANCY: DO_SET_MISSION_CURRENT out-of-range param1 (mission loaded) "
                 "returned result=%d, not the spec-mandated MAV_RESULT_FAILED(4)", result,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for out-of-range param1; spec mandates "
                 "MAV_RESULT_FAILED(4) — DOC DISCREPANCY, confirmed on PX4 MC 1.18.0-beta"
             )
@@ -488,7 +488,7 @@ class TestDoSetMissionCurrentWithMission:
                 "DOC DISCREPANCY: DO_SET_MISSION_CURRENT param1=-2 (other invalid) "
                 "returned result=%d, not the spec-mandated MAV_RESULT_DENIED(2)", result,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for param1=-2; spec mandates DENIED(2) for "
                 "'any other value' of param1"
             )
@@ -552,7 +552,7 @@ class TestDoSetMissionCurrentWithMission:
                 "DOC DISCREPANCY: DO_SET_MISSION_CURRENT param2=2 (invalid) "
                 "returned result=%d, not the spec-mandated MAV_RESULT_DENIED(2)", result,
             )
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for param2=2; spec mandates DENIED(2) for "
                 "'any other value' of param2"
             )
@@ -572,7 +572,7 @@ class TestDoSetMissionCurrentWithMission:
         be honoured.  Unlike the param1/param2 cases above, the spec does not
         name a result code for this, so it stays an xfail scaffold.
 
-        xfail: no known stack currently enforces NaN for reserved params — all
+        Known result (FAIL): no known stack currently enforces NaN for reserved params — all
         return non-DENIED while silently ignoring the value (same pattern
         already documented for DO_SET_GLOBAL_ORIGIN's reserved params).
         """
@@ -584,33 +584,33 @@ class TestDoSetMissionCurrentWithMission:
         result = int(ack["result"])
         log.info(_FMT, _CMD, label, f"result={result}")
         if result != MAV_RESULT_DENIED:
-            pytest.xfail(
+            report.compat_fail(
                 f"Stack returned {result} for reserved param={value}; expected DENIED — "
                 "no known stack enforces NaN for 'Empty' params (spec gap)"
             )
         assert result == MAV_RESULT_DENIED
 
     async def test_do_set_mission_current_reserved_param3_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
-        """param3=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param3=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param3=1.0 (non-NaN reserved)", 1.0, param3=1.0)
 
     async def test_do_set_mission_current_reserved_param4_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
-        """param4=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param4=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param4=1.0 (non-NaN reserved)", 1.0, param4=1.0)
 
     async def test_do_set_mission_current_reserved_param5_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
-        """param5=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param5=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param5=1.0 (non-NaN reserved)", 1.0, param5=1.0)
 
     async def test_do_set_mission_current_reserved_param6_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
-        """param6=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param6=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param6=1.0 (non-NaN reserved)", 1.0, param6=1.0)
 
     async def test_do_set_mission_current_reserved_param7_nonnan_ack(self, gcs_system_cls, mock_stack_cls):
-        """param7=1.0 (non-NaN reserved) — must be DENIED; xfail on all known stacks."""
+        """param7=1.0 (non-NaN reserved) — must be DENIED (not enforced by any known stack — compatibility FAIL)."""
         await self._ensure_supported(gcs_system_cls, mock_stack_cls)
         await self._check_reserved_param(gcs_system_cls, "param7=1.0 (non-NaN reserved)", 1.0, param7=1.0)

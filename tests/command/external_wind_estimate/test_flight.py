@@ -71,6 +71,8 @@ import math
 
 import pytest
 
+from tests import report
+
 from tests.command.conftest import probe_command_long
 from tests.command.external_wind_estimate.test_command import _probe, _reduce
 from tests.flight_helpers import (
@@ -89,6 +91,7 @@ pytestmark = pytest.mark.timeout(300)
 _CMD = "EXTERNAL_WIND_ESTIMATE"
 
 _WIND_COV_MSG_ID = 231       # MAVLINK_MSG_ID_WIND_COV
+REQUIRED_MESSAGES = {"WIND_COV": "the wind estimate under test"}  # tests/message_watcher.py
 _SET_MESSAGE_INTERVAL = 511  # MAV_CMD_SET_MESSAGE_INTERVAL
 _WIND_COV_RATE_HZ = 5.0
 
@@ -100,6 +103,10 @@ _WIND_TOLERANCE_M_S = 3.0  # tolerance for "close to commanded value"
 #   -> expected windspeed_north ~= 0, windspeed_east ~= -8
 GROUND_WIND_SPEED = 8.0
 GROUND_WIND_DIR = 90.0
+# A second, distinct (speed, direction) pair, sent after the first (root CLAUDE.md
+# rule 4c): a wind state that only happens to sit near one commanded value can't
+# follow both.
+GROUND_WIND_SECOND = (5.0, 225.0)
 
 # Air test: a deliberately distinguishable value -- wind blowing FROM south (180 deg)
 # at 15 m/s -> blows TO north -> expected windspeed_north ~= +15, windspeed_east ~= 0
@@ -228,34 +235,38 @@ async def test_ground_wind_estimate_applied(gcs_system, request):
         # COMMAND_INT and COMMAND_LONG and merges to one result, subject to
         # the same confirmed Commander/EKF2 dual-ACK race as Tier 1
         # (test_command.py) -- see its module docstring.
-        int_ack, long_ack = await _probe(gcs_system, param1=GROUND_WIND_SPEED, param3=GROUND_WIND_DIR)
-        result = _reduce("ground ACK", int_ack, long_ack)
-        assert result is not None, "No COMMAND_ACK received for EXTERNAL_WIND_ESTIMATE (ground)"
-        log.info("%-24s | %-30s | result=%d", _CMD, "ground ACK", result)
-        assert result != MAV_RESULT_UNSUPPORTED
-
-        after = await _wait_for_sample(wind_queue, _AFTER_SETTLE_S)
-        log.info("%-24s | %-30s | %s", _CMD, "ground after-command WIND_COV", _fmt_wind(after))
+        samples = []  # (speed, dir, after-sample)
+        for speed, direction in ((GROUND_WIND_SPEED, GROUND_WIND_DIR), GROUND_WIND_SECOND):
+            int_ack, long_ack = await _probe(gcs_system, param1=speed, param3=direction)
+            result = _reduce(f"ground ACK {speed:.0f} m/s @ {direction:.0f}°", int_ack, long_ack)
+            assert result is not None, "No COMMAND_ACK received for EXTERNAL_WIND_ESTIMATE (ground)"
+            log.info("%-24s | %-30s | result=%d", _CMD, f"ground ACK {speed:.0f}@{direction:.0f}", result)
+            assert result != MAV_RESULT_UNSUPPORTED
+            # Drain anything from before this command so the check reads the new state.
+            while not wind_queue.empty():
+                wind_queue.get_nowait()
+            after_i = await _wait_for_sample(wind_queue, _AFTER_SETTLE_S)
+            log.info("%-24s | %-30s | %s", _CMD, f"after {speed:.0f}@{direction:.0f}", _fmt_wind(after_i))
+            samples.append((speed, direction, after_i))
     finally:
         wind_task.cancel()
 
+    details = []
+    all_ok = True
+    for speed, direction, after_i in samples:
+        exp_n, exp_e = _expected_wind_ne(speed, direction)
+        ok = after_i is not None and _matches_commanded(after_i, exp_n, exp_e)
+        all_ok &= ok
+        got = "no WIND_COV" if after_i is None else f"north={after_i['wind_x']:.2f} east={after_i['wind_y']:.2f}"
+        details.append(f"{speed:.0f} m/s @ {direction:.0f}°: expected north={exp_n:.2f} east={exp_e:.2f}, got {got}")
+    detail = "; ".join(details)
+    log.info("%-24s | %-30s | %s", _CMD, "ground wind verdict", detail)
+    if not all_ok:
+        report.compat_fail(
+            f"Ground WIND_COV did not follow the commanded wind (tolerance {_WIND_TOLERANCE_M_S} m/s): {detail}"
+        )
+    after = samples[0][2]
     expected_north, expected_east = _expected_wind_ne(GROUND_WIND_SPEED, GROUND_WIND_DIR)
-    log.info(
-        "%-24s | %-30s | expected north=%.2f east=%.2f",
-        _CMD, "ground expected wind (from PX4's own math)", expected_north, expected_east,
-    )
-
-    assert after is not None, (
-        "No WIND_COV was published at all after the ground EXTERNAL_WIND_ESTIMATE reset -- "
-        "expected the topic to start streaming once _external_wind_init is set"
-    )
-    assert _matches_commanded(after, expected_north, expected_east), (
-        f"Ground WIND_COV did not move to the commanded wind vector: "
-        f"got north={after['wind_x']:.2f} east={after['wind_y']:.2f}, "
-        f"expected north={expected_north:.2f} east={expected_east:.2f} "
-        f"(tolerance {_WIND_TOLERANCE_M_S} m/s)"
-    )
-
     _write_ground_result(request, baseline, after, expected_north, expected_east)
 
 

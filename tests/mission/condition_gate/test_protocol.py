@@ -87,7 +87,7 @@ Against a real flight stack::
 import logging
 
 import pytest
-from mavsdk.mission_raw import MissionItem
+from mavsdk.plugins.mission_raw import MissionItem
 
 from ..conftest import (
     MissionItemSpec,
@@ -153,11 +153,11 @@ SPEC = MissionItemSpec(
         # accepts every value. The default fallback reason ("no known stack
         # validates...") would be actively wrong here, so it's overridden.
         ParamSpec(3, "Empty", defined=False,
-                  reject_xfail_reason="Mock has no per-param validation and accepts every value; "
+                  reject_fail_reason="Mock has no per-param validation and accepts every value; "
                                        "PX4 correctly rejects this with INVALID_PARAM3 (mask-driven, "
                                        "see mavlink_command_params.hpp)"),
         ParamSpec(4, "Empty", defined=False,
-                  reject_xfail_reason="Mock has no per-param validation and accepts every value; "
+                  reject_fail_reason="Mock has no per-param validation and accepts every value; "
                                        "PX4 correctly rejects this with INVALID_PARAM4 (mask-driven, "
                                        "see mavlink_command_params.hpp)"),
         ParamSpec(5, "Latitude", defined=True),

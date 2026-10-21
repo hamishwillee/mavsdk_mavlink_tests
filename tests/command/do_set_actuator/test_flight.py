@@ -85,8 +85,11 @@ import logging
 
 import pytest
 
+from tests import report
+
 from tests.command.conftest import probe_command_int, probe_command_long, INT32_MAX
 from tests.flight_helpers import (
+    record_tier2_detail,
     _tier2_auto_record,  # noqa: F401 — autouse: records every test's outcome into the combined report
     record_compat_command_supported,
     record_compat_json,
@@ -100,6 +103,7 @@ pytestmark = pytest.mark.timeout(120)
 _CMD = "DO_SET_ACTUATOR"
 _CMD_ID = 187
 _CMD_NAME = _CMD  # read by tests/flight_helpers.py's _tier2_auto_record
+REQUIRED_MESSAGES = {"ACTUATOR_OUTPUT_STATUS": "the commanded PWM output under test"}  # tests/message_watcher.py
 
 # Peripheral_via_Actuator_SetN function enum values (src/lib/mixer_module/output_functions.yaml),
 # one per actuator slot (1-6). sihsim_quadx assigns PWM_MAIN_FUNC1-4 to the
@@ -224,9 +228,34 @@ async def _read_actuator_channels(system, *channel_1based: int, settle_s: float 
     return latest
 
 
+# Two values per "is it honoured" check (root CLAUDE.md rule 4c): +0.5 and -0.5
+# sit either side of the output's neutral point, so a decode that's merely close
+# by coincidence — or that drops the sign — can't pass both.
+_ACTUATOR_VALUES = (0.5, -0.5)
+
+
+async def _actuator5_check(system, frame: int) -> list[dict]:
+    """Command Actuator 5 to each _ACTUATOR_VALUES value (COMMAND_INT, x scaled 1e7) and read the PWM back."""
+    results = []
+    for value in _ACTUATOR_VALUES:
+        ack = await probe_command_int(system, command=_CMD_ID, frame=frame, x=int(value * 1e7), y=INT32_MAX, z=0.0)
+        if ack is None:
+            pytest.fail(f"No COMMAND_ACK for DO_SET_ACTUATOR value {value} — cannot classify")
+        if int(ack["result"]) != 0:
+            results.append({"ok": False, "nacked": True, "detail": f"{value:+.1f}: REJECTED (result={int(ack['result'])})"})
+            continue
+        readings = await _read_actuator_channels(system, _CHANNEL_FOR_ACTUATOR5)
+        pwm = readings.get(_CHANNEL_FOR_ACTUATOR5)
+        expected = _expected_pwm(value)
+        ok = pwm is not None and abs(pwm - expected) <= _PWM_TOLERANCE
+        results.append({"ok": ok, "nacked": False, "detail": f"{value:+.1f}: PWM {pwm} (expected {expected:.0f}±{_PWM_TOLERANCE:.0f})"})
+        log.info("frame=%d value=%+.1f: %s", frame, value, results[-1]["detail"])
+    return results
+
+
 async def test_actuator_compat_command_int_scales_by_1e7(gcs_system, request):
     """
-    COMMAND_INT: x=5,000,000 (Actuator 5 = 0.5, scaled 1e7) produces the
+    COMMAND_INT: x=±5,000,000 (Actuator 5 = ±0.5, scaled 1e7) produces the
     correct PWM output (1750us) once armed.
 
     PASS if the observed PWM is within tolerance of 1750us (0.5 scaled
@@ -248,24 +277,19 @@ async def test_actuator_compat_command_int_scales_by_1e7(gcs_system, request):
     await gcs_system.action.arm()
     await asyncio.sleep(1.0)
     try:
-        ack = await probe_command_int(gcs_system, command=_CMD_ID, frame=6, x=5_000_000, y=INT32_MAX, z=0.0)
-        assert ack is not None and int(ack["result"]) == 0, f"DO_SET_ACTUATOR not ACCEPTED: {ack}"
-
-        readings = await _read_actuator_channels(gcs_system, _CHANNEL_FOR_ACTUATOR5)
-        pwm = readings.get(_CHANNEL_FOR_ACTUATOR5)
-        expected = _expected_pwm(0.5)
-        ok = pwm is not None and abs(pwm - expected) <= _PWM_TOLERANCE
-        log.info("PASS if PWM within %.0f of %.1f: measured=%s", _PWM_TOLERANCE, expected, pwm)
-        record_compat_command_supported(
-            request, ok, notes="Verified via commanded PWM output, not physical actuator feedback",
-        )
-        record_compat_json(
-            request, "5_Actuator 5", supported=ok,
-            notes="Commanded output value verified" if ok else f"measured PWM={pwm}, expected {expected}",
-        )
-        assert ok, f"Actuator 5 PWM={pwm}, expected {expected}±{_PWM_TOLERANCE} for x=5,000,000 (0.5 scaled by 1e7)"
+        results = await _actuator5_check(gcs_system, frame=6)
     finally:
         await gcs_system.action.disarm()
+    ok = all(r["ok"] for r in results)
+    detail = "; ".join(r["detail"] for r in results)
+    record_tier2_detail(request, detail)
+    record_compat_command_supported(
+        request, ok, notes="Verified via commanded PWM output, not physical actuator feedback",
+    )
+    record_compat_json(request, "5_Actuator 5", supported=ok,
+                       notes="Commanded output value verified" if ok else detail)
+    if not all(r["ok"] or r["nacked"] for r in results):
+        report.compat_fail(f"Actuator 5 value accepted but not reflected at the output: {detail}")
 
 
 async def test_actuator_compat_sentinel_independent_per_field(gcs_system, request):
@@ -315,7 +339,7 @@ async def test_actuator_compat_local_frame_scales_same(gcs_system, request):
     (commit 0f029991b2's own message: "shared location path uses 1e4 for
     local and body frames") — still produces the correct 1e7-scaled PWM.
 
-    PASS if PWM matches the same 1750us target as the default-frame test,
+    PASS if PWM matches the same targets as the default-frame test (both values),
     proving the decode does not depend on frame for this command.
     """
     await _ensure_actuator_output_observable(gcs_system)
@@ -323,20 +347,16 @@ async def test_actuator_compat_local_frame_scales_same(gcs_system, request):
     await gcs_system.action.arm()
     await asyncio.sleep(1.0)
     try:
-        ack = await probe_command_int(gcs_system, command=_CMD_ID, frame=1, x=5_000_000, y=INT32_MAX, z=0.0)
-        assert ack is not None and int(ack["result"]) == 0, f"DO_SET_ACTUATOR not ACCEPTED: {ack}"
-
-        readings = await _read_actuator_channels(gcs_system, _CHANNEL_FOR_ACTUATOR5)
-        pwm = readings.get(_CHANNEL_FOR_ACTUATOR5)
-        expected = _expected_pwm(0.5)
-        ok = pwm is not None and abs(pwm - expected) <= _PWM_TOLERANCE
-        log.info("PASS if PWM (frame=1) within %.0f of %.1f: measured=%s", _PWM_TOLERANCE, expected, pwm)
-        assert ok, (
-            f"Actuator 5 PWM={pwm} under frame=1 (LOCAL_NED), expected {expected}±{_PWM_TOLERANCE} — "
-            "if this differs from the default-frame result, decoding is still frame-dependent (the exact pre-fix bug)"
-        )
+        results = await _actuator5_check(gcs_system, frame=1)
     finally:
         await gcs_system.action.disarm()
+    detail = "; ".join(r["detail"] for r in results)
+    record_tier2_detail(request, detail)
+    if not all(r["ok"] or r["nacked"] for r in results):
+        report.compat_fail(
+            f"Actuator 5 under frame=1 (LOCAL_NED) not reflected at the output: {detail} — if this differs "
+            "from the default-frame result, decoding is still frame-dependent (the exact pre-fix bug)"
+        )
 
 
 async def test_actuator_info_command_long_matches_command_int(gcs_system, request):
