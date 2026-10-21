@@ -125,7 +125,7 @@ SPEC = MissionItemSpec(
         param2=0.0,   # UseAltitude: MAV_BOOL_FALSE = ignore altitude
         # param3/4 default is **0.0, not the spec-correct NaN** ("Empty") — the
         # same ArduCopter baseline-probe pitfall documented in
-        # tests/mission/do_reposition/CLAUDE.md and nav_takeoff/CLAUDE.md:
+        # tests/mission/nav_takeoff/CLAUDE.md:
         # ArduPilot's sanity_check_params() only permits NaN in the params of
         # commands it explicitly special-cases; CONDITION_GATE isn't one of
         # them (it isn't recognised at all), so its blanket nan_mask rejects
