@@ -16,6 +16,7 @@ Tests for the MAVLink **command protocol** — `COMMAND_INT`/`COMMAND_LONG` sent
 | `nav_vtol_land/test_command.py`, `test_flight.py` | NAV_VTOL_LAND (85) via COMMAND_INT — ACK tests + Tier 2. UNSUPPORTED as a command on PX4 (mission-only). See `nav_vtol_land/README.md` |
 | `do_set_mission_current/test_command.py` | DO_SET_MISSION_CURRENT (224) via COMMAND_LONG — ACK tests |
 | `do_set_mission_current/test_flight.py` | DO_SET_MISSION_CURRENT — Tier 2: does param2 reset a `DO_JUMP` counter / make a completed mission restartable? See `do_set_mission_current/README.md` |
+| `mission_start/test_command.py`, `test_flight.py` | MISSION_START (300) via COMMAND_INT — ACK tests with and without a mission loaded (`Tier1CommandTestBase`) + Tier 2: does the mission start; First/Last Item honoured? PX4 honours First Item, ignores Last Item. See `mission_start/README.md` |
 | `external_wind_estimate/test_command.py` | EXTERNAL_WIND_ESTIMATE (43004, development.xml) — mandatory common tests + per-parameter tests, both message types. See `external_wind_estimate/README.md` |
 | `external_wind_estimate/test_flight.py` | EXTERNAL_WIND_ESTIMATE — Tier 2 ground-vs-air `WIND_COV` observation |
 

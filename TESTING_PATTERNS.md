@@ -30,7 +30,7 @@ one stays a blunt status table ("where is it actually adopted yet").
 `do_reposition`, `do_set_mission_current`, `do_set_global_origin` (Tier 1
 only — no Tier 2 flight semantics), `external_wind_estimate`,
 `baseline_takeoff` (bespoke, predates the shared Tier 1 base),
-`do_set_actuator`.
+`do_set_actuator`, `mission_start`.
 
 **`nav_vtol_takeoff`** (added 2026-09-17/18) is, like `do_set_actuator`, not
 given its own column below — built on `Tier1CommandTestBase` from day one,
@@ -65,6 +65,18 @@ A/B against a PX4 PR build as the proof the yaw check discriminates (FAIL on
 the container build, PASS on PR #28764). `command/nav_land`'s older
 `--vehicle-type`-gated comprehensive tests are kept but superseded for
 verdicts. See `tests/mission/nav_land/CLAUDE.md`.
+
+**`command/mission_start`** (added 2026-10-22) is not given a column: built
+with every current pattern — shared Tier 1 base, rule 9 naming, rule 4a
+baseline-gated ACK recording, rule 5 real assertions for the XML's
+`minValue=0`, rule 8 Tier 2 naming, rule 4a/4b/4c verdicts (two values per
+param, judged by the waypoint reached / where the vehicle settles), rule 10
+param coverage (COMPLETE on PX4 MC), rule 11 compat flag, pattern #8 restart
+cleanup. New here: a stateful command, so Tier 1 is split into a no-mission
+class and a mission-loaded class (`_mission_loaded_cls`), and on PX4 the Tier 1
+class itself flies (an accepted MISSION_START arms) — the class fixture waits
+for armable and lands the vehicle afterwards. See
+`tests/command/mission_start/README.md`.
 
 **`camera_target_id`** (mission, added 2026-10-01) covers eleven commands in
 one directory: one `Tier1MissionTestBase` class per command, generated from a

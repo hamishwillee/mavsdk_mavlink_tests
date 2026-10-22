@@ -97,6 +97,9 @@ pytest tests/mission/nav_vtol_takeoff/ tests/command/nav_vtol_takeoff/ -v
 # NAV_LAND and NAV_VTOL_LAND — mission item and command, Tier 1 + Tier 2 (see tests/mission/nav_land/README.md; PX4's SIH container build: SETUP.md)
 pytest tests/mission/nav_land/ tests/mission/nav_vtol_land/ tests/command/nav_land/ tests/command/nav_vtol_land/ -v
 
+# MISSION_START command — Tier 1 + Tier 2 (see tests/command/mission_start/README.md; on PX4 Tier 1 flies too)
+pytest tests/command/mission_start/ -v
+
 # Camera commands' target camera ID in missions (Tier 1 + Tier 2; see tests/mission/camera_target_id/README.md)
 pytest tests/mission/camera_target_id/ -v
 
@@ -209,6 +212,7 @@ Results below are from the current test suite run against each stack.
 | Frame support — geofence | FAIL for frames 3 and 6 — PX4 stores all geofence items as GLOBAL_INT, losing relative-alt |
 | NAV_TAKEOFF param acceptance | See MAV_CMD table below |
 | DO_REPOSITION mission-item acceptance | UNSUPPORTED (rejected outright, spec-aligned) — see MAV_CMD table below |
+| MISSION_START command (300) | Starts the mission and **arms** the vehicle; First Item (param1) honoured; **Last Item (param2) accepted but ignored** — FAIL (compat, multicopter; fixed-wing inconclusive — the SIH airplane stalls after takeoff on this build). See [`mission_start/README.md`](tests/command/mission_start/README.md) |
 
 **Accepted frames (flight and rally):** GLOBAL (0), GLOBAL_RELATIVE_ALT (3), GLOBAL_INT (5), GLOBAL_RELATIVE_ALT_INT (6); others REJECTED.
 MAV_FRAME_MISSION accepted for DO commands only.
