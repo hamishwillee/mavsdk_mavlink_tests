@@ -70,9 +70,12 @@ PX4 SIH multicopter::
         --drone-address=udp://:14540 --connection-timeout=60 \\
         --px4-sitl=~/px4_sitl_images/latest --px4-model=sihsim_quadx \\
         --vehicle-type=quadcopter --autopilot=px4 -v --log-cli-level=INFO
+
+    ... --px4-model=sihsim_airplane --vehicle-type=fixed_wing ...
 """
 
 import logging
+import math
 import os
 
 import pytest
@@ -93,7 +96,14 @@ from tests.command.conftest import (
     gcs_system_cls,  # noqa: F401 — class-scoped fixtures, see do_set_global_origin/test_command.py
     mock_stack_cls,  # noqa: F401
 )
-from tests.flight_helpers import _get_home_position, _offset_lat_lon, _rtl_and_land, _wait_armable
+from tests.flight_helpers import (
+    _get_heading,
+    _get_home_position,
+    _offset_lat_lon,
+    _rtl_and_land,
+    _wait_armable,
+    mission_landing_items,
+)
 from tests.mission.conftest import (  # noqa: F401
     clear_all_mission_types,
     ensure_mission_int_capability,
@@ -115,37 +125,52 @@ _ACCEPTED = (0, 5)  # MAV_RESULT_ACCEPTED, IN_PROGRESS
 # The mission — shared with test_flight.py
 # ---------------------------------------------------------------------------
 #
-# A takeoff at home, then four waypoints at the points of the compass around
-# home. Flying from home (or from one waypoint) to any waypoint never passes
-# near another one, so "which waypoint did the vehicle reach" identifies the
-# item the mission is on. Spacing suits a hovering vehicle; a fixed-wing would
-# need several hundred metres.
+# A takeoff, then waypoints A, B and C in a straight line along the
+# vehicle's heading, then the shared approach waypoint + NAV_LAND. Which item
+# the mission is on is read from MISSION_CURRENT / MISSION_ITEM_REACHED, not
+# from where the vehicle is — the layout only has to be flyable by any vehicle
+# type, which takes three things:
+#   - waypoints ahead, on the line the vehicle takes off along: no turns;
+#   - the first waypoint beyond a fixed-wing's climb-out. At 60 m, PX4 SIH
+#     fixed-wing flew over it while still climbing, turned back at 30 m, lost
+#     speed in the turn and hit the ground (2026-10-22, README.md § Results);
+#   - a landing, for PX4 fixed-wing/VTOL's MIS_TKO_LAND_REQ — without it PX4
+#     refuses the mission and DENIES every MISSION_START
+#     (tests/mission/CLAUDE.md § "Mission shape a stack will fly").
 
-MISSION_ALT_M = 15.0
-WAYPOINT_SPACING_M = float(os.environ.get("MISSION_START_WAYPOINT_SPACING_M", "40.0"))
-WAYPOINTS = (("N", 40.0, 0.0), ("E", 0.0, 40.0), ("S", -40.0, 0.0), ("W", 0.0, -40.0))  # name, north, east (scaled)
+MISSION_ALT_M = 30.0
+WAYPOINT_SPACING_M = float(os.environ.get("MISSION_START_WAYPOINT_SPACING_M", "200.0"))
+WAYPOINTS = ("A", "B", "C")  # 1, 2, 3 × WAYPOINT_SPACING_M from home along the bearing
 
 # Mock mode has no telemetry home; any plausible point will do (PX4 SIH default).
 _MOCK_HOME = (47.3977, 8.5456)
 
 
-def build_mission(home_lat_lon: tuple[float, float], home_item: MissionItem | None) -> tuple[list[MissionItem], dict]:
+def build_mission(home_lat_lon: tuple[float, float], home_item: MissionItem | None,
+                  bearing_deg: float = 0.0) -> tuple[list[MissionItem], dict]:
     """
-    [home slot (ArduPilot)], NAV_TAKEOFF at home, then NAV_WAYPOINTs N/E/S/W of home.
+    [home slot (ArduPilot)], NAV_TAKEOFF, NAV_WAYPOINTs A/B/C along
+    `bearing_deg` (pass the vehicle's heading), then an approach waypoint and
+    NAV_LAND further along the same line (mission_landing_items()).
 
-    Returns (items, layout): layout["seq"][name] is each item's seq ("T" for the
-    takeoff), layout["pos"][name] each waypoint's (lat, lon).
+    Returns (items, layout): layout["seq"][name] is each item's seq — "T" for
+    the takeoff, "A"/"B"/"C", "APPROACH" and "LAND".
     """
     lat0, lon0 = home_lat_lon
-    scale = WAYPOINT_SPACING_M / 40.0
-    body = [("T", 22, lat0, lon0)]  # MAV_CMD_NAV_TAKEOFF
-    for name, north, east in WAYPOINTS:
-        lat, lon = _offset_lat_lon(lat0, lon0, north * scale, east * scale)
-        body.append((name, 16, lat, lon))  # MAV_CMD_NAV_WAYPOINT
+    b = math.radians(bearing_deg)
+
+    def along(d: float) -> tuple[float, float]:
+        return _offset_lat_lon(lat0, lon0, d * math.cos(b), d * math.sin(b))
+
+    # The takeoff's position is ahead on the line too: PX4 fixed-wing climbs out
+    # towards it, and with it at home turned back through ~200° during the climb.
+    body = [("T", 22, *along(WAYPOINT_SPACING_M / 2))]  # MAV_CMD_NAV_TAKEOFF
+    for i, name in enumerate(WAYPOINTS, start=1):
+        body.append((name, 16, *along(i * WAYPOINT_SPACING_M)))  # MAV_CMD_NAV_WAYPOINT
     items: list[MissionItem] = []
     if home_item is not None:
         items.append(home_item)
-    layout: dict = {"seq": {}, "pos": {}}
+    layout: dict = {"seq": {}}
     for i, (name, command, lat, lon) in enumerate(body):
         seq = len(items)
         items.append(MissionItem(
@@ -154,8 +179,11 @@ def build_mission(home_lat_lon: tuple[float, float], home_item: MissionItem | No
             x=int(lat * 1e7), y=int(lon * 1e7), z=MISSION_ALT_M, mission_type=0,
         ))
         layout["seq"][name] = seq
-        if command == 16:
-            layout["pos"][name] = (lat, lon)
+    last = items[-1]
+    landing = mission_landing_items(items, anchor_lat_lon_int=(last.x, last.y), bearing_deg=bearing_deg)
+    for name, item in zip(("APPROACH", "LAND"), landing):
+        layout["seq"][name] = item.seq
+        items.append(item)
     return items, layout
 
 
@@ -222,9 +250,10 @@ async def _mission_loaded_cls(gcs_system_cls, mock_stack_cls, home_item_for_miss
     if real:
         home = await _get_home_position(system)
         home_lat_lon = (home.latitude_deg, home.longitude_deg)
+        bearing = await _get_heading(system)
     else:
-        home_lat_lon = _MOCK_HOME
-    items, layout = build_mission(home_lat_lon, home_item_for_mission)
+        home_lat_lon, bearing = _MOCK_HOME, 0.0
+    items, layout = build_mission(home_lat_lon, home_item_for_mission, bearing)
     await clear_all_mission_types(system)
     await ensure_mission_int_capability(system)  # else upload_mission() can fail INT_MESSAGES_NOT_SUPPORTED
     await system.mission_raw.upload_mission(items)
@@ -312,7 +341,7 @@ class TestMissionStartCommand(Tier1CommandTestBase):
         it isn't NACKed — whether the mission really starts there is
         test_flight.py's test_mission_start_compat_first_item_honoured.
         """
-        k = self._seq("E")
+        k = self._seq("B")
         result = await self._probe_after_baseline(gcs_system_cls, mock_stack_cls, param1=float(k))
         if result is not None:
             report.record_nonsentinel_ack("command", _CMD_NAME, "1_First Item", nacked=result not in _ACCEPTED)
@@ -325,7 +354,7 @@ class TestMissionStartCommand(Tier1CommandTestBase):
         Whether the mission really ends there is test_flight.py's
         test_mission_start_compat_last_item_honoured.
         """
-        j = self._seq("E")
+        j = self._seq("B")
         result = await self._probe_after_baseline(gcs_system_cls, mock_stack_cls, param2=float(j))
         if result is not None:
             report.record_nonsentinel_ack("command", _CMD_NAME, "2_Last Item", nacked=result not in _ACCEPTED)
@@ -393,6 +422,6 @@ class TestMissionStartCommand(Tier1CommandTestBase):
         """
         Characterisation: param2 < param1 (last item before the first) — the XML doesn't say. Result recorded.
         """
-        p1, p2 = self._seq("S"), self._seq("N")
+        p1, p2 = self._seq("C"), self._seq("A")
         result = await self._probe_after_baseline(gcs_system_cls, mock_stack_cls, param1=float(p1), param2=float(p2))
         _record(type(self), request, "PASS", f"Observational: param1 = {p1}, param2 = {p2} (last before first)", result)
