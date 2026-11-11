@@ -77,6 +77,8 @@ Every result matches this. Not exercised here:
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2673](https://github.com/mavlink/mavlink/pull/2673) (draft): items 1–3 below.
+
 The stacks are compatible. Both send the same quaternion convention: it matches each stack's own ATTITUDE, and on ArduPlane/QuadPlane at a 270° heading. Both send body-frame gyro rates, and `[0,0,0,0]` whenever no offset applies. A consumer needs no autopilot-specific code. Suggested XML changes, all clarifications of what both stacks already do:
 
 1. **`repr_offset_q`: say that `[0,0,0,0]` also means "no offset".** PX4 supports the field but sends `[0,0,0,0]`, not the XML's `[1,0,0,0]`, whenever no offset applies; ArduPilot always sends `[0,0,0,0]`.

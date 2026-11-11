@@ -13,7 +13,7 @@ Detailed notes for each test subtree live in their own CLAUDE.md files:
 - `tests/mission/condition_gate/CLAUDE.md` — CONDITION_GATE (`<wip/>`, needs the raw mavlink_direct transport); PX4 param-drop bug; a real PX4 mask fix that needed a SITL rebuild to take effect; a raw-transport bug found against ArduCopter's deprecated MISSION_REQUEST
 - `tests/mission/do_set_actuator/CLAUDE.md` / `tests/command/do_set_actuator/CLAUDE.md` — DO_SET_ACTUATOR, built to verify PX4 PR #28723's actuator-scaling fix; requires MAV_FRAME_MISSION as a mission item (unrelated PX4 finding); PWM-output Tier 2 observability mechanism; a stale-binary false-positive hit and resolved mid-verification
 - `tests/command/CLAUDE.md` — command protocol, MAV_RESULT values, per-stack command notes
-- `tests/messages_telemetry/CLAUDE.md` — emitted (telemetry) messages: what a message test asks (emission, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE, field values), the `"message"` report protocol and its mavlink-compat-data message JSON, a MAVSDK-Python 4.0.6 unsubscribe segfault; `system_time/README.md` has SYSTEM_TIME's per-stack results, source reading and definition review
+- `tests/messages_telemetry/CLAUDE.md` — emitted (telemetry) messages: what a message test asks (emission, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE, field values), the `"message"` report protocol and its mavlink-compat-data message JSON, a MAVSDK-Python 4.0.6 unsubscribe segfault; each message directory's `README.md` has its per-stack results, source reading and definition review (16 messages so far)
 
 ## General testing philosophy for MAV_CMD support
 
@@ -161,6 +161,11 @@ tests/messages_telemetry/  Emitted-message tests (no flying, every vehicle type)
   emission.py            Emission: the five generic emission tests + shared field window/checks, reused by every message
   system_time/           SYSTEM_TIME (test_system_time.py, README.md)
   attitude_quaternion/   ATTITUDE_QUATERNION (test_attitude_quaternion.py, README.md)
+  local_position_ned/, home_position/, gps_global_origin/, extended_sys_state/, flight_information/, message_interval/
+                         one message each (test_<msg>.py, README.md)
+  scaled_imu/, scaled_pressure/, gps_raw_int/
+                         message families (SCALED_IMU/2/3, SCALED_PRESSURE/2/3, GPS_RAW_INT + GPS2_RAW): one test module per
+                           message, a shared *_checks.py, one README.md
 tests/command/           Command protocol tests — see tests/command/CLAUDE.md
   conftest.py            send/receive helpers (probe_command_int/long), class-scoped fixtures,
                            shared Tier1CommandTestBase / CommandSpec (ParamSpec now lives in tests/param_spec.py)

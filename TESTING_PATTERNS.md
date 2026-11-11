@@ -107,7 +107,16 @@ Not given columns in the MAV_CMD tables: a message test has no params or Tier sp
 | (shared) | `emission.py` | ✓ generic emission tests + field window, used by every message below |
 | SYSTEM_TIME | `system_time/` | ✓ 11 tests; run on PX4 MC/FW/VTOL (SIH) and ArduCopter/Plane/QuadPlane/Rover, 2026-11-11 |
 | ATTITUDE_QUATERNION | `attitude_quaternion/` | ✓ 10 tests; run on the same seven vehicles plus PX4 `sihsim_xvert` (tailsitter), 2026-11-11. Pending: a tailsitter fixed-wing flight for `repr_offset_q` |
-| Rest of the audit's "ready to move" set (LOCAL_POSITION_NED, EXTENDED_SYS_STATE, HOME_POSITION, GPS_GLOBAL_ORIGIN, FLIGHT_INFORMATION, SCALED_IMU/2/3, SCALED_PRESSURE/2/3, GPS_RAW_INT, GPS2_RAW, MESSAGE_INTERVAL) | — | pending |
+| LOCAL_POSITION_NED | `local_position_ned/` | ✓ 8 tests; run on all eight vehicles, 2026-11-12. Pending: a moving-vehicle check for the axes (both SITLs sit at their origin) |
+| HOME_POSITION | `home_position/` | ✓ 10 tests, 2026-11-12 |
+| GPS_GLOBAL_ORIGIN | `gps_global_origin/` | ✓ 8 tests, 2026-11-12 |
+| EXTENDED_SYS_STATE | `extended_sys_state/` | ✓ 7 tests, 2026-11-12 |
+| FLIGHT_INFORMATION | `flight_information/` | ✓ 9 tests (arms once, no takeoff), 2026-11-12. Pending: takeoff/landing times need a flight |
+| SCALED_IMU, SCALED_IMU2, SCALED_IMU3 | `scaled_imu/` (shared `imu_checks.py`) | ✓ 10 tests each, 2026-11-12 |
+| SCALED_PRESSURE, SCALED_PRESSURE2, SCALED_PRESSURE3 | `scaled_pressure/` (shared `pressure_checks.py`) | ✓ 9 tests each, 2026-11-12 |
+| GPS_RAW_INT, GPS2_RAW | `gps_raw_int/` (shared `gps_checks.py`) | ✓ 9 / 10 tests, 2026-11-12; GPS2_RAW adds a second simulated GPS (ArduPilot only: the PX4 image lacks the parameter) |
+| MESSAGE_INTERVAL | `message_interval/` | ✓ 6 tests, 2026-11-12 |
+| Rest of the audit's "ready to move" set (SETUP_SIGNING, FILE_TRANSFER_PROTOCOL) | — | pending (protocol messages; likely belong with their services) |
 
 ## XML-context gating (cross-cutting, 2026-09-21)
 

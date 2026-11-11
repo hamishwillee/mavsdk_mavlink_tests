@@ -26,4 +26,39 @@ About 55 s per vehicle. Nothing flies.
 
 Field verdicts: an UNDEFINED vtol_state from a non-VTOL is right, but is also what a stack that never fills the field sends, so it's recorded untestable; only a VTOL state shows the field is supported. An always-UNDEFINED landed_state is recorded not supported.
 
-<!-- RESULTS -->
+## Results (2026-11-12)
+
+PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.8.0-dev SITL.
+
+| | PX4 MC / FW | PX4 VTOL / tailsitter | ArduCopter | ArduPlane | QuadPlane | Rover |
+|---|---|---|---|---|---|---|
+| HEARTBEAT type | 2 / 1 | 22 (VTOL_FIXEDROTOR) / 19 (VTOL_TAILSITTER_DUOROTOR) | 2 (quadrotor) | 1 | **1 (fixed-wing)** | 10 |
+| Unrequested | 4.9 Hz (`onboard`: 5 Hz) | 4.9 Hz | **not sent** | not sent | not sent | not sent |
+| SET_MESSAGE_INTERVAL 2/10 Hz, −1, 0 | honoured | honoured | honoured | honoured | honoured | honoured |
+| REQUEST_MESSAGE | one, ~57 ms | one | one, ~56 ms | one | one | one |
+| `landed_state` (disarmed) | ON_GROUND | ON_GROUND | ON_GROUND | ON_GROUND | ON_GROUND | **UNDEFINED** |
+| `vtol_state` | UNDEFINED | MC | **MC — compatibility error** | UNDEFINED | **FW** | UNDEFINED |
+
+On ArduPilot the harness requests EXTENDED_SYS_STATE at 2 Hz; with that undone (`SET_MESSAGE_INTERVAL 0`) it isn't sent.
+
+**ArduCopter sends `vtol_state` MC** for a quadrotor. A multirotor can't be "in VTOL configuration", and the XML says UNDEFINED then; a consumer reading MC as "VTOL in multicopter mode" would treat every ArduCopter as a VTOL.
+
+**ArduPilot QuadPlane reports HEARTBEAT type FIXED_WING** (`Q_MAV_TYPE` 0) and sends a VTOL state (FW on the ground in its default mode). That's right for EXTENDED_SYS_STATE, but means a consumer can't tell a QuadPlane is a VTOL from HEARTBEAT; vtol_state is the only sign. QGC reads vtol_state only for vehicles whose type is a VTOL (`Vehicle.cc:1065-1090`), so it ignores QuadPlane's.
+
+## How the stacks implement it (source, 2026-11-12)
+
+PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in upstream main `e192036345`, 2026-11-11; line numbers are at `36cedabb02`). ArduPilot `ce9c2d01a4`.
+
+| | PX4 (`streams/EXTENDED_SYS_STATE.hpp`) | ArduPilot (`GCS_Common.cpp:6063-6066`) |
+|---|---|---|
+| When sent | normal 1 Hz, onboard 5 Hz, config 2, osd 1, onboard-low-bandwidth 1, low-bandwidth 0.5, minimal 0.1 | in no stream group: only by interval or request (QGC requests it at 1 Hz, `APMFirmwarePlugin.cc:440-442`) |
+| vtol_state | UNDEFINED unless `is_vtol` (:61); MC/FW/transitions from `vehicle_status` (:80-93) | Copter: **always MC** (`ArduCopter/GCS_MAVLink_Copter.h:50`). Plane without quadplane: UNDEFINED. QuadPlane: `quadplane.cpp:4659-4683`; tailsitter `tailsitter.cpp:1041-1058` |
+| landed_state | from the land detector; **ON_GROUND before it first publishes** (:62), so never UNDEFINED. Rover: `!armed` (`RoverLandDetector.cpp:80`) | Copter from `land_complete`; Plane from `is_flying()`; **Rover: UNDEFINED** (no override of `GCS.h:521-522`) |
+
+Every result matches this.
+
+## Definition review
+
+Compatible except for ArduCopter's vtol_state, which is an ArduPilot bug against a clear definition (report it: `GCS_MAVLink_Copter.h:50` should return UNDEFINED). No XML change needed; the enums need to move with the message (MAV_VTOL_STATE, MAV_LANDED_STATE), as the audit says.
+
+Not proposed: PX4's ON_GROUND before its land detector is ready is a plausible default for a vehicle that boots on the ground, and a consumer can't be misled by it at boot; ArduPilot Rover's UNDEFINED is allowed ("if landed state is unknown").
