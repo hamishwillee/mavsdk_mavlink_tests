@@ -1356,6 +1356,12 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         return
     terminalreporter.section("Param coverage gaps")
     for (protocol, cmd_name), params in sorted(gaps.items()):
+        if protocol == report.MESSAGE_PROTOCOL:
+            terminalreporter.write_line(
+                f"message {cmd_name}: no verdict for field(s) {', '.join(params)} "
+                "— needs a field test or a recorded untestable reason"
+            )
+            continue
         terminalreporter.write_line(
             f"{protocol} MAV_CMD_{cmd_name}: no verdict for {', '.join(params)} "
             "— needs an ACK result, an execution test, or a recorded untestable reason"

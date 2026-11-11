@@ -13,6 +13,7 @@ Detailed notes for each test subtree live in their own CLAUDE.md files:
 - `tests/mission/condition_gate/CLAUDE.md` — CONDITION_GATE (`<wip/>`, needs the raw mavlink_direct transport); PX4 param-drop bug; a real PX4 mask fix that needed a SITL rebuild to take effect; a raw-transport bug found against ArduCopter's deprecated MISSION_REQUEST
 - `tests/mission/do_set_actuator/CLAUDE.md` / `tests/command/do_set_actuator/CLAUDE.md` — DO_SET_ACTUATOR, built to verify PX4 PR #28723's actuator-scaling fix; requires MAV_FRAME_MISSION as a mission item (unrelated PX4 finding); PWM-output Tier 2 observability mechanism; a stale-binary false-positive hit and resolved mid-verification
 - `tests/command/CLAUDE.md` — command protocol, MAV_RESULT values, per-stack command notes
+- `tests/messages_telemetry/CLAUDE.md` — emitted (telemetry) messages: what a message test asks (emission, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE, field values), the `"message"` report protocol and its mavlink-compat-data message JSON, a MAVSDK-Python 4.0.6 unsubscribe segfault; `system_time/README.md` has SYSTEM_TIME's per-stack results, source reading and definition review
 
 ## General testing philosophy for MAV_CMD support
 
@@ -155,6 +156,9 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   condition_gate/        CONDITION_GATE mission-protocol tests (raw transport; Tier 1 + Tier 2 flight) — see condition_gate/CLAUDE.md
   do_set_actuator/       DO_SET_ACTUATOR mission-protocol tests (Tier1MissionTestBase; requires MAV_FRAME_MISSION) — see do_set_actuator/CLAUDE.md
   plans/                 JSON plan files (MISSION_ITEM_INT fields)
+tests/messages_telemetry/  Emitted-message tests (no flying, every vehicle type) — see tests/messages_telemetry/CLAUDE.md
+  conftest.py            MessageSampler, set_message_interval/request_message/get_message_interval, "message" report fixture
+  system_time/           SYSTEM_TIME (test_system_time.py, README.md)
 tests/command/           Command protocol tests — see tests/command/CLAUDE.md
   conftest.py            send/receive helpers (probe_command_int/long), class-scoped fixtures,
                            shared Tier1CommandTestBase / CommandSpec (ParamSpec now lives in tests/param_spec.py)
@@ -232,6 +236,7 @@ The suite runs on `mavsdk` 4.x, the in-process C++ binding (the gRPC API it was 
 - **Behaviour differences to know**: `str()` of a v4 enum is its int value — use `.name` (e.g. flight mode `"TAKEOFF"`); errors expose `.result` directly (was `._result.result`); `mission_raw_server.incoming_mission()` yields `(result, plan)` tuples, which retired the old raw-gRPC `collect_incoming_mission()` workaround; v4 subscriptions capture the running loop when they start and cancel normally, so a session-lifetime endpoint serves every test's event loop.
 - **Native log output** goes to `logs/mavsdk_<timestamp>.log` (`route_mavsdk_logs()`), never pytest's output.
 - **Known open MAVSDK 4 flake — empty mission download after an ACCEPTED upload.** Against PX4 v1.17 gz VTOL, about 1 full `tests/mission/nav_takeoff/test_protocol.py` run in 3 had one random test's `download_mission()` return `[]` right after an accepted upload. The same file on the same build ran 3/3 clean on MAVSDK 3 (pre-migration commit, `mavsdk` 3.17.4), and neither a 20-cycle upload/download/clear loop nor one with rejected-frame uploads in between reproduced it — so it's a MAVSDK 4 regression whose trigger in the test sequence isn't isolated yet. Mitigation: `_upload_probe()` retries the round trip once with a WARNING (a second empty download still fails, as a plain FAIL — it's a transport problem, not a compatibility finding). Verified 4/4 clean runs with the retry (it fired once). Root-causing it (and deciding whether to report it upstream) is still to do.
+- **MAVSDK-Python 4.0.6: unsubscribing can segfault the process.** Every binding's `unsubscribe_*()` drops the subscription's ctypes callback thunk before the native unsubscribe, so a callback already running executes freed memory (found 2026-11-11 cancelling a 100 Hz ATTITUDE `mavlink_direct` subscription on PX4 SIH). `tests/mavsdk_compat.py` makes every plugin's `_subscriptions` keep popped entries alive (`_KeepAliveDict`). Not yet reported upstream.
 - **Never create a second native plugin instance on the same System/component.** v4 returns a *new* Python wrapper object from every `first_autopilot()`/`get_systems()`/`server_component()` call, so anything keyed on the wrapper's identity silently makes a fresh native plugin each time. Two `MissionRawServer` instances on one component both handle a transfer — one completes it (the GCS sees success) while the one the test subscribed to reports `TIMEOUT`; the GCS side showed spurious "Int messages are not supported". Found 2026-09-29 as order-dependent mock failures (any two mission transfers in one session); fixed by `Endpoint` caching its `SystemShim` so plugins are created once per connection.
 
 ## Running modes

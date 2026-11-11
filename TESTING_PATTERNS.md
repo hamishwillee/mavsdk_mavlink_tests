@@ -92,6 +92,21 @@ via a temporary `git worktree`, confirming the tests actually discriminate
 the fix — 5/33 tests correctly fail, with the honest caveat that the
 simplest happy-path test alone does not).
 
+## Emitted messages (`tests/messages_telemetry/`, 2026-11-11)
+
+Not given columns in the MAV_CMD tables: a message test has no params or Tier split. The conventions it follows from day one are in `tests/messages_telemetry/CLAUDE.md`:
+- rule 3/4a/4c verdicts (two rates; NACK = PASS; accepted-but-ignored = compatibility error);
+- rule 7 shared windows;
+- rule 8 `compat`/`info`/`obs` naming;
+- rule 10 coverage, as **Field coverage**;
+- rule 11 (no xfail);
+- no `--vehicle-type` gating.
+
+| Message | Directory | Status |
+|---|---|---|
+| SYSTEM_TIME | `system_time/` | ✓ 11 tests; run on PX4 MC/FW/VTOL (SIH) and ArduCopter/Plane/QuadPlane/Rover, 2026-11-11 |
+| Rest of the audit's "ready to move" set (ATTITUDE_QUATERNION, LOCAL_POSITION_NED, EXTENDED_SYS_STATE, HOME_POSITION, GPS_GLOBAL_ORIGIN, FLIGHT_INFORMATION, SCALED_IMU/2/3, SCALED_PRESSURE/2/3, GPS_RAW_INT, GPS2_RAW, MESSAGE_INTERVAL) | — | pending |
+
 ## XML-context gating (cross-cutting, 2026-09-21)
 
 Not a per-directory column: `require_context()` (`tests/mavlink_xml.py`) runs in `Tier1MissionTestBase`/`Tier1CommandTestBase.__init_subclass__`, so **only directories on the shared bases are gated at collection** (`mission/nav_takeoff`, `condition_gate`, `do_set_actuator`; `command/nav_takeoff`, `nav_vtol_takeoff`, `do_set_actuator`, `external_wind_estimate`). Bespoke Tier 1 files (`command/nav_land`, `do_reposition`, `do_set_mission_current`, `do_set_global_origin`, `baseline_takeoff`) are only checked by `scripts/sync_mavlink_xml.py`, and only if they expose a module-level `SPEC`. See root `CLAUDE.md` § Keeping tests in sync with the MAVLink XML.
