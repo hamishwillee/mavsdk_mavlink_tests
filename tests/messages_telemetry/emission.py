@@ -39,12 +39,14 @@ import pytest
 from tests import report
 from tests.messages_telemetry.conftest import (
     MAV_RESULT_ACCEPTED,
+    MSG_IDS,
     RATE_SETTLE_S,
     RATE_TOLERANCE,
     MessageSampler,
     Sample,
     compat_verdict,
     get_message_interval,
+    harness_requested_hz,
     interval_stats,
     measure_rate,
     rate_hz,
@@ -65,10 +67,15 @@ log = logging.getLogger(__name__)
 DEFAULT_WINDOW_S = 10.0     # unrequested listen: long enough for a 0.2 Hz stream to show twice
 RATE_WINDOW_S = 5.0         # per requested rate
 RATES_HZ = (2.0, 10.0)      # rule 4c: two values, far apart
-SILENCE_WINDOW_S = 3.0      # "disabled" means nothing for this long
+SILENCE_WINDOW_S = 6.0      # "disabled" means nothing (or only event-driven copies) for this long
+REPLY_WINDOW_S = 0.5        # a REQUEST_MESSAGE reply arrives within this (54-89 ms seen)
+EVENT_MAX_HZ = 0.3          # copies slower than this after -1 are event-driven, not the stream
 SAMPLE_RATE_HZ = 10.0       # the shared field-analysis window
 SAMPLE_WINDOW_S = 10.0
+WINDOW_REQUESTS = 3         # REQUEST_MESSAGEs when the window gets too few of the message
+EXTRA_RATE_HZ = 5.0         # window_extra messages, requested for the window
 BOOT_RATE_TOLERANCE = 0.05  # time_boot_ms advance vs host time
+CAPPED_SPEEDUP = 1.5        # a faster request "capped at the data rate" still sped the stream up this much
 
 
 def autopilot_only(samples: list[Sample], target: tuple[int, int]) -> list[Sample]:
@@ -100,6 +107,7 @@ class Emission:
         self._baseline: Baseline | None = None
         self._window: Window | None = None
         self.ever_received = False
+        self.harness_requested = 0.0  # Hz the harness requests this message at (ArduPilot only), else 0
 
     # -- shared state ------------------------------------------------------
 
@@ -114,6 +122,13 @@ class Emission:
         """The unrequested rate — measured once, before any test changes the interval."""
         if self._baseline is None:
             target = await vehicle_target(system)
+            self.harness_requested = await harness_requested_hz(system, self.msg_id)
+            if self.harness_requested:
+                # The harness asked ArduPilot for this message at the start of the test
+                # (message_watcher.request_ardupilot_streams), so put it back to the
+                # stack's own default before measuring that.
+                await self.restore_default(system)
+                await asyncio.sleep(RATE_SETTLE_S)
             _, samples = await measure_rate(system, self.name, DEFAULT_WINDOW_S)
             mine = autopilot_only(samples, target)
             self._baseline = Baseline(rate_hz(mine, DEFAULT_WINDOW_S), mine, senders(samples))
@@ -134,17 +149,38 @@ class Emission:
         baseline = await self.baseline(system)
         target = await vehicle_target(system)
         result = await set_message_interval(system, self.msg_id, 1e6 / SAMPLE_RATE_HZ)
+        # The cross-check messages may not stream by default either (ArduPilot sends
+        # GPS_GLOBAL_ORIGIN only on request, LOCAL_POSITION_NED only if asked for).
+        for extra in self.window_extra:
+            await set_message_interval(system, MSG_IDS[extra], 1e6 / EXTRA_RATE_HZ)
         try:
             await asyncio.sleep(RATE_SETTLE_S)
             async with MessageSampler(system, self.name, *self.window_extra) as s:
                 await asyncio.sleep(SAMPLE_WINDOW_S)
+                # A message sent only on change (PX4's GPS_GLOBAL_ORIGIN) or refusing the
+                # rate: ask for copies instead, so the field tests have something to read.
+                requested = 0
+                if len(autopilot_only(s.samples(self.name), target)) < 3:
+                    for _ in range(WINDOW_REQUESTS):
+                        await request_message(system, self.msg_id)
+                        requested += 1
+                        await asyncio.sleep(0.7)
+                missing = [e for e in self.window_extra if not autopilot_only(s.samples(e), target)]
+                for extra in missing:  # rate request refused or ignored: ask for one copy
+                    await request_message(system, MSG_IDS[extra])
+                if missing:
+                    await asyncio.sleep(1.5)
         finally:
             await self.restore_default(system)
+            for extra in self.window_extra:
+                await set_message_interval(system, MSG_IDS[extra], 0)
         mine = autopilot_only(s.samples(self.name), target)
         self._note(mine)
         how = (f"{SAMPLE_RATE_HZ:.0f} Hz requested, {len(mine)} msgs in {SAMPLE_WINDOW_S:.0f}s"
                if result == MAV_RESULT_ACCEPTED else
                f"rate request {result_name(result)}, default stream: {len(mine)} msgs in {SAMPLE_WINDOW_S:.0f}s")
+        if requested:
+            how += f" incl. {requested} REQUEST_MESSAGEs (too few streamed)"
         na = None
         if len(mine) < 3:
             na = f"too few {self.name} messages to analyse ({how}; default {baseline.rate_hz:.2f} Hz)"
@@ -171,8 +207,10 @@ class Emission:
             mi = f"MESSAGE_INTERVAL {interval_us} ({'disabled' if interval_us == -1 else 'not available'})"
         if agrees is False:
             log.warning("%s: measured default %.2f Hz but %s", self.name, b.rate_hz, mi)
+        harness = (f" (after SET_MESSAGE_INTERVAL 0: the harness requests it at {self.harness_requested:g} Hz)"
+                   if self.harness_requested else "")
         record_detail(request, (
-            f"{b.rate_hz:.2f} Hz unrequested (median gap {interval_stats(b.samples)}), senders {b.all_senders}; "
+            f"{b.rate_hz:.2f} Hz unrequested{harness} (median gap {interval_stats(b.samples)}), senders {b.all_senders}; "
             f"{mi}{'' if agrees is None else (' — agrees' if agrees else ' — DISAGREES with measured rate')}"
         ))
         if b.samples:
@@ -203,10 +241,20 @@ class Emission:
             await self.restore_default(system)
 
         nacked = [r for r in rows if r[2] is None]
-        ignored = [r for r in rows if r[2] is not None and not rate_matches(r[2], r[0])]
+        # A rate faster than the stack has data for (PX4 SIH's GPS is 8 Hz) can't be
+        # honoured, and the XML doesn't say what to do then. A higher request that
+        # still sped the stream up well beyond the lower one's rate is "capped at the
+        # data rate", not ignored.
+        measured = [r for r in rows if r[2] is not None]
+        capped = [r for r in measured if not rate_matches(r[2], r[0]) and r[2] < r[0]
+                  and any(o[0] < r[0] and rate_matches(o[2], o[0]) and r[2] >= CAPPED_SPEEDUP * o[2]
+                          for o in measured)]
+        ignored = [r for r in measured if not rate_matches(r[2], r[0]) and r not in capped]
         verdict = compat_verdict(nacked=len(nacked) == len(rows), ok=not ignored)
         if nacked and not ignored and len(nacked) < len(rows):
             verdict += f" ({', '.join(f'{r[0]:.0f} Hz {result_name(r[1])}' for r in nacked)})"
+        if capped and not ignored:
+            verdict += f" (capped: {', '.join(f'{r[0]:.0f} Hz gave {r[2]:.1f} Hz' for r in capped)})"
         record_verdict(request, "SET_MESSAGE_INTERVAL rate", verdict)
         detail = "; ".join(
             f"{hz:.0f} Hz: {result_name(res)}" + ("" if m is None else f", measured {m:.2f} Hz")
@@ -242,10 +290,15 @@ class Emission:
             n = len(autopilot_only(samples, target))
         finally:
             await self.restore_default(system)
-        verdict = compat_verdict(nacked=False, ok=n == 0)
-        record_verdict(request, "SET_MESSAGE_INTERVAL -1 (disable)", verdict)
-        record_detail(request, f"{verdict}: {before:.1f} Hz before, {n} msgs in {SILENCE_WINDOW_S:.0f}s after -1")
-        if n:
+        # A message also sent on an event (ArduPlane re-sets home every 5 s while
+        # disarmed, re-sending HOME_POSITION and GPS_GLOBAL_ORIGIN) can still arrive
+        # with its stream off. A trickle that slow is the event, not the stream.
+        event_only = 0 < n <= EVENT_MAX_HZ * SILENCE_WINDOW_S
+        verdict = compat_verdict(nacked=False, ok=n == 0 or event_only)
+        note = f" ({n} event-driven, at most {EVENT_MAX_HZ} Hz)" if event_only else ""
+        record_verdict(request, "SET_MESSAGE_INTERVAL -1 (disable)", verdict + note)
+        record_detail(request, f"{verdict}{note}: {before:.1f} Hz before, {n} msgs in {SILENCE_WINDOW_S:.0f}s after -1")
+        if n and not event_only:
             report.compat_fail(f"SET_MESSAGE_INTERVAL -1 accepted but {n} {self.name} still arrived "
                                f"in {SILENCE_WINDOW_S:.0f}s")
 
@@ -287,18 +340,29 @@ class Emission:
         b = await self.baseline(system)
         target = await vehicle_target(system)
         try:
-            if b.rate_hz > 0:
-                off = await set_message_interval(system, self.msg_id, -1)
-                _, samples = await measure_rate(system, self.name, 2.0, settle_s=RATE_SETTLE_S)
-                if autopilot_only(samples, target):
-                    pytest.skip(f"NA: can't stop the stream to isolate a one-shot reply (-1 {result_name(off)})")
-            async with MessageSampler(system, self.name) as s:
-                sent = time.monotonic()
-                result = await request_message(system, self.msg_id)
-                await asyncio.sleep(2.0)
-            replies = autopilot_only(s.samples(self.name), target)
+            # Always stop it first: even with no default stream, the harness may have
+            # requested it (ArduPilot), or an earlier test left it running.
+            off = await set_message_interval(system, self.msg_id, -1)
+            _, samples = await measure_rate(system, self.name, 2.0, settle_s=RATE_SETTLE_S)
+            if len(autopilot_only(samples, target)) >= 2:  # one may be an event-driven copy
+                pytest.skip(f"NA: can't stop the stream to isolate a one-shot reply (-1 {result_name(off)}, "
+                            f"default {b.rate_hz:.2f} Hz)")
+            trials = []  # (result, replies within REPLY_WINDOW_S, later arrivals)
+            for _ in range(2):
+                async with MessageSampler(system, self.name) as s:
+                    sent = time.monotonic()
+                    result = await request_message(system, self.msg_id)
+                    await asyncio.sleep(2.0)
+                got = autopilot_only(s.samples(self.name), target)
+                prompt = [r for r in got if r.host_mono - sent <= REPLY_WINDOW_S]
+                trials.append((result, prompt, len(got) - len(prompt), sent))
+                # A second copy can be a coincident event (ArduPlane re-sends home every
+                # 5 s): only a repeat of it counts.
+                if result != MAV_RESULT_ACCEPTED or len(prompt) <= 1:
+                    break
         finally:
             await self.restore_default(system)
+        result, replies, later, sent = trials[-1]
         self._note(replies)
         if result is None:
             pytest.fail(f"no COMMAND_ACK for REQUEST_MESSAGE({self.msg_id}) ({len(replies)} {self.name} arrived)")
@@ -306,14 +370,51 @@ class Emission:
         ok = len(replies) == 1
         verdict = compat_verdict(nacked=nacked, ok=ok)
         latency = f", {(replies[0].host_mono - sent) * 1000:.0f} ms after the request" if replies else ""
+        extra = ""
+        if len(trials) > 1:
+            extra += f"; first try got {len(trials[0][1])} (a coincident event?), retried"
+        if later:
+            extra += f"; {later} more later (unrequested)"
         record_verdict(request, "REQUEST_MESSAGE", verdict)
-        record_detail(request, f"{verdict}: {result_name(result)}, {len(replies)} message(s) in 2s{latency}")
+        record_detail(request, f"{verdict}: {result_name(result)}, {len(replies)} message(s) within "
+                               f"{REPLY_WINDOW_S}s{latency}{extra}")
         if self.ever_received:
             record_message_fact(request, supported=True)
         elif nacked or not replies:
             record_message_fact(request, supported=False, notes="Never sent, even on request")
         if not nacked and not ok:
             report.compat_fail(f"REQUEST_MESSAGE accepted but {len(replies)} {self.name} arrived (expected exactly one)")
+
+    def define_tests(self, namespace: dict, prefix: str) -> None:
+        """
+        Define the five emission tests in a message module, named
+        test_<prefix>_<category>_<rest> (root CLAUDE.md rule 8):
+
+            EMISSION.define_tests(globals(), "local_position_ned")
+        """
+        n = self.name
+        specs = [
+            ("obs_default_rate", self.default_rate,
+             "Characterise: unrequested rate and senders, and whether MESSAGE_INTERVAL agrees."),
+            ("compat_set_interval_honoured", self.set_interval_honoured,
+             "SET_MESSAGE_INTERVAL at 2 Hz and 10 Hz: NACKed, or the measured rate matches each."),
+            ("compat_set_interval_disable", self.set_interval_disable,
+             f"SET_MESSAGE_INTERVAL -1 (disable): NACKed, or no {n} for 3 s."),
+            ("compat_set_interval_default", self.set_interval_default,
+             "SET_MESSAGE_INTERVAL 0 (default) after a change: NACKed, or the rate returns to the unrequested one."),
+            ("compat_request_message", self.request_message,
+             f"REQUEST_MESSAGE({n}) with the stream off: NACKed, or exactly one message."),
+        ]
+        for suffix, method, doc in specs:
+            def make(m):
+                async def test(gcs_system, request):
+                    await m(gcs_system, request)
+                return test
+            fn = make(method)
+            fn.__name__ = fn.__qualname__ = f"test_{prefix}_{suffix}"
+            fn.__doc__ = doc
+            fn.__module__ = namespace["__name__"]
+            namespace[fn.__name__] = fn
 
     # -- shared field check --------------------------------------------------
 
@@ -329,9 +430,23 @@ class Emission:
         host_span_ms = (w.samples[-1].host_mono - w.samples[0].host_mono) * 1000
         ratio = (boot[-1] - boot[0]) / host_span_ms if host_span_ms else 0.0
         ok = backwards == 0 and boot[-1] > boot[0] and abs(ratio - 1) <= BOOT_RATE_TOLERANCE
+        clock = ""
+        if not ok and backwards == 0 and boot[-1] > boot[0]:
+            # PX4 SITL's boot clock is lockstep simulation time, which runs slow under
+            # load (×0.88 with four SITLs running). The field is still "time since boot"
+            # if it keeps time with the sender's other time_boot_ms.
+            for other, samples in w.others.items():
+                if len(samples) >= 3 and "time_boot_ms" in samples[0].fields:
+                    span = (samples[-1].host_mono - samples[0].host_mono) * 1000
+                    ref = (samples[-1].fields["time_boot_ms"] - samples[0].fields["time_boot_ms"]) / span if span else 0
+                    if ref and abs(ratio / ref - 1) <= BOOT_RATE_TOLERANCE:
+                        ok = True
+                        clock = (f"; the sender's boot clock itself runs ×{ref:.4f} of host (SITL lockstep), "
+                                 f"and this keeps time with {other}'s")
+                        break
         record_field_fact(request, field_name, supported=ok)
         detail = (f"{boot[0]}..{boot[-1]} ms over {host_span_ms / 1000:.1f}s host: rate ×{ratio:.4f}, "
-                  f"{backwards} backwards, {repeats} repeated ({w.how})")
+                  f"{backwards} backwards, {repeats} repeated ({w.how}){clock}")
         record_detail(request, detail)
         if not ok:
             report.compat_fail(f"{field_name} doesn't behave as time since boot — {detail}")

@@ -55,6 +55,7 @@ report.declare_params(report.MESSAGE_PROTOCOL, _MSG_NAME,
 pytestmark = pytest.mark.timeout(180)
 
 EMISSION = Emission(_MSG_NAME, _MSG_ID, window_extra=("ATTITUDE", "GLOBAL_POSITION_INT"))
+EMISSION.define_tests(globals(), "attitude_quaternion")  # the five emission tests
 
 NORM_TOLERANCE = 1e-3       # |q| = 1 ± this (float32 EKF output is normalised to ~1e-6)
 ANGLE_TOLERANCE_DEG = 1.0   # quaternion-derived Euler vs ATTITUDE, same estimate
@@ -95,35 +96,6 @@ def _nearest(samples, boot_ms: int):
 
 def _finite(values) -> bool:
     return all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
-
-
-# ---------------------------------------------------------------------------
-# A. Emission (generic: tests/messages_telemetry/emission.py)
-# ---------------------------------------------------------------------------
-
-async def test_attitude_quaternion_obs_default_rate(gcs_system, request):
-    """Characterise: unrequested rate and senders, and whether MESSAGE_INTERVAL agrees."""
-    await EMISSION.default_rate(gcs_system, request)
-
-
-async def test_attitude_quaternion_compat_set_interval_honoured(gcs_system, request):
-    """SET_MESSAGE_INTERVAL at 2 Hz and 10 Hz: NACKed, or the measured rate matches each."""
-    await EMISSION.set_interval_honoured(gcs_system, request)
-
-
-async def test_attitude_quaternion_compat_set_interval_disable(gcs_system, request):
-    """SET_MESSAGE_INTERVAL -1 (disable): NACKed, or no ATTITUDE_QUATERNION for 3 s."""
-    await EMISSION.set_interval_disable(gcs_system, request)
-
-
-async def test_attitude_quaternion_compat_set_interval_default(gcs_system, request):
-    """SET_MESSAGE_INTERVAL 0 (default) after a change: NACKed, or the rate returns to the unrequested one."""
-    await EMISSION.set_interval_default(gcs_system, request)
-
-
-async def test_attitude_quaternion_compat_request_message(gcs_system, request):
-    """REQUEST_MESSAGE(ATTITUDE_QUATERNION) with the stream off: NACKed, or exactly one message."""
-    await EMISSION.request_message(gcs_system, request)
 
 
 # ---------------------------------------------------------------------------

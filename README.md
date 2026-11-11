@@ -105,7 +105,7 @@ pytest tests/mission/camera_target_id/ -v
 pytest tests/mission/condition_gate/ -v --log-cli-level=INFO
 
 # Emitted messages (telemetry): emission, rate requests and field values — no flying, so run it on
-# every vehicle type (see tests/messages_telemetry/CLAUDE.md; SYSTEM_TIME: system_time/README.md)
+# every vehicle type (see tests/messages_telemetry/CLAUDE.md; each message's results: <message>/README.md)
 pytest tests/messages_telemetry/ -v --log-cli-level=INFO
 ```
 
@@ -184,10 +184,17 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
     └── messages_telemetry/
         ├── conftest.py            # Message sampler, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE helpers, per-message report
         ├── emission.py            # Generic emission tests (default rate, SET_MESSAGE_INTERVAL, REQUEST_MESSAGE) reused per message
-        ├── system_time/
-        │   └── test_system_time.py        # SYSTEM_TIME emission, rate requests and fields (11 tests, every vehicle type)
-        └── attitude_quaternion/
-            └── test_attitude_quaternion.py  # ATTITUDE_QUATERNION emission, quaternion/rate/offset fields (10 tests)
+        ├── system_time/                   # SYSTEM_TIME (11 tests, every vehicle type)
+        ├── attitude_quaternion/           # ATTITUDE_QUATERNION (10 tests)
+        ├── local_position_ned/            # LOCAL_POSITION_NED (8 tests)
+        ├── home_position/                 # HOME_POSITION (10 tests)
+        ├── gps_global_origin/             # GPS_GLOBAL_ORIGIN (8 tests)
+        ├── extended_sys_state/            # EXTENDED_SYS_STATE (7 tests)
+        ├── flight_information/            # FLIGHT_INFORMATION (9 tests; arms once)
+        ├── scaled_imu/                    # SCALED_IMU, SCALED_IMU2, SCALED_IMU3 (shared imu_checks.py)
+        ├── scaled_pressure/               # SCALED_PRESSURE, 2, 3 (shared pressure_checks.py)
+        ├── gps_raw_int/                   # GPS_RAW_INT, GPS2_RAW (shared gps_checks.py; GPS2 adds a simulated receiver)
+        └── message_interval/              # MESSAGE_INTERVAL replies (6 tests)
 ```
 
 ## Adding new tests
