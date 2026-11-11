@@ -43,6 +43,61 @@ from mavsdk.asyncio.plugins.telemetry import TelemetryAsync
 
 log = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# MAVSDK-Python 4.0.6 bug: unsubscribing can segfault
+# ---------------------------------------------------------------------------
+# Every binding's unsubscribe_*() (all 18 plugins with subscriptions) pops the
+# subscription's ctypes callback thunk out of `self._subscriptions` — dropping
+# the last Python reference to it — *before* calling the native unsubscribe,
+# which waits for a running callback to finish. A callback running at that
+# moment on MAVSDK's thread is then executing a freed thunk: "Fatal Python
+# error: Segmentation fault", one thread in c_callback and the main thread in
+# unsubscribe_message (2026-11-11, cancelling a 100 Hz ATTITUDE mavlink_direct
+# subscription on PX4 SIH; tests/messages_telemetry/). The bindings' own
+# destroy() avoids it by holding the thunks until the native calls return.
+# Fix: make each plugin's `_subscriptions` a dict whose pop() keeps the popped
+# entry alive for the rest of the process (a few hundred bytes per
+# subscription). Not yet reported upstream.
+_UNSUBSCRIBED: list = []
+
+
+class _KeepAliveDict(dict):
+    def pop(self, key, *default):
+        value = super().pop(key, *default)
+        if value is not None:
+            _UNSUBSCRIBED.append(value)
+        return value
+
+
+def _patch_unsubscribe_race() -> None:
+    import importlib
+    import pkgutil
+
+    import mavsdk.plugins as plugins
+
+    for info in pkgutil.iter_modules(plugins.__path__):
+        try:
+            module = importlib.import_module(f"mavsdk.plugins.{info.name}.{info.name}")
+        except Exception:  # a plugin this build doesn't ship — nothing to patch
+            continue
+        for cls in [v for v in vars(module).values() if isinstance(v, type) and v.__module__ == module.__name__]:
+            if getattr(cls, "_keepalive_patched", False) or not any(n.startswith("unsubscribe_") for n in vars(cls)):
+                continue
+            original = cls.__init__
+
+            def __init__(self, *args, __original=original, **kwargs):
+                __original(self, *args, **kwargs)
+                subs = getattr(self, "_subscriptions", None)
+                if type(subs) is dict:
+                    self._subscriptions = _KeepAliveDict(subs)
+
+            cls.__init__ = __init__
+            cls._keepalive_patched = True
+
+
+_patch_unsubscribe_race()
+
 # The GCS identity: MAVSDK's own GROUND_STATION configuration (sysid 245,
 # compid 190). It has to be a real ground-station config, not
 # create_manual(255, 1) like the gRPC-era harness used: with a compid-1

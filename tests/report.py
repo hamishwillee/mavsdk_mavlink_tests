@@ -4,6 +4,11 @@ Unified Tier 1 + Tier 2 reporting, shared by tests/mission/ and tests/command/.
 One report is identified by (protocol, cmd_name) — protocol is "mission" or
 "command", cmd_name is the MAV_CMD's bare name (e.g. "NAV_TAKEOFF"), matching
 the existing SPEC.name / _CMD_NAME convention both tiers already use.
+Protocol "message" (tests/messages_*/, added 2026-11-11) reuses the same
+machinery for an emitted message: cmd_name is the message name (a module's
+`_MSG_NAME`), test rows go in the first table, the "params" are the message's
+fields (declare_params() with bare field names), and the JSON is
+mavlink-compat-data's message shape (render_message_json_doc).
 Whichever tier(s) actually ran in this pytest session are the only ones that
 appear: run only test_protocol.py and the report is Tier-1-only; run both in
 one invocation (e.g. `pytest tests/mission/condition_gate/`) and the report
@@ -53,6 +58,8 @@ import pytest
 log = logging.getLogger(__name__)
 
 Key = tuple[str, str]  # (protocol, cmd_name)
+
+MESSAGE_PROTOCOL = "message"  # (protocol, name) key for an emitted message's report
 
 _UNSET = object()  # distinct from a real None ("not independently tested")
 
@@ -567,11 +574,11 @@ def render_json_doc(protocol: str, cmd_name: str, config) -> dict | None:
 NO_VERDICT = "NO VERDICT"
 
 
-def _param_verdict(key: str, fact: dict, cmd_supported) -> str:
+def _param_verdict(key: str, fact: dict, cmd_supported, parent: str = "command") -> str:
     if key.endswith("_Empty"):
         return "NOT APPLICABLE (Empty param)"
     if cmd_supported is False:
-        return "NOT APPLICABLE (command not supported)"
+        return f"NOT APPLICABLE ({parent} not supported)"
     supported = fact.get("supported")
     if supported is True:
         return "SUPPORTED"
@@ -601,6 +608,8 @@ def param_coverage(protocol: str, cmd_name: str) -> list[tuple[str, str]]:
     keys += [k for k in facts if k not in keys]
     command = view["command"] or {}
     cmd_supported = command.get("supported")
+    if protocol == MESSAGE_PROTOCOL:  # fields: keep the message's own field order
+        return [(k, _param_verdict(k, facts.get(k, {}), cmd_supported, "message")) for k in keys]
     ordered = sorted(keys, key=lambda k: (int(k.split("_", 1)[0]) if k.split("_", 1)[0].isdigit() else 99, k))
     return [(k, _param_verdict(k, facts.get(k, {}), cmd_supported)) for k in ordered]
 
@@ -625,10 +634,77 @@ def _render_coverage(protocol: str, cmd_name: str) -> list[str]:
         else f"INCOMPLETE — no verdict for {', '.join(missing)} (needs an ACK, execution test, or recorded untestable reason)"
     )
     width = max(len(k) for k, _ in cov)
-    return ["", "Param coverage", "=" * 100, status, "-" * 100] + [f"{k:<{width}}  {v}" for k, v in cov]
+    if protocol == MESSAGE_PROTOCOL:
+        status = status.replace("every param", "every field").replace(
+            "needs an ACK, execution test, or recorded untestable reason", "needs a field test or recorded untestable reason")
+        title = "Field coverage"
+    else:
+        title = "Param coverage"
+    return ["", title, "=" * 100, status, "-" * 100] + [f"{k:<{width}}  {v}" for k, v in cov]
+
+
+def render_message_json_doc(msg_name: str, config) -> dict | None:
+    """
+    This run's facts for an emitted message in mavlink-compat-data's message
+    shape (schema/message.schema.json): `{"compatibility": {<stack>:
+    {<variant>: statement}}, "fields": [{"name", "compatibility"}, ...]}` —
+    pasteable over the same keys of `messages/<NAME>.json` (`enumRef` and any
+    field not evaluated are left to the existing doc). One run tests one
+    vehicle, so statements are written under that vehicle's frame name as the
+    variant; promoting agreeing variants to "default" is a human merge step.
+    A field statement is only written where the message itself is confirmed
+    supported (validate.py: a field may only have a (stack, variant) key where
+    its parent is implemented). An untestable field is left absent (unknown).
+    """
+    key = (MESSAGE_PROTOCOL, msg_name)
+    view = _view(key)
+    fields = view["params"]
+    message = view["command"]
+    if not fields and not message:
+        return None
+    info = getattr(config, "_autopilot_info", {}) or {}
+    autopilot = (info.get("autopilot") or "").lower()
+    vehicle_type = config.getoption("--vehicle-type") or ""
+    variant = _compat_json_frame(autopilot, vehicle_type)
+    if autopilot not in ("px4", "ardupilot") or variant is None:
+        return {
+            "error": (
+                f"Could not map autopilot={autopilot!r}/vehicle_type={vehicle_type!r} to a "
+                "mavlink-compat-data (stack, variant) pair (schema/vocab.json) — pass "
+                "--autopilot/--vehicle-type matching that vocab, or fill this in by hand."
+            )
+        }
+    firmware_version = info.get("firmware_version", "") or ""
+    version = None
+    if firmware_version and not _is_dev_build(firmware_version):
+        version = firmware_version.split("-")[0]
+
+    supported = message.get("supported") if message is not None else None
+    stmt = _statement(supported, version, last_checked=True)
+    stmt["basis"] = message.get("basis", "testing") if message is not None and supported is not None else "unknown"
+    if message is not None and message.get("notes"):
+        stmt["notes"] = message["notes"]
+    doc: dict = {"compatibility": {autopilot: {variant: stmt}}}
+    if supported is True:
+        rendered = []
+        for name in (view["param_keys"] or list(fields)):
+            fact = fields.get(name) or {}
+            if fact.get("supported") is None:
+                continue
+            fstmt = _statement(fact["supported"], version)
+            fstmt["basis"] = message.get("basis", "testing")
+            if fact.get("notes"):
+                fstmt["notes"] = fact["notes"]
+            rendered.append({"name": name, "compatibility": {autopilot: {variant: fstmt}}})
+        if rendered:
+            doc["fields"] = rendered
+    return doc
 
 
 def render_json(protocol: str, cmd_name: str, config) -> str | None:
+    if protocol == MESSAGE_PROTOCOL:
+        doc = render_message_json_doc(cmd_name, config)
+        return None if doc is None else json.dumps(doc, indent=2, ensure_ascii=False)
     doc = render_json_doc(protocol, cmd_name, config)
     return None if doc is None else json.dumps(doc, indent=2, ensure_ascii=False)
 
@@ -656,11 +732,12 @@ def render_text(protocol: str, cmd_name: str, cmd_id: int, config) -> str:
             return outcome + "*"
         return outcome
 
+    is_message = protocol == MESSAGE_PROTOCOL
     t1 = view["tier1"]
     if t1:
         counts: dict[str, int] = {}
         lines += [
-            f"Tier 1 results: MAV_CMD_{cmd_name} (cmd={cmd_id})",
+            f"Message tests: {cmd_name} (id={cmd_id})" if is_message else f"Tier 1 results: MAV_CMD_{cmd_name} (cmd={cmd_id})",
             "=" * 100,
             f"{'Test':<52} {'Outcome':<9} {'Compat error':<13} {'Result':<8} Pass case / failure",
             "-" * 100,
@@ -795,6 +872,7 @@ def key_from_module(module) -> Key | None:
     """
     (protocol, cmd_name) for a test module — protocol ("mission"/"command")
     inferred from its package path, cmd_name from its `_CMD_NAME` constant.
+    A module under tests/messages_*/ declaring `_MSG_NAME` is ("message", name).
     None if the module is missing `_CMD_NAME`, or lives outside both trees.
     Shared by both tiers' auto-record fixtures (this module's own
     `_tier1_auto_record` below, and tests/flight_helpers.py's Tier 2
@@ -803,10 +881,13 @@ def key_from_module(module) -> Key | None:
     """
     if module is None:
         return None
+    module_name = module.__name__
+    msg_name = getattr(module, "_MSG_NAME", None)
+    if msg_name is not None and ".messages_" in module_name:
+        return (MESSAGE_PROTOCOL, msg_name)
     name = getattr(module, "_CMD_NAME", None)
     if name is None:
         return None
-    module_name = module.__name__
     if ".mission." in module_name:
         return ("mission", name)
     if ".command." in module_name:

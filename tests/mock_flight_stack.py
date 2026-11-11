@@ -18,12 +18,17 @@ Default behaviour:
 - Accept all frames, store items exactly as received, serve unchanged on download.
 - Advertise MAV_PROTOCOL_CAPABILITY_MISSION_INT (bit 2, value 4).
 - No delays, no failure injection.
+- Stream SYSTEM_TIME (1 Hz) and ATTITUDE (4 Hz), honouring
+  MAV_CMD_SET_MESSAGE_INTERVAL / MAV_CMD_REQUEST_MESSAGE for them, and answer
+  REQUEST_MESSAGE(MESSAGE_INTERVAL) — enough for tests/messages_telemetry/ to
+  exercise its own logic in paired mode.
 """
 
 import asyncio
 import json
 import logging
 import math
+import time
 
 from tests.mavsdk_compat import SystemShim as System, open_system, open_paired_drone
 from mavsdk.plugins.mavlink_direct import MavlinkMessage
@@ -63,6 +68,20 @@ def _f(val, default: float = 0.0) -> float:
     if val is None:
         return float("nan")
     return float(val)
+
+
+# MAVLink message ids the mock can stream: id -> (name, default interval in µs).
+# Default rates are arbitrary but distinct from anything a test requests, so a
+# test can tell "back to default" from "still at the requested rate".
+MSG_ID_SYSTEM_TIME = 2
+MSG_ID_ATTITUDE = 30
+MSG_ID_MESSAGE_INTERVAL = 244
+DEFAULT_STREAM_INTERVALS_US: dict[int, int] = {
+    MSG_ID_SYSTEM_TIME: 1_000_000,  # 1 Hz
+    MSG_ID_ATTITUDE: 250_000,       # 4 Hz
+}
+_MAV_CMD_SET_MESSAGE_INTERVAL = 511
+_MAV_CMD_REQUEST_MESSAGE = 512
 
 
 # Message types the mock needs to subscribe to
@@ -120,6 +139,12 @@ class MockFlightStack:
     emit_gps_global_origin : bool
         When True, send GPS_GLOBAL_ORIGIN (id=49) after COMMAND_ACK(ACCEPTED)
         for any command in ``require_valid_location_cmds``.  Default True.
+    stream_intervals_us : dict[int, int] | None
+        Default interval (µs) per streamable message id
+        (``DEFAULT_STREAM_INTERVALS_US`` when omitted; 0 = not streamed by
+        default). SET_MESSAGE_INTERVAL changes it (-1 disables, 0 restores
+        the default) and REQUEST_MESSAGE sends one copy. Other message ids
+        are ACKed as before but have no effect.
     """
 
     def __init__(
@@ -135,6 +160,7 @@ class MockFlightStack:
         duplicate_command_acks: dict | None = None,
         require_valid_location_cmds: set | None = None,
         emit_gps_global_origin: bool = True,
+        stream_intervals_us: dict | None = None,
     ) -> None:
         self.capability_bits = capability_bits
         self.item_request_delay_s = item_request_delay_s
@@ -152,6 +178,13 @@ class MockFlightStack:
         # mission_type (int) → list of item field dicts
         self._store: dict[int, list[dict]] = {}
         self._queues: dict[str, asyncio.Queue] = {}
+        # Streamed messages: default and current interval (µs) per message id.
+        self._default_intervals: dict[int, int] = dict(
+            DEFAULT_STREAM_INTERVALS_US if stream_intervals_us is None else stream_intervals_us
+        )
+        self._intervals: dict[int, int] = dict(self._default_intervals)
+        self._interval_changed: dict[int, asyncio.Event] = {}
+        self._boot_monotonic = time.monotonic()
 
     @property
     def store(self) -> dict[int, list[dict]]:
@@ -178,6 +211,9 @@ class MockFlightStack:
             asyncio.create_task(self._clear_loop(system)),
             asyncio.create_task(self._command_long_dispatch_loop(system)),
             asyncio.create_task(self._command_int_loop(system)),
+        ] + [
+            asyncio.create_task(self._stream_loop(system, msg_id))
+            for msg_id in self._default_intervals
         ]
         try:
             await asyncio.gather(*all_tasks)
@@ -480,6 +516,7 @@ class MockFlightStack:
                                 await self._send_gps_global_origin(system, lat_e7, lon_e7, p7)
                     else:
                         await self._send_command_ack(system, cmd)
+                        await self._apply_message_command(system, cmd, record)
 
                     log.debug("COMMAND_LONG cmd=%d confirmation=%d", cmd, confirmation)
             except asyncio.CancelledError:
@@ -595,3 +632,81 @@ class MockFlightStack:
             for _ in range(n_dup):
                 await self._send(system, "COMMAND_ACK", ack_fields)
                 log.debug("COMMAND_ACK cmd=%d result=%d (injected duplicate)", cmd, result)
+
+    # ------------------------------------------------------- message streams --
+
+    def _boot_ms(self) -> int:
+        return int((time.monotonic() - self._boot_monotonic) * 1000)
+
+    def _message_fields(self, msg_id: int) -> tuple[str, dict] | None:
+        """(name, fields) for one fresh copy of a streamable message, or None."""
+        if msg_id == MSG_ID_SYSTEM_TIME:
+            return "SYSTEM_TIME", {
+                "time_unix_usec": int(time.time() * 1e6),
+                "time_boot_ms": self._boot_ms(),
+            }
+        if msg_id == MSG_ID_ATTITUDE:
+            return "ATTITUDE", {
+                "time_boot_ms": self._boot_ms(),
+                "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+                "rollspeed": 0.0, "pitchspeed": 0.0, "yawspeed": 0.0,
+            }
+        return None
+
+    async def _emit(self, system: System, msg_id: int) -> None:
+        built = self._message_fields(msg_id)
+        if built is not None:
+            await self._send(system, *built)
+
+    async def _stream_loop(self, system: System, msg_id: int) -> None:
+        """Send msg_id at its current interval; wakes early when its interval changes."""
+        changed = self._interval_changed.setdefault(msg_id, asyncio.Event())
+        while True:
+            try:
+                interval_us = self._intervals.get(msg_id, 0)
+                if interval_us > 0:
+                    await self._emit(system, msg_id)
+                    timeout = interval_us / 1e6
+                else:
+                    timeout = None  # not streamed: wait for a SET_MESSAGE_INTERVAL
+                changed.clear()
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout)
+                except asyncio.TimeoutError:
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Stream loop error (msg %d): %s", msg_id, exc, exc_info=True)
+                await asyncio.sleep(0.5)
+
+    def _interval_us(self, msg_id: int) -> int:
+        """MESSAGE_INTERVAL.interval_us for msg_id: -1 disabled, 0 not available, >0 interval."""
+        if msg_id not in self._default_intervals:
+            return 0
+        current = self._intervals.get(msg_id, 0)
+        return current if current > 0 else -1
+
+    async def _apply_message_command(self, system: System, cmd: int, record: dict) -> None:
+        """Act on an ACCEPTED SET_MESSAGE_INTERVAL / REQUEST_MESSAGE for a message the mock streams."""
+        if self._command_results.get(cmd, MAV_RESULT_ACCEPTED) != MAV_RESULT_ACCEPTED:
+            return
+        p1, p2 = record["param1"], record["param2"]
+        if math.isnan(p1):
+            return
+        msg_id = int(p1)
+        if cmd == _MAV_CMD_SET_MESSAGE_INTERVAL and msg_id in self._default_intervals and not math.isnan(p2):
+            interval = int(p2)
+            self._intervals[msg_id] = (
+                self._default_intervals[msg_id] if interval == 0 else (0 if interval < 0 else interval)
+            )
+            if msg_id in self._interval_changed:
+                self._interval_changed[msg_id].set()
+            log.debug("Stream interval msg=%d -> %d us", msg_id, self._intervals[msg_id])
+        elif cmd == _MAV_CMD_REQUEST_MESSAGE:
+            if msg_id == MSG_ID_MESSAGE_INTERVAL and not math.isnan(p2):
+                await self._send(system, "MESSAGE_INTERVAL", {
+                    "message_id": int(p2), "interval_us": self._interval_us(int(p2)),
+                })
+            else:
+                await self._emit(system, msg_id)

@@ -103,6 +103,10 @@ pytest tests/mission/camera_target_id/ -v
 # CONDITION_GATE tests only (Tier 1 + Tier 2 — <wip/> command needing the raw mavlink_direct
 # transport; see tests/mission/condition_gate/README.md)
 pytest tests/mission/condition_gate/ -v --log-cli-level=INFO
+
+# Emitted messages (telemetry): emission, rate requests and field values — no flying, so run it on
+# every vehicle type (see tests/messages_telemetry/CLAUDE.md; SYSTEM_TIME: system_time/README.md)
+pytest tests/messages_telemetry/ -v --log-cli-level=INFO
 ```
 
 ### Verbose output with protocol logging
@@ -177,6 +181,10 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
         └── do_set_actuator/
             ├── test_protocol.py           # DO_SET_ACTUATOR mission-item acceptance (Tier 1, Tier1MissionTestBase — requires MAV_FRAME_MISSION)
             └── test_flight.py             # DO_SET_ACTUATOR execution test (Tier 2, PWM-output observation — verifies PX4 PR #28723)
+    └── messages_telemetry/
+        ├── conftest.py            # Message sampler, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE helpers, per-message report
+        └── system_time/
+            └── test_system_time.py        # SYSTEM_TIME emission, rate requests and fields (11 tests, every vehicle type)
 ```
 
 ## Adding new tests
