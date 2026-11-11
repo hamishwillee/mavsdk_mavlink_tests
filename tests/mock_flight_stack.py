@@ -78,14 +78,74 @@ MSG_ID_SYSTEM_TIME = 2
 MSG_ID_ATTITUDE = 30
 MSG_ID_ATTITUDE_QUATERNION = 31
 MSG_ID_MESSAGE_INTERVAL = 244
+MSG_ID_GPS_RAW_INT = 24
+MSG_ID_SCALED_IMU = 26
+MSG_ID_SCALED_PRESSURE = 29
+MSG_ID_LOCAL_POSITION_NED = 32
+MSG_ID_GLOBAL_POSITION_INT = 33
+MSG_ID_GPS_GLOBAL_ORIGIN = 49
+MSG_ID_SCALED_IMU2 = 116
+MSG_ID_GPS2_RAW = 124
+MSG_ID_SCALED_PRESSURE2 = 137
+MSG_ID_HOME_POSITION = 242
+MSG_ID_EXTENDED_SYS_STATE = 245
+MSG_ID_FLIGHT_INFORMATION = 264
 DEFAULT_STREAM_INTERVALS_US: dict[int, int] = {
     MSG_ID_SYSTEM_TIME: 1_000_000,          # 1 Hz
     MSG_ID_ATTITUDE: 250_000,               # 4 Hz
     MSG_ID_ATTITUDE_QUATERNION: 250_000,    # 4 Hz
+    # Available on request / SET_MESSAGE_INTERVAL only (0 = not streamed by default),
+    # so they don't change what other mock-mode suites see. SCALED_IMU3 and
+    # SCALED_PRESSURE3 are absent: "no such sensor" (MESSAGE_INTERVAL 0).
+    MSG_ID_GPS_RAW_INT: 0,
+    MSG_ID_SCALED_IMU: 0,
+    MSG_ID_SCALED_PRESSURE: 0,
+    MSG_ID_LOCAL_POSITION_NED: 0,
+    MSG_ID_GLOBAL_POSITION_INT: 0,
+    MSG_ID_GPS_GLOBAL_ORIGIN: 0,
+    MSG_ID_SCALED_IMU2: 0,
+    MSG_ID_GPS2_RAW: 0,
+    MSG_ID_SCALED_PRESSURE2: 0,
+    MSG_ID_HOME_POSITION: 0,
+    MSG_ID_EXTENDED_SYS_STATE: 0,
+    MSG_ID_FLIGHT_INFORMATION: 0,
 }
 # The mock's attitude: roll, pitch, yaw (rad). Non-trivial, so a test that
 # converts ATTITUDE_QUATERNION to Euler angles exercises every component's sign.
 MOCK_ATTITUDE_RAD = (math.radians(2.0), math.radians(-3.0), math.radians(30.0))
+# The mock's position (at home, on the ground) and its local origin: 40 m south,
+# 30 m west and 3 m lower, so LOCAL_POSITION_NED reads x=40, y=30, z=-3 and a
+# swapped or sign-flipped axis shows.
+MOCK_POSITION = (47.3977419, 8.5455938, 488.0)          # lat, lon (deg), alt (m AMSL)
+MOCK_ORIGIN_OFFSET_NED = (40.0, 30.0, -3.0)              # vehicle relative to origin, m
+MOCK_GEOID_SEPARATION_M = 48.0                           # alt_ellipsoid - alt
+MOCK_MAG_FIELD = (480.0, math.radians(63.0))             # |B| mgauss, inclination (no declination)
+_EARTH_RADIUS_M = 6_378_137.0
+_G = 9.80665
+
+
+def _mock_origin() -> tuple[float, float, float]:
+    lat, lon, alt = MOCK_POSITION
+    n, e, d = MOCK_ORIGIN_OFFSET_NED
+    return (lat - math.degrees(n / _EARTH_RADIUS_M),
+            lon - math.degrees(e / (_EARTH_RADIUS_M * math.cos(math.radians(lat)))),
+            alt + d)
+
+
+def _earth_to_body(v_ned: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Rotate an NED vector into the mock's body frame (FRD) for MOCK_ATTITUDE_RAD."""
+    roll, pitch, yaw = MOCK_ATTITUDE_RAD
+    cr, sr, cp, sp, cy, sy = (math.cos(roll), math.sin(roll), math.cos(pitch), math.sin(pitch),
+                              math.cos(yaw), math.sin(yaw))
+    # rows of R_body<-ned = R_ned<-body transposed
+    r = [[cp * cy, cp * sy, -sp],
+         [sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp],
+         [cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp]]
+    return tuple(sum(r[i][j] * v_ned[j] for j in range(3)) for i in range(3))
+
+
+def _isa_pressure_hpa(alt_m: float) -> float:
+    return 1013.25 * (1 - 2.25577e-5 * alt_m) ** 5.25588
 
 
 def _euler_to_quaternion(roll: float, pitch: float, yaw: float) -> list[float]:
@@ -200,6 +260,7 @@ class MockFlightStack:
         self._intervals: dict[int, int] = dict(self._default_intervals)
         self._interval_changed: dict[int, asyncio.Event] = {}
         self._boot_monotonic = time.monotonic()
+        self._boot_monotonic_unix = time.time()
 
     @property
     def store(self) -> dict[int, list[dict]]:
@@ -675,6 +736,70 @@ class MockFlightStack:
                 "rollspeed": 0.0, "pitchspeed": 0.0, "yawspeed": 0.0,
                 "repr_offset_q": [1.0, 0.0, 0.0, 0.0],
             }
+        lat, lon, alt = MOCK_POSITION
+        olat, olon, oalt = _mock_origin()
+        x, y, z = MOCK_ORIGIN_OFFSET_NED
+        if msg_id == MSG_ID_GLOBAL_POSITION_INT:
+            return "GLOBAL_POSITION_INT", {
+                "time_boot_ms": self._boot_ms(), "lat": int(lat * 1e7), "lon": int(lon * 1e7),
+                "alt": int(alt * 1000), "relative_alt": 0, "vx": 0, "vy": 0, "vz": 0,
+                "hdg": int(math.degrees(MOCK_ATTITUDE_RAD[2]) * 100) % 36000,
+            }
+        if msg_id == MSG_ID_LOCAL_POSITION_NED:
+            return "LOCAL_POSITION_NED", {
+                "time_boot_ms": self._boot_ms(), "x": x, "y": y, "z": z, "vx": 0.0, "vy": 0.0, "vz": 0.0,
+            }
+        if msg_id == MSG_ID_GPS_GLOBAL_ORIGIN:
+            return "GPS_GLOBAL_ORIGIN", {
+                "latitude": int(round(olat * 1e7)), "longitude": int(round(olon * 1e7)),
+                "altitude": int(oalt * 1000), "time_usec": int(self._boot_monotonic_unix * 1e6),
+            }
+        if msg_id == MSG_ID_HOME_POSITION:
+            return "HOME_POSITION", {
+                "latitude": int(lat * 1e7), "longitude": int(lon * 1e7), "altitude": int(alt * 1000),
+                # MAVSDK's mavlink_direct JSON can't carry NaN, so the mock sends a real
+                # surface quaternion (level, facing its heading) rather than "unknown".
+                "x": x, "y": y, "z": z, "q": _euler_to_quaternion(0.0, 0.0, MOCK_ATTITUDE_RAD[2]),
+                "approach_x": 0.0, "approach_y": 0.0, "approach_z": 0.0,
+                "time_usec": int(self._boot_monotonic_unix * 1e6),
+            }
+        if msg_id == MSG_ID_EXTENDED_SYS_STATE:
+            return "EXTENDED_SYS_STATE", {"vtol_state": 0, "landed_state": 1}  # UNDEFINED, ON_GROUND
+        if msg_id == MSG_ID_FLIGHT_INFORMATION:
+            return "FLIGHT_INFORMATION", {
+                "time_boot_ms": self._boot_ms(), "arming_time_utc": 0, "takeoff_time_utc": 0,
+                "flight_uuid": 7, "landing_time": 0,
+            }
+        if msg_id in (MSG_ID_SCALED_IMU, MSG_ID_SCALED_IMU2):
+            acc = _earth_to_body((0.0, 0.0, -_G))  # specific force at rest
+            field, incl = MOCK_MAG_FIELD
+            mag = _earth_to_body((field * math.cos(incl), 0.0, field * math.sin(incl)))
+            name = "SCALED_IMU" if msg_id == MSG_ID_SCALED_IMU else "SCALED_IMU2"
+            return name, {
+                "time_boot_ms": self._boot_ms(),
+                "xacc": round(acc[0] / _G * 1000), "yacc": round(acc[1] / _G * 1000),
+                "zacc": round(acc[2] / _G * 1000),
+                "xgyro": 0, "ygyro": 0, "zgyro": 0,
+                "xmag": round(mag[0]), "ymag": round(mag[1]), "zmag": round(mag[2]),
+                "temperature": 4500,
+            }
+        if msg_id in (MSG_ID_SCALED_PRESSURE, MSG_ID_SCALED_PRESSURE2):
+            name = "SCALED_PRESSURE" if msg_id == MSG_ID_SCALED_PRESSURE else "SCALED_PRESSURE2"
+            return name, {
+                "time_boot_ms": self._boot_ms(), "press_abs": _isa_pressure_hpa(alt), "press_diff": 0.0,
+                "temperature": 2500, "temperature_press_diff": 0,
+            }
+        if msg_id in (MSG_ID_GPS_RAW_INT, MSG_ID_GPS2_RAW):
+            fields = {
+                "time_usec": int(time.time() * 1e6), "fix_type": 3,
+                "lat": int(lat * 1e7), "lon": int(lon * 1e7), "alt": int(alt * 1000),
+                "eph": 80, "epv": 120, "vel": 0, "cog": 65535, "satellites_visible": 12,
+                "alt_ellipsoid": int((alt + MOCK_GEOID_SEPARATION_M) * 1000),
+                "h_acc": 500, "v_acc": 800, "vel_acc": 100, "hdg_acc": 0, "yaw": 0,
+            }
+            if msg_id == MSG_ID_GPS2_RAW:
+                return "GPS2_RAW", {**fields, "dgps_numch": 0, "dgps_age": 0}
+            return "GPS_RAW_INT", fields
         return None
 
     async def _emit(self, system: System, msg_id: int) -> None:

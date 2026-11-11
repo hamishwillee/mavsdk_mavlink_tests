@@ -39,12 +39,14 @@ import pytest
 from tests import report
 from tests.messages_telemetry.conftest import (
     MAV_RESULT_ACCEPTED,
+    MSG_IDS,
     RATE_SETTLE_S,
     RATE_TOLERANCE,
     MessageSampler,
     Sample,
     compat_verdict,
     get_message_interval,
+    harness_requested_hz,
     interval_stats,
     measure_rate,
     rate_hz,
@@ -68,6 +70,8 @@ RATES_HZ = (2.0, 10.0)      # rule 4c: two values, far apart
 SILENCE_WINDOW_S = 3.0      # "disabled" means nothing for this long
 SAMPLE_RATE_HZ = 10.0       # the shared field-analysis window
 SAMPLE_WINDOW_S = 10.0
+WINDOW_REQUESTS = 3         # REQUEST_MESSAGEs when the window gets too few of the message
+EXTRA_RATE_HZ = 5.0         # window_extra messages, requested for the window
 BOOT_RATE_TOLERANCE = 0.05  # time_boot_ms advance vs host time
 
 
@@ -100,6 +104,7 @@ class Emission:
         self._baseline: Baseline | None = None
         self._window: Window | None = None
         self.ever_received = False
+        self.harness_requested = 0.0  # Hz the harness requests this message at (ArduPilot only), else 0
 
     # -- shared state ------------------------------------------------------
 
@@ -114,6 +119,13 @@ class Emission:
         """The unrequested rate — measured once, before any test changes the interval."""
         if self._baseline is None:
             target = await vehicle_target(system)
+            self.harness_requested = await harness_requested_hz(system, self.msg_id)
+            if self.harness_requested:
+                # The harness asked ArduPilot for this message at the start of the test
+                # (message_watcher.request_ardupilot_streams), so put it back to the
+                # stack's own default before measuring that.
+                await self.restore_default(system)
+                await asyncio.sleep(RATE_SETTLE_S)
             _, samples = await measure_rate(system, self.name, DEFAULT_WINDOW_S)
             mine = autopilot_only(samples, target)
             self._baseline = Baseline(rate_hz(mine, DEFAULT_WINDOW_S), mine, senders(samples))
@@ -134,17 +146,38 @@ class Emission:
         baseline = await self.baseline(system)
         target = await vehicle_target(system)
         result = await set_message_interval(system, self.msg_id, 1e6 / SAMPLE_RATE_HZ)
+        # The cross-check messages may not stream by default either (ArduPilot sends
+        # GPS_GLOBAL_ORIGIN only on request, LOCAL_POSITION_NED only if asked for).
+        for extra in self.window_extra:
+            await set_message_interval(system, MSG_IDS[extra], 1e6 / EXTRA_RATE_HZ)
         try:
             await asyncio.sleep(RATE_SETTLE_S)
             async with MessageSampler(system, self.name, *self.window_extra) as s:
                 await asyncio.sleep(SAMPLE_WINDOW_S)
+                # A message sent only on change (PX4's GPS_GLOBAL_ORIGIN) or refusing the
+                # rate: ask for copies instead, so the field tests have something to read.
+                requested = 0
+                if len(autopilot_only(s.samples(self.name), target)) < 3:
+                    for _ in range(WINDOW_REQUESTS):
+                        await request_message(system, self.msg_id)
+                        requested += 1
+                        await asyncio.sleep(0.7)
+                missing = [e for e in self.window_extra if not autopilot_only(s.samples(e), target)]
+                for extra in missing:  # rate request refused or ignored: ask for one copy
+                    await request_message(system, MSG_IDS[extra])
+                if missing:
+                    await asyncio.sleep(1.5)
         finally:
             await self.restore_default(system)
+            for extra in self.window_extra:
+                await set_message_interval(system, MSG_IDS[extra], 0)
         mine = autopilot_only(s.samples(self.name), target)
         self._note(mine)
         how = (f"{SAMPLE_RATE_HZ:.0f} Hz requested, {len(mine)} msgs in {SAMPLE_WINDOW_S:.0f}s"
                if result == MAV_RESULT_ACCEPTED else
                f"rate request {result_name(result)}, default stream: {len(mine)} msgs in {SAMPLE_WINDOW_S:.0f}s")
+        if requested:
+            how += f" incl. {requested} REQUEST_MESSAGEs (too few streamed)"
         na = None
         if len(mine) < 3:
             na = f"too few {self.name} messages to analyse ({how}; default {baseline.rate_hz:.2f} Hz)"
@@ -171,8 +204,10 @@ class Emission:
             mi = f"MESSAGE_INTERVAL {interval_us} ({'disabled' if interval_us == -1 else 'not available'})"
         if agrees is False:
             log.warning("%s: measured default %.2f Hz but %s", self.name, b.rate_hz, mi)
+        harness = (f" (after SET_MESSAGE_INTERVAL 0: the harness requests it at {self.harness_requested:g} Hz)"
+                   if self.harness_requested else "")
         record_detail(request, (
-            f"{b.rate_hz:.2f} Hz unrequested (median gap {interval_stats(b.samples)}), senders {b.all_senders}; "
+            f"{b.rate_hz:.2f} Hz unrequested{harness} (median gap {interval_stats(b.samples)}), senders {b.all_senders}; "
             f"{mi}{'' if agrees is None else (' — agrees' if agrees else ' — DISAGREES with measured rate')}"
         ))
         if b.samples:
@@ -287,11 +322,13 @@ class Emission:
         b = await self.baseline(system)
         target = await vehicle_target(system)
         try:
-            if b.rate_hz > 0:
-                off = await set_message_interval(system, self.msg_id, -1)
-                _, samples = await measure_rate(system, self.name, 2.0, settle_s=RATE_SETTLE_S)
-                if autopilot_only(samples, target):
-                    pytest.skip(f"NA: can't stop the stream to isolate a one-shot reply (-1 {result_name(off)})")
+            # Always stop it first: even with no default stream, the harness may have
+            # requested it (ArduPilot), or an earlier test left it running.
+            off = await set_message_interval(system, self.msg_id, -1)
+            _, samples = await measure_rate(system, self.name, 2.0, settle_s=RATE_SETTLE_S)
+            if autopilot_only(samples, target):
+                pytest.skip(f"NA: can't stop the stream to isolate a one-shot reply (-1 {result_name(off)}, "
+                            f"default {b.rate_hz:.2f} Hz)")
             async with MessageSampler(system, self.name) as s:
                 sent = time.monotonic()
                 result = await request_message(system, self.msg_id)
@@ -314,6 +351,37 @@ class Emission:
             record_message_fact(request, supported=False, notes="Never sent, even on request")
         if not nacked and not ok:
             report.compat_fail(f"REQUEST_MESSAGE accepted but {len(replies)} {self.name} arrived (expected exactly one)")
+
+    def define_tests(self, namespace: dict, prefix: str) -> None:
+        """
+        Define the five emission tests in a message module, named
+        test_<prefix>_<category>_<rest> (root CLAUDE.md rule 8):
+
+            EMISSION.define_tests(globals(), "local_position_ned")
+        """
+        n = self.name
+        specs = [
+            ("obs_default_rate", self.default_rate,
+             "Characterise: unrequested rate and senders, and whether MESSAGE_INTERVAL agrees."),
+            ("compat_set_interval_honoured", self.set_interval_honoured,
+             "SET_MESSAGE_INTERVAL at 2 Hz and 10 Hz: NACKed, or the measured rate matches each."),
+            ("compat_set_interval_disable", self.set_interval_disable,
+             f"SET_MESSAGE_INTERVAL -1 (disable): NACKed, or no {n} for 3 s."),
+            ("compat_set_interval_default", self.set_interval_default,
+             "SET_MESSAGE_INTERVAL 0 (default) after a change: NACKed, or the rate returns to the unrequested one."),
+            ("compat_request_message", self.request_message,
+             f"REQUEST_MESSAGE({n}) with the stream off: NACKed, or exactly one message."),
+        ]
+        for suffix, method, doc in specs:
+            def make(m):
+                async def test(gcs_system, request):
+                    await m(gcs_system, request)
+                return test
+            fn = make(method)
+            fn.__name__ = fn.__qualname__ = f"test_{prefix}_{suffix}"
+            fn.__doc__ = doc
+            fn.__module__ = namespace["__name__"]
+            namespace[fn.__name__] = fn
 
     # -- shared field check --------------------------------------------------
 

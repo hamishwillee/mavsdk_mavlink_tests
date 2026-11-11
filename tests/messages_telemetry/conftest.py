@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import statistics
 import time
@@ -36,12 +37,21 @@ import pytest
 
 from tests import report
 from tests.command.conftest import probe_command_long
+from tests.message_watcher import ARDUPILOT_REQUESTED_RATES_HZ, MAV_AUTOPILOT_ARDUPILOTMEGA
 
 log = logging.getLogger(__name__)
 
 MAV_CMD_SET_MESSAGE_INTERVAL = 511
 MAV_CMD_REQUEST_MESSAGE = 512
 MSG_ID_MESSAGE_INTERVAL = 244
+
+# Ids of the messages tests here request or cross-check against.
+MSG_IDS = {
+    "SYSTEM_TIME": 2, "GPS_RAW_INT": 24, "SCALED_IMU": 26, "SCALED_PRESSURE": 29, "ATTITUDE": 30,
+    "ATTITUDE_QUATERNION": 31, "LOCAL_POSITION_NED": 32, "GLOBAL_POSITION_INT": 33, "GPS_GLOBAL_ORIGIN": 49,
+    "SCALED_IMU2": 116, "GPS2_RAW": 124, "SCALED_IMU3": 129, "SCALED_PRESSURE2": 137, "SCALED_PRESSURE3": 143,
+    "HOME_POSITION": 242, "MESSAGE_INTERVAL": 244, "EXTENDED_SYS_STATE": 245, "FLIGHT_INFORMATION": 264,
+}
 
 MAV_RESULT_ACCEPTED = 0
 MAV_RESULT_NAMES = {
@@ -162,34 +172,54 @@ def rate_matches(measured_hz: float, expected_hz: float, tolerance: float = RATE
 # Requests
 # ---------------------------------------------------------------------------
 
-async def vehicle_target(system, timeout_s: float = 5.0) -> tuple[int, int]:
+async def vehicle_heartbeat(system, timeout_s: float = 5.0) -> dict:
     """
-    (sysid, compid) of the autopilot, from its HEARTBEAT (autopilot field not
-    MAV_AUTOPILOT_INVALID). Cached per connection generation. Falls back to
-    (1, 1) — the mock drone and every single-instance SITL — if none arrives.
+    The autopilot's HEARTBEAT (autopilot field not MAV_AUTOPILOT_INVALID), plus
+    its "sysid"/"compid". Cached per connection generation. Falls back to
+    sysid/compid (1, 1) — the mock drone and every single-instance SITL — with
+    no other fields, if none arrives.
     """
     generation = getattr(system, "generation", 0)
-    cached = getattr(system, "_msg_test_target", None)
+    cached = getattr(system, "_msg_test_heartbeat", None)
     if cached is not None and cached[0] == generation:
         return cached[1]
     found: asyncio.Future = asyncio.get_running_loop().create_future()
 
     async def _hb() -> None:
         async for msg in system.mavlink_direct.message("HEARTBEAT"):
-            if json.loads(msg.fields_json).get("autopilot") != _MAV_AUTOPILOT_INVALID and not found.done():
-                found.set_result((msg.system_id, msg.component_id))
+            fields = json.loads(msg.fields_json)
+            if fields.get("autopilot") != _MAV_AUTOPILOT_INVALID and not found.done():
+                found.set_result({**fields, "sysid": msg.system_id, "compid": msg.component_id})
                 return
 
     task = asyncio.create_task(_hb())
     try:
-        target = await asyncio.wait_for(found, timeout_s)
+        hb = await asyncio.wait_for(found, timeout_s)
     except asyncio.TimeoutError:
         log.warning("No autopilot HEARTBEAT within %.0fs — addressing commands to (1, 1)", timeout_s)
-        target = (1, 1)
+        hb = {"sysid": 1, "compid": 1}
     finally:
         task.cancel()
-    system._msg_test_target = (generation, target)
-    return target
+    system._msg_test_heartbeat = (generation, hb)
+    return hb
+
+
+async def vehicle_target(system, timeout_s: float = 5.0) -> tuple[int, int]:
+    """(sysid, compid) of the autopilot, from its HEARTBEAT (see vehicle_heartbeat)."""
+    hb = await vehicle_heartbeat(system, timeout_s)
+    return hb["sysid"], hb["compid"]
+
+
+async def harness_requested_hz(system, msg_id: int) -> float:
+    """
+    The rate the harness itself requests msg_id at, at the start of every test
+    (ArduPilot only: message_watcher.request_ardupilot_streams), else 0. A
+    "default rate" measured without undoing that would be the harness's rate.
+    """
+    hb = await vehicle_heartbeat(system)
+    if hb.get("autopilot") == MAV_AUTOPILOT_ARDUPILOTMEGA:
+        return ARDUPILOT_REQUESTED_RATES_HZ.get(msg_id, 0.0)
+    return 0.0
 
 
 async def _command(system, command: int, **params) -> int | None:
@@ -227,6 +257,98 @@ async def get_message_interval(system, msg_id: int, timeout_s: float = 2.0) -> t
                 return result, int(replies[0].fields["interval_us"])
             await asyncio.sleep(0.05)
     return result, None
+
+
+# ---------------------------------------------------------------------------
+# Field-check helpers
+# ---------------------------------------------------------------------------
+
+EARTH_RADIUS_M = 6_378_137.0
+
+
+def ned_offset_m(lat0_e7: int, lon0_e7: int, lat_e7: int, lon_e7: int) -> tuple[float, float]:
+    """(north, east) metres from point 0 to point 1, flat-earth (fine for < a few km)."""
+    north = math.radians((lat_e7 - lat0_e7) / 1e7) * EARTH_RADIUS_M
+    east = math.radians((lon_e7 - lon0_e7) / 1e7) * EARTH_RADIUS_M * math.cos(math.radians(lat0_e7 / 1e7))
+    return north, east
+
+
+def ned_from_origin(origin: dict, lat_e7: int, lon_e7: int, alt_mm: int) -> tuple[float, float, float]:
+    """
+    (north, east, down) metres of a global position relative to a
+    GPS_GLOBAL_ORIGIN-shaped `origin` (latitude/longitude degE7, altitude mm).
+    """
+    n, e = ned_offset_m(origin["latitude"], origin["longitude"], lat_e7, lon_e7)
+    return n, e, -(alt_mm - origin["altitude"]) / 1000.0
+
+
+UNIX_2020_US = 1_577_836_800 * 1_000_000  # anything above this is a UNIX time
+
+
+def classify_time_usec(samples: list[Sample], boot_ms_field: str | None = None,
+                       boot_ms_at: dict[float, int] | None = None) -> tuple[str, bool, str]:
+    """
+    Characterise a "Timestamp (UNIX Epoch time or time since system boot)"
+    field named time_usec across `samples`: (kind, plausible, description).
+
+    kind: "zero", "unix", "boot" or "mixed". Plausible: a UNIX time no later
+    than the host clock (+5 s), or a boot time no later than the sender's
+    uptime — taken from `boot_ms_at` (host_mono -> sender time_boot_ms from
+    another message), when given. Also says whether it advances with host time
+    (send time) or stays put (the time something was set).
+    """
+    values = [int(s.fields.get("time_usec", 0)) for s in samples]
+    if all(v == 0 for v in values):
+        return "zero", False, "always 0"
+    kinds = {"unix" if v >= UNIX_2020_US else "boot" for v in values if v}
+    kind = kinds.pop() if len(kinds) == 1 else "mixed"
+    first, last = samples[0], samples[-1]
+    host_span = last.host_mono - first.host_mono
+    advance = (values[-1] - values[0]) / 1e6
+    if host_span > 1 and abs(advance - host_span) <= 0.2 * host_span:
+        moving = "advances with host time (send time)"
+    elif advance == 0:
+        moving = "constant (the time it was set)"
+    else:
+        moving = f"advanced {advance:.1f}s over {host_span:.1f}s host"
+    plausible = kind in ("unix", "boot")
+    if kind == "unix":
+        ahead = max(values) / 1e6 - last.host_wall
+        plausible = ahead <= 5
+        where = f"UNIX {ahead:+.1f}s vs host"
+    elif kind == "boot":
+        where = f"boot {max(values) / 1e6:.1f}s"
+        if boot_ms_at:
+            uptime_s = max(boot_ms_at.values()) / 1000
+            plausible = max(values) / 1e6 <= uptime_s + 5
+            where += f" (sender uptime {uptime_s:.1f}s)"
+    else:
+        where = "mixed UNIX and boot values"
+    return kind, plausible, f"{where}, {moving}"
+
+
+def finite(*values) -> bool:
+    return all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
+
+
+def nearest(samples: list[Sample], host_mono: float) -> Sample:
+    """The sample received closest in host time (for messages without a shared timestamp)."""
+    return min(samples, key=lambda s: abs(s.host_mono - host_mono))
+
+
+def skip_untestable(request, fields, reason: str, detail: str | None = None) -> None:
+    """Record every field in `fields` as untestable for `reason`, and skip as NA."""
+    for f in fields:
+        record_field_fact(request, f, untestable=reason)
+    pytest.skip(f"NA: {detail or reason}")
+
+
+def distinct(values, limit: int = 4) -> str:
+    """A short display of the distinct values seen ("0, 65535" / "17..23 (9 distinct)")."""
+    uniq = sorted(set(values), key=lambda v: (isinstance(v, str), v))
+    if len(uniq) <= limit:
+        return ", ".join(str(v) for v in uniq)
+    return f"{uniq[0]}..{uniq[-1]} ({len(uniq)} distinct)"
 
 
 # ---------------------------------------------------------------------------

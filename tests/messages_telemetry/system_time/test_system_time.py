@@ -57,6 +57,7 @@ pytestmark = pytest.mark.timeout(180)
 
 OTHER_TIME_MESSAGES = ("ATTITUDE", "GLOBAL_POSITION_INT")
 EMISSION = Emission(_MSG_NAME, _MSG_ID, window_extra=OTHER_TIME_MESSAGES)
+EMISSION.define_tests(globals(), "system_time")  # the five emission tests
 
 UNIX_FLOOR_US = 1_577_836_800 * 1_000_000   # 2020-01-01: anything earlier isn't today's date
 UNIX_TOLERANCE_S = float(os.environ.get("SYSTEM_TIME_UNIX_TOLERANCE_S", "5.0"))  # vs host clock (SITL shares it)
@@ -64,35 +65,6 @@ OFFSET_SPREAD_MS = 50.0         # unix/1000 - boot_ms may wander this much over 
 OTHER_BOOT_TOLERANCE_MS = 500.0 # another message's time_boot_ms vs SYSTEM_TIME's clock
 REBOOT_WATCH_S = float(os.environ.get("SYSTEM_TIME_REBOOT_WATCH_S", "60.0"))
 REBOOT_MARGIN_MS = 2000.0
-
-
-# ---------------------------------------------------------------------------
-# A. Emission (generic: tests/messages_telemetry/emission.py)
-# ---------------------------------------------------------------------------
-
-async def test_system_time_obs_default_rate(gcs_system, request):
-    """Characterise: unrequested rate and senders, and whether MESSAGE_INTERVAL agrees."""
-    await EMISSION.default_rate(gcs_system, request)
-
-
-async def test_system_time_compat_set_interval_honoured(gcs_system, request):
-    """SET_MESSAGE_INTERVAL at 2 Hz and 10 Hz: NACKed, or the measured rate matches each."""
-    await EMISSION.set_interval_honoured(gcs_system, request)
-
-
-async def test_system_time_compat_set_interval_disable(gcs_system, request):
-    """SET_MESSAGE_INTERVAL -1 (disable): NACKed, or no SYSTEM_TIME for 3 s."""
-    await EMISSION.set_interval_disable(gcs_system, request)
-
-
-async def test_system_time_compat_set_interval_default(gcs_system, request):
-    """SET_MESSAGE_INTERVAL 0 (default) after a change: NACKed, or the rate returns to the unrequested one."""
-    await EMISSION.set_interval_default(gcs_system, request)
-
-
-async def test_system_time_compat_request_message(gcs_system, request):
-    """REQUEST_MESSAGE(SYSTEM_TIME) with the stream off: NACKed, or exactly one message."""
-    await EMISSION.request_message(gcs_system, request)
 
 
 # ---------------------------------------------------------------------------
