@@ -104,8 +104,10 @@ Not given columns in the MAV_CMD tables: a message test has no params or Tier sp
 
 | Message | Directory | Status |
 |---|---|---|
+| (shared) | `emission.py` | ✓ generic emission tests + field window, used by every message below |
 | SYSTEM_TIME | `system_time/` | ✓ 11 tests; run on PX4 MC/FW/VTOL (SIH) and ArduCopter/Plane/QuadPlane/Rover, 2026-11-11 |
-| Rest of the audit's "ready to move" set (ATTITUDE_QUATERNION, LOCAL_POSITION_NED, EXTENDED_SYS_STATE, HOME_POSITION, GPS_GLOBAL_ORIGIN, FLIGHT_INFORMATION, SCALED_IMU/2/3, SCALED_PRESSURE/2/3, GPS_RAW_INT, GPS2_RAW, MESSAGE_INTERVAL) | — | pending |
+| ATTITUDE_QUATERNION | `attitude_quaternion/` | ✓ 10 tests; run on the same seven vehicles plus PX4 `sihsim_xvert` (tailsitter), 2026-11-11. Pending: a tailsitter fixed-wing flight for `repr_offset_q` |
+| Rest of the audit's "ready to move" set (LOCAL_POSITION_NED, EXTENDED_SYS_STATE, HOME_POSITION, GPS_GLOBAL_ORIGIN, FLIGHT_INFORMATION, SCALED_IMU/2/3, SCALED_PRESSURE/2/3, GPS_RAW_INT, GPS2_RAW, MESSAGE_INTERVAL) | — | pending |
 
 ## XML-context gating (cross-cutting, 2026-09-21)
 

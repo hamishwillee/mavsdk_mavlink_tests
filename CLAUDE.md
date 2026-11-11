@@ -158,7 +158,9 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
   plans/                 JSON plan files (MISSION_ITEM_INT fields)
 tests/messages_telemetry/  Emitted-message tests (no flying, every vehicle type) — see tests/messages_telemetry/CLAUDE.md
   conftest.py            MessageSampler, set_message_interval/request_message/get_message_interval, "message" report fixture
+  emission.py            Emission: the five generic emission tests + shared field window/checks, reused by every message
   system_time/           SYSTEM_TIME (test_system_time.py, README.md)
+  attitude_quaternion/   ATTITUDE_QUATERNION (test_attitude_quaternion.py, README.md)
 tests/command/           Command protocol tests — see tests/command/CLAUDE.md
   conftest.py            send/receive helpers (probe_command_int/long), class-scoped fixtures,
                            shared Tier1CommandTestBase / CommandSpec (ParamSpec now lives in tests/param_spec.py)
