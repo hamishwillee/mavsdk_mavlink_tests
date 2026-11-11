@@ -18,7 +18,8 @@ Default behaviour:
 - Accept all frames, store items exactly as received, serve unchanged on download.
 - Advertise MAV_PROTOCOL_CAPABILITY_MISSION_INT (bit 2, value 4).
 - No delays, no failure injection.
-- Stream SYSTEM_TIME (1 Hz) and ATTITUDE (4 Hz), honouring
+- Stream SYSTEM_TIME (1 Hz), ATTITUDE (4 Hz) and ATTITUDE_QUATERNION (4 Hz),
+  for one fixed, non-trivial attitude (MOCK_ATTITUDE_RAD), honouring
   MAV_CMD_SET_MESSAGE_INTERVAL / MAV_CMD_REQUEST_MESSAGE for them, and answer
   REQUEST_MESSAGE(MESSAGE_INTERVAL) — enough for tests/messages_telemetry/ to
   exercise its own logic in paired mode.
@@ -75,11 +76,25 @@ def _f(val, default: float = 0.0) -> float:
 # test can tell "back to default" from "still at the requested rate".
 MSG_ID_SYSTEM_TIME = 2
 MSG_ID_ATTITUDE = 30
+MSG_ID_ATTITUDE_QUATERNION = 31
 MSG_ID_MESSAGE_INTERVAL = 244
 DEFAULT_STREAM_INTERVALS_US: dict[int, int] = {
-    MSG_ID_SYSTEM_TIME: 1_000_000,  # 1 Hz
-    MSG_ID_ATTITUDE: 250_000,       # 4 Hz
+    MSG_ID_SYSTEM_TIME: 1_000_000,          # 1 Hz
+    MSG_ID_ATTITUDE: 250_000,               # 4 Hz
+    MSG_ID_ATTITUDE_QUATERNION: 250_000,    # 4 Hz
 }
+# The mock's attitude: roll, pitch, yaw (rad). Non-trivial, so a test that
+# converts ATTITUDE_QUATERNION to Euler angles exercises every component's sign.
+MOCK_ATTITUDE_RAD = (math.radians(2.0), math.radians(-3.0), math.radians(30.0))
+
+
+def _euler_to_quaternion(roll: float, pitch: float, yaw: float) -> list[float]:
+    """ZYX intrinsic (aeronautical) Euler angles -> [w, x, y, z]."""
+    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+    return [cr * cp * cy + sr * sp * sy, sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy]
 _MAV_CMD_SET_MESSAGE_INTERVAL = 511
 _MAV_CMD_REQUEST_MESSAGE = 512
 
@@ -646,10 +661,19 @@ class MockFlightStack:
                 "time_boot_ms": self._boot_ms(),
             }
         if msg_id == MSG_ID_ATTITUDE:
+            roll, pitch, yaw = MOCK_ATTITUDE_RAD
             return "ATTITUDE", {
                 "time_boot_ms": self._boot_ms(),
-                "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+                "roll": roll, "pitch": pitch, "yaw": yaw,
                 "rollspeed": 0.0, "pitchspeed": 0.0, "yawspeed": 0.0,
+            }
+        if msg_id == MSG_ID_ATTITUDE_QUATERNION:
+            q = _euler_to_quaternion(*MOCK_ATTITUDE_RAD)
+            return "ATTITUDE_QUATERNION", {
+                "time_boot_ms": self._boot_ms(),
+                "q1": q[0], "q2": q[1], "q3": q[2], "q4": q[3],
+                "rollspeed": 0.0, "pitchspeed": 0.0, "yawspeed": 0.0,
+                "repr_offset_q": [1.0, 0.0, 0.0, 0.0],
             }
         return None
 

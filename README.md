@@ -183,8 +183,11 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
             └── test_flight.py             # DO_SET_ACTUATOR execution test (Tier 2, PWM-output observation — verifies PX4 PR #28723)
     └── messages_telemetry/
         ├── conftest.py            # Message sampler, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE helpers, per-message report
-        └── system_time/
-            └── test_system_time.py        # SYSTEM_TIME emission, rate requests and fields (11 tests, every vehicle type)
+        ├── emission.py            # Generic emission tests (default rate, SET_MESSAGE_INTERVAL, REQUEST_MESSAGE) reused per message
+        ├── system_time/
+        │   └── test_system_time.py        # SYSTEM_TIME emission, rate requests and fields (11 tests, every vehicle type)
+        └── attitude_quaternion/
+            └── test_attitude_quaternion.py  # ATTITUDE_QUATERNION emission, quaternion/rate/offset fields (10 tests)
 ```
 
 ## Adding new tests
