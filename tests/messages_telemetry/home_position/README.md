@@ -71,6 +71,8 @@ Consumers: QGC uses only latitude/longitude/altitude (`Vehicle.cc:1237-1251`) an
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2677](https://github.com/mavlink/mavlink/pull/2677) (draft): items 1–2 below, with LOCAL_POSITION_NED's.
+
 The global fields are compatible and exactly as defined: home is in WGS84 degE7 with an AMSL altitude in mm, consistent with GLOBAL_POSITION_INT's `relative_alt` on every vehicle. Suggested XML changes:
 
 1. **x/y/z: state the frame's origin and an invalid value.** Both stacks give home relative to the EKF origin (GPS_GLOBAL_ORIGIN). Without a local frame ArduPilot sends NaN and PX4 0; 0 is also a valid position, so suggest `invalid="NaN"` with "NaN if there is no local origin". PX4 would need its 0 changed to NaN to conform — a small change, and no consumer found reads x/y/z.

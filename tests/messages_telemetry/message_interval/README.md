@@ -73,6 +73,8 @@ Consumers: QGC stores `1e6 / interval` for > 0 and passes −1/0 through (`Messa
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2676](https://github.com/mavlink/mavlink/pull/2676) (draft): item 1 below.
+
 The basic case is compatible: both stacks report exactly the interval set, −1 after a disable, and agree on every message that streams normally. A consumer can rely on "> 0: sent at this interval" only for messages it has seen arrive, because of the cases below. Suggested XML changes:
 
 1. **Say what 0 and −1 cover.** "0 indicates it is not available" is the case PX4 gets wrong (−1 for a message id it doesn't know). Suggest: "-1: this message is supported but not currently streamed (disabled). 0: this message is not supported (e.g. an unknown message ID, or one the system cannot send). > 0: the interval at which it is sent." ArduPilot already does this for unknown ids; PX4's −1 is a PX4 fix.

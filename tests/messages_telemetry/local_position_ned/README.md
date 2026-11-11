@@ -62,6 +62,8 @@ Every result matches this. Not exercised: PX4 sending with an invalid estimate (
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2677](https://github.com/mavlink/mavlink/pull/2677) (draft): item 1 below, with HOME_POSITION's.
+
 The stacks are compatible: both send the EKF position relative to the same origin GPS_GLOBAL_ORIGIN reports, in NED, and a consumer needs no autopilot-specific code. Suggested XML change:
 
 1. **State the origin**: "… relative to the local origin (see GPS_GLOBAL_ORIGIN)". Both stacks already do this; the test above shows the two messages and GLOBAL_POSITION_INT agree to centimetres. Proposed upstream with the other local-frame clarifications (HOME_POSITION).

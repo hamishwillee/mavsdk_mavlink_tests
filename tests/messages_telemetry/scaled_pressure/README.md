@@ -67,6 +67,8 @@ Consumers: QGC shows only `temperature / 100` from all three (`VehicleTemperatur
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2675](https://github.com/mavlink/mavlink/pull/2675) (draft): item 1 below, with the SCALED_IMU changes.
+
 Compatible: both stacks send the same quantities in the defined units, and the same 0 for an absent differential-pressure sensor. Suggested XML change:
 
 1. **SCALED_PRESSURE `press_diff`: "Differential pressure 1" → "Differential pressure"**, as SCALED_PRESSURE2/3 say.

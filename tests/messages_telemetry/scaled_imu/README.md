@@ -76,6 +76,8 @@ Consumers: Mission Planner stores raw acc/gyro/mag and temperature/100 (`Current
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2675](https://github.com/mavlink/mavlink/pull/2675) (draft): items 1–2 below, with SCALED_PRESSURE's wording fix.
+
 Compatible for what SITL shows. The differences are things the XML leaves open, and PX4's mag being uncalibrated/sensor-frame on hardware is the one a consumer would actually notice (in SIH, sensor = body). Suggested XML changes:
 
 1. **SCALED_IMU `temperature`: add `invalid="0"`**, as SCALED_IMU2/3 already have. The description is identical in all three; only the attribute is missing.

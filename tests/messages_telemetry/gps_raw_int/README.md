@@ -97,6 +97,8 @@ Consumers: QGC treats eph/epv UINT16_MAX as unknown, **h_acc/v_acc 0 as unknown*
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2674](https://github.com/mavlink/mavlink/pull/2674) (draft): items 1–3 below.
+
 Compatible: both stacks send the same quantities in the same units; every sentinel they send is the defined one; QGC and Mission Planner decode both correctly. Suggested XML changes:
 
 1. **lat/lon/alt_ellipsoid: drop "EGM96 ellipsoid".** EGM96 is a geoid model; the ellipsoid is WGS84. GPS_RAW_INT's lat/lon say "WGS84, EGM96 ellipsoid" and both messages' alt_ellipsoid "above WGS84, EGM96 ellipsoid"; GPS2_RAW's lat/lon already say just "WGS84". Suggest "Latitude (WGS84)" and "Altitude (above WGS84 ellipsoid)".

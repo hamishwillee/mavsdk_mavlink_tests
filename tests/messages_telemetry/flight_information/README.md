@@ -65,6 +65,8 @@ Every result matches this. Not exercised: takeoff and landing times (need a flig
 
 ## Definition review
 
+Proposed upstream in [mavlink/mavlink#2678](https://github.com/mavlink/mavlink/pull/2678) (draft): items 1–2 below.
+
 The stacks are compatible for what's testable: `arming_time_utc` is µs since boot at arming on both, and every unset value is 0. Suggested XML changes:
 
 1. **Say what disarm does to `arming_time_utc`.** Both stacks set it back to 0 at disarm (tested on every vehicle), which the XML doesn't mention ("Set to 0 on boot. Set value on arming."). Proposed: "Set to 0 on boot and on disarm. Set value on arming." A consumer can then read a non-zero arming time as "armed now". (PX4 also zeroes `takeoff_time_utc` at disarm; ArduPilot's is computed per message, so that isn't proposed.)
