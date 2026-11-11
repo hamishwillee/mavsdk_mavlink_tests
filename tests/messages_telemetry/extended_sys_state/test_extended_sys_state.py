@@ -11,9 +11,13 @@ What the XML defines (README.md in this directory has the reasoning and results)
 So, with the vehicle disarmed on the ground:
 - landed_state is a MAV_LANDED_STATE value, and ON_GROUND (or UNDEFINED, if
   the stack doesn't know) — anything else contradicts where it is (compat).
-- vtol_state is a MAV_VTOL_STATE value; UNDEFINED for a vehicle whose own
-  HEARTBEAT type isn't a VTOL type, and not UNDEFINED for one that is (compat).
-  The vehicle's HEARTBEAT decides, never --vehicle-type (root CLAUDE.md rule 5).
+- vtol_state is a MAV_VTOL_STATE value, checked against the vehicle's own
+  HEARTBEAT type (never --vehicle-type, root CLAUDE.md rule 5) — compat:
+  a MAV_TYPE_VTOL_* type must send a VTOL state (not UNDEFINED); a multirotor
+  or ground/surface type can't be "in VTOL configuration", so must send
+  UNDEFINED. A fixed-wing (or any other) type is characterised only: ArduPilot
+  reports a standard QuadPlane as MAV_TYPE_FIXED_WING (Q_MAV_TYPE 0), so a VTOL
+  state there is a VTOL the HEARTBEAT doesn't announce, not an error.
 """
 
 from __future__ import annotations
@@ -48,6 +52,10 @@ VTOL_STATES = {0: "UNDEFINED", 1: "TRANSITION_TO_FW", 2: "TRANSITION_TO_MC", 3: 
 LANDED_STATES = {0: "UNDEFINED", 1: "ON_GROUND", 2: "IN_AIR", 3: "TAKEOFF", 4: "LANDING"}
 # MAV_TYPE values that are VTOL configurations (MAV_TYPE_VTOL_*; 19-25).
 VTOL_MAV_TYPES = set(range(19, 26))
+# Types that can't be a VTOL configuration: QUADROTOR, COAXIAL, HELICOPTER,
+# HEXAROTOR, OCTOROTOR, TRICOPTER, DODECAROTOR, DECAROTOR; GROUND_ROVER,
+# SURFACE_BOAT, SUBMARINE.
+NOT_VTOL_MAV_TYPES = {2, 3, 4, 13, 14, 15, 29, 35, 10, 11, 12}
 
 
 def _counts(values, names) -> str:
@@ -84,21 +92,22 @@ async def test_extended_sys_state_compat_vtol_state_matches_type(gcs_system, req
         skip_untestable(request, ["vtol_state"], "no HEARTBEAT type to compare against")
     values = [int(s.fields["vtol_state"]) for s in w.samples]
     seen = _counts(values, VTOL_STATES)
-    is_vtol = mav_type in VTOL_MAV_TYPES
     unknown = [v for v in values if v not in VTOL_STATES]
-    if is_vtol:
-        wrong = [v for v in values if v == 0]
-        expect = "a VTOL state (not UNDEFINED)"
+    if mav_type in VTOL_MAV_TYPES:
+        kind, wrong, expect = "VTOL", [v for v in values if v == 0], "a VTOL state (not UNDEFINED)"
+    elif mav_type in NOT_VTOL_MAV_TYPES:
+        kind, wrong, expect = "can't be a VTOL", [v for v in values if v != 0], "UNDEFINED"
     else:
-        wrong = [v for v in values if v != 0]
-        expect = "UNDEFINED"
-    record_detail(request, f"HEARTBEAT type {mav_type} ({'VTOL' if is_vtol else 'not VTOL'}): {seen}, "
-                           f"expected {expect}")
+        kind, wrong, expect = "type doesn't say", [], "either"
+    record_detail(request, f"HEARTBEAT type {mav_type} ({kind}): {seen}, expected {expect}")
     if unknown or wrong:
         record_field_fact(request, "vtol_state", supported=False)
-        report.compat_fail(f"vtol_state {seen} for HEARTBEAT type {mav_type}; expected {expect}")
-    if is_vtol:
+        report.compat_fail(f"vtol_state {seen} for HEARTBEAT type {mav_type} ({kind}); expected {expect}")
+    if mav_type in VTOL_MAV_TYPES:
         record_field_fact(request, "vtol_state", supported=True)
+    elif any(values):
+        record_field_fact(request, "vtol_state", supported=True,
+                          notes=f"VTOL state with HEARTBEAT type {mav_type} (a VTOL the type doesn't announce)")
     else:
         # UNDEFINED is the right answer, but it's also what a stack that doesn't
         # fill the field sends: only a VTOL can show the field is supported.

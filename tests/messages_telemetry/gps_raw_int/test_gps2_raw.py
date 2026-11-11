@@ -76,8 +76,14 @@ async def _second_gps(request, gcs_system, restart_flight_stack):
         if not await _gps2_arrives(gcs_system):
             hb = await vehicle_heartbeat(gcs_system)
             params = SECOND_GPS_PARAMS.get(hb.get("autopilot"))
+            try:
+                if params:
+                    await _set_params(gcs_system, [(n, v, f) for n, v, _, f in params])
+            except Exception as exc:  # noqa: BLE001 — e.g. a build without the parameter
+                log.warning("GPS2 setup: can't add a second simulated GPS on this build (%r); testing as is", exc)
+                _setup["unavailable"] = f"can't add a second simulated GPS on this build ({exc})"
+                params = None
             if params:
-                await _set_params(gcs_system, [(n, v, f) for n, v, _, f in params])
                 _setup["changed"] = params
                 restart_flight_stack()
                 await ensure_harness_streams(gcs_system)

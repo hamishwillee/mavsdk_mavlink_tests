@@ -135,7 +135,8 @@ async def test_home_position_compat_q(gcs_system, request):
     if w.na:
         skip_untestable(request, ["q"], "not enough messages to analyse", w.na)
     qs = [s.fields["q"] for s in w.samples]
-    nan = [q for q in qs if all(isinstance(c, float) and math.isnan(c) for c in q)]
+    # MAVSDK's fields_json carries NaN as null, so a NaN arrives as None.
+    nan = [q for q in qs if all(c is None or (isinstance(c, float) and math.isnan(c)) for c in q)]
     unit = [q for q in qs if finite(*q) and abs(math.sqrt(sum(c * c for c in q)) - 1) <= NORM_TOLERANCE]
     bad = [q for q in qs if q not in nan and q not in unit]
     if bad:
