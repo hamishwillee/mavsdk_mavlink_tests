@@ -44,7 +44,26 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 
 ¹ PX4's default depends on the link's MAVLink mode (below).
 
-Both stacks set their origin where the vehicle boots, so x/y/z are ~0 and their axes are recorded **untestable** (the check can't tell a swapped axis at the origin). The mock (origin 40 m S / 30 m W) exercises the strong path.
+Both stacks set their origin where the vehicle boots, so at rest x/y/z are ~0 and their axes are **untestable** (the check can't tell a swapped axis at the origin); the flight tests (below) show every axis. The mock (origin 40 m S / 30 m W) exercises the strong path.
+
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `info_position_in_flight` | info | x/y/z = GLOBAL_POSITION_INT relative to GPS_GLOBAL_ORIGIN (±1.5 m plus the distance moved between the two timestamps), 95% of samples; supported per axis once it's been ≥ 5 m from 0 |
+| `info_velocity_in_flight` | info | vx/vy/vz = GLOBAL_POSITION_INT's velocity (±0.5 m/s) and the rate of change of x/y/z over 0.5 s (±0.5 m/s or 10% of the speed), 95% of samples; supported per axis once ≥ 1 m/s |
+
+| | PX4 MC / FW / VTOL / tailsitter | ArduCopter / Plane / QuadPlane / Rover |
+|---|---|---|
+| Ranges flown | x −59..+885 m, y −417..+437 m, z to −51 m; v up to ±19 m/s horizontal, −4.5..+6.3 m/s vertical | x −21..+415 m, y −401..+427 m, z to −51 m; v up to ±27 m/s, −10..+5 m/s vertical (Rover: z, vz 0) |
+| Position vs GLOBAL_POSITION_INT + origin | 100%, worst 0.12 m (MC) … 0.98 m (FW at 885 m) | 100%, worst 0.02 m |
+| Velocity vs GLOBAL_POSITION_INT / d(position)/dt | 100% / 100% | 100% / 100% |
+
+Every axis, with both signs, is now recorded supported on every vehicle (Rover: not z/vz). PX4's position error grows with distance at ~0.11% (0.45 m at 400 m): PX4 projects onto a 6371 km sphere and the check's flat-earth conversion uses the 6378 km WGS84 radius — the check's approximation, not a PX4 error, and well inside the tolerance.
+
+PX4 SIH fixed-wing stalled into the ground 16 s after takeoff on every attempt (with and without the tests' own message requests): the throttle went to 0 as the takeoff item completed and the airframe lost 12 m/s in a second. It slid on the ground for ~2 min, took off again and flew the whole route; that time on the ground is left out of every check. Not investigated further (a PX4 SIH fixed-wing question, not a message one).
 
 ## How the stacks implement it (source, 2026-11-12)
 

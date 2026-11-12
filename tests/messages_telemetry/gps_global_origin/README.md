@@ -46,6 +46,16 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 
 The PX4 failure is the generic SET_MESSAGE_INTERVAL check (rule 4a): the request is accepted and never honoured, because the stream only sends when the origin changes.
 
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `obs_changes_in_flight` | obs | Whether the origin changes from arming to the end of the flight (the XML allows it: "emitted whenever a new GPS-Local position mapping is requested or set") |
+
+Constant on all eight vehicles through the flight, the landing 40–448 m away and the re-arm there (25–95 copies each). LOCAL_POSITION_NED's flight test uses the origin current at each sample, so it would have tolerated a change.
+
 ## How the stacks implement it (source, 2026-11-12)
 
 PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in upstream main `e192036345`, 2026-11-11; line numbers are at `36cedabb02`). ArduPilot `ce9c2d01a4`.

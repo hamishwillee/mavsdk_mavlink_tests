@@ -36,7 +36,7 @@ The Euler comparison catches swapped components at any attitude (≥90° error i
 
 Field verdicts:
 - **Quaternion**: recorded as supported only when the Euler comparison passes.
-- **Rates**: recorded as **untestable** (needs rotation). At rest the test only shows them finite, small and identical to ATTITUDE's, which says nothing about units or axes.
+- **Rates**: **untestable** at rest (needs rotation; shown by the flight tests below). At rest the test only shows them finite, small and identical to ATTITUDE's, which says nothing about units or axes.
 - **`repr_offset_q`**: when only `[0,0,0,0]` arrives, it's untestable. PX4 sends that for "no offset" too (below), so it isn't evidence of "not supported".
 
 ## Results (2026-11-11)
@@ -57,6 +57,24 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 | `repr_offset_q` | `[0,0,0,0]` on the ground, xvert included (it's in hover mode) | `[0,0,0,0]` |
 
 ¹ PX4's default depends on the link's MAVLink mode (below).
+
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `info_q_matches_attitude_in_flight` | info | q as ZYX Euler angles matches ATTITUDE (±1°, ATTITUDE interpolated to each sample's `time_boot_ms`) on every heading flown; supported once the headings cover ≥ 90° |
+| `info_rates_match_attitude_in_flight` | info | rollspeed/pitchspeed/yawspeed equal ATTITUDE's (±0.05 rad/s or 10%) where \|rate\| ≥ 0.15 rad/s; supported per axis with ≥ 5 such samples |
+| `compat_repr_offset_q_in_flight` | compat | `[0,0,0,0]` or a unit quaternion throughout; characterises what's sent in forward flight |
+
+| | PX4 MC / FW / VTOL / tailsitter | ArduCopter / Plane / QuadPlane / Rover |
+|---|---|---|
+| q vs ATTITUDE | 100% within 1° (worst ≤ 0.1°), headings covering 273–358° | 100% within 1° (worst ≤ 0.2°), headings covering 353–355° |
+| Rates vs ATTITUDE | 96–100% on every axis, 47–364 samples per axis | 100% on every axis, 26–176 samples per axis (Rover: yaw only) |
+| repr_offset_q | MC, FW, standard VTOL: always `[0,0,0,0]`. **Tailsitter: `[0.707, 0, 0.707, 0]` (a 90° pitch offset) for most of forward flight**, `[0,0,0,0]` in hover | always `[0,0,0,0]`, QuadPlane in forward flight too |
+
+All three fields' axes and signs are now shown right on every vehicle: the quaternion, the rates (recorded supported), and the tailsitter's display offset (repr_offset_q supported on PX4 tailsitter). The tailsitter's worst Euler error is 43° roll/yaw on a few samples at the gimbal-lock pitch of the transition (ZYX Euler angles aren't defined at ±90° pitch), which doesn't affect the 1° check's 100%.
 
 ## How the stacks implement it (source, 2026-11-11)
 

@@ -51,7 +51,26 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 | `approach_x/y/z` | always 0 | always 0 | always 0 |
 | `time_usec` | boot time **when home was set**, constant | boot time **at send** | boot time at send |
 
-x/y/z are recorded untestable (home is at the origin on every SITL). approach_* are recorded untestable: always 0, and with no invalid value "not provided" can't be told from "at the origin".
+At rest x/y/z are untestable (home is at the origin on every SITL); the flight tests (below) move home and show them. approach_* are recorded untestable: always 0, and with no invalid value "not provided" can't be told from "at the origin".
+
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `info_set_at_takeoff_in_flight` | info | From takeoff to landing home is where the vehicle was when armed (±10 m) and doesn't move (±0.5 m) — the XML: "set automatically by the system during the takeoff" |
+| `info_local_after_moving_home` | info | After landing 40–400 m from home and arming there, once home has moved ≥ 5 m from the origin: x/y/z = home relative to GPS_GLOBAL_ORIGIN (±1 m); characterises when home moved |
+
+| | PX4 MC / FW / VTOL / tailsitter | ArduCopter | ArduPlane / QuadPlane / Rover |
+|---|---|---|---|
+| Home in flight | where it armed (0.0 m; FW 1.6 m), fixed (0.00 m) | where it armed, fixed | where it armed, fixed (Rover: no flight) |
+| When home moved to the landing point | **after landing, while disarmed**, before any re-arm | **at the re-arm** | after landing, while disarmed |
+| x/y/z after home moved 40–448 m | equal to home relative to the origin, 0.4–0.5 m off at 400 m (the check's flat-earth radius, as LOCAL_POSITION_NED) | equal (0.00 m) | equal (0.00 m) |
+
+x/y/z are now recorded supported on every vehicle: both stacks fill them relative to the local origin, as #2677 proposes to state. QuadPlane refused the re-arm ("PreArm: In landing sequence"), so its x/y/z come from the copies sent while it sat disarmed.
+
+From source (PX4 at `36cedabb02`): PX4 sets home at arming (`Commander.cpp:740`) and also whenever it's landed and disarmed and has moved away from home (`Commander.cpp:2060` → `HomePosition.cpp:465-477`, `hasMovedFromCurrentHomeLocation()`). That's the "after landing" move above — a third automatic case alongside arming and takeoff that the XML doesn't mention (#2677's "e.g." wording covers it).
 
 ## How the stacks implement it (source, 2026-11-12)
 

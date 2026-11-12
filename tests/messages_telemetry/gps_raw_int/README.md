@@ -72,7 +72,28 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 | `hdg_acc` / `yaw` | 0 / 0 (no yaw source) | 0 / 0 | 0 / 0 |
 | GPS2_RAW `dgps_numch` / `dgps_age` | — | 0 / 0 | 0 / 0 |
 
-`vel`, `cog` are recorded untestable (need movement); `yaw`, `hdg_acc` untestable (no yaw-capable receiver); `dgps_*` untestable (no DGPS).
+`vel`, `cog` are untestable at rest (need movement; GPS_RAW_INT's are shown in the flight tests below); `yaw`, `hdg_acc` untestable (no yaw-capable receiver); `dgps_*` untestable (no DGPS).
+
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+GPS_RAW_INT only: neither SITL has a second receiver unless `test_gps2_raw.py`'s setup adds one, and that isn't combined with the flight, so GPS2_RAW's vel/cog stay untestable.
+
+| Test | Kind | Checks |
+|---|---|---|
+| `info_vel_cog_in_flight` | info | vel = GLOBAL_POSITION_INT's ground speed (±max(1 m/s, 15%)); cog = its course (±15°) at ≥ 3 m/s; 90% of samples; vel supported once ≥ 3 m/s, cog once the courses cover ≥ 90° |
+| `info_alt_in_flight` | info | alt follows GLOBAL_POSITION_INT's altitude (±5 m); alt − alt_ellipsoid stays fixed (±1 m) through the climb |
+
+| | PX4 (all four) | ArduPilot (all four) |
+|---|---|---|
+| vel | 100% within tolerance, up to 5–19 m/s | 99–100%, up to 5–27 m/s |
+| cog | 100% within 15°, courses covering 273–351° | 100%, courses covering 270–350° |
+| UINT16_MAX sent while moving | never | never |
+| alt | 100% within 5 m over a 47–51 m climb | the same (Rover: no climb) |
+| alt − alt_ellipsoid | 0 throughout (SIH sets them equal) | 0 throughout (SITL's simulated GPS reports no undulation) |
+
+vel and cog are now recorded supported on every vehicle: in cm/s and cdeg, course over ground (not heading), with no UINT16_MAX while a receiver reports — consistent with #2674 leaving their definitions alone. yaw/hdg_acc (needs a yaw-capable receiver) and dgps_* (needs DGPS) remain untestable in SITL.
 
 ## How the stacks implement it (source, 2026-11-12)
 
@@ -87,7 +108,7 @@ PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in 
 | eph/epv | HDOP/VDOP × 100; SIH with no fix sends 10000, not UINT16_MAX | HDOP/VDOP; UINT16_MAX when unknown |
 | vel / cog unknown | never UINT16_MAX; cog unchecked | never UINT16_MAX |
 | satellites_visible | **satellites used** | satellites used (`num_sats`); never UINT8_MAX |
-| alt_ellipsoid | receiver ellipsoid height | alt − undulation; **0 if the undulation is unknown** |
+| alt_ellipsoid | receiver ellipsoid height, passed through (`GPS_RAW_INT.hpp:119`); **the MSL altitude when the source doesn't know it**: NMEA without a geoid separation (`nmea.cpp:249,295`), SIH (`SensorGpsSim.cpp:152`), HIL_GPS (`mavlink_receiver.cpp:2827`) | alt − undulation; **0 if the undulation is unknown** |
 | h_acc / v_acc / vel_acc | receiver accuracies × 1000 | **0 when the receiver doesn't provide them** |
 | hdg_acc | only with a heading, else 0 | always 0 (TODO) |
 | yaw | heading if fresh; 0 → 36000. GPS_RAW_INT: 0 until a heading is first seen, then UINT16_MAX when it's lost. **GPS2_RAW: 0 when it's lost** | 0 not configured; UINT16_MAX configured but unavailable; 0 → 36000 |
@@ -108,5 +129,5 @@ Compatible: both stacks send the same quantities in the same units; every sentin
 Not proposed:
 - `satellites_visible` → "used": both stacks send satellites used, but renaming the meaning of a field is a bigger change than this move needs; worth an issue.
 - `vel`/`cog` "UINT16_MAX if unknown": neither stack ever sends it while a receiver reports, and both send a course when stationary. That's within the definition (the course is "known", just meaningless at rest).
-- `alt_ellipsoid` invalid value: ArduPilot sends 0 when the undulation is unknown, but 0 m is a real ellipsoid height.
+- `alt_ellipsoid` invalid value: when the undulation is unknown ArduPilot sends 0 (a real ellipsoid height) and PX4 the MSL altitude (a real height for 0 m geoid separation). Neither can be told from a real value and they differ, so either as the defined value would make the other stack non-conformant; a sentinel (e.g. INT32_MAX) would need its own issue.
 - PX4's GPS2_RAW yaw 0 vs GPS_RAW_INT UINT16_MAX for a lost heading, and its uORB "extrapolated" fix sent as PPP: PX4 fixes.

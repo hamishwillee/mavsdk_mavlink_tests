@@ -51,6 +51,7 @@ MSG_IDS = {
     "ATTITUDE_QUATERNION": 31, "LOCAL_POSITION_NED": 32, "GLOBAL_POSITION_INT": 33, "GPS_GLOBAL_ORIGIN": 49,
     "SCALED_IMU2": 116, "GPS2_RAW": 124, "SCALED_IMU3": 129, "SCALED_PRESSURE2": 137, "SCALED_PRESSURE3": 143,
     "HOME_POSITION": 242, "MESSAGE_INTERVAL": 244, "EXTENDED_SYS_STATE": 245, "FLIGHT_INFORMATION": 264,
+    "MISSION_CURRENT": 42, "VFR_HUD": 74,
 }
 
 MAV_RESULT_ACCEPTED = 0
@@ -401,9 +402,18 @@ def record_verdict(request, label: str, verdict: str) -> None:
         report.record_param_verdict(*key, label, verdict)
 
 
+def is_flight_test(node) -> bool:
+    """A flight test (flight.py; marked `flight`), reported in the Tier 2 table like a command's flight tests."""
+    return node.get_closest_marker("flight") is not None
+
+
 @pytest.fixture(autouse=True)
 def _message_auto_record(request):
-    """Record every test's outcome and detail in its message's report and rewrite it (see tests/report.py)."""
+    """
+    Record every test's outcome and detail in its message's report and rewrite it (see tests/report.py).
+    Ground tests go in the report's first table; flight tests (marked `flight`) in the Tier 2 table,
+    as tests/flight_helpers.py's `_tier2_auto_record` does for a command's test_flight.py.
+    """
     yield
     node = request.node
     rep = getattr(node, "_report_call", None) or getattr(node, "_report_setup", None)
@@ -417,7 +427,10 @@ def _message_auto_record(request):
         detail = explicit
     elif explicit is not None:
         detail = f"{detail} [{explicit}]"[:300]
-    report.record_tier1_result(*key, node.name, outcome, detail, None, compat)
+    if is_flight_test(node):
+        report.record_tier2_result(*key, node.name, outcome, detail, compat)
+    else:
+        report.record_tier1_result(*key, node.name, outcome, detail, None, compat)
     msg_id = getattr(node.module, "_MSG_ID", None)
     if msg_id is not None:
         report.write(*key, msg_id, request.config)

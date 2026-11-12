@@ -32,7 +32,7 @@ Silent on: what happens at disarm, and when flight_uuid changes (per arming, tak
 | `obs_flight_uuid` | obs | flight_uuid while disarmed |
 | `compat_arming_time_set_on_arm` | compat | Arm (no takeoff): `arming_time_utc` is the arming time (between the last pre-arm `time_boot_ms` and the armed message's). Then disarm, and characterise what each field and flight_uuid do |
 
-takeoff_time_utc and landing_time need a flight: recorded untestable. NA in mock mode (the mock can't arm).
+takeoff_time_utc and landing_time need a flight: untestable here, and checked by the flight tests (below). NA in mock mode (the mock can't arm).
 
 ## Results (2026-11-12)
 
@@ -49,6 +49,30 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 | After disarm | **arming and takeoff times back to 0** | **arming and takeoff times back to 0** |
 | `flight_uuid` | a counter that **increments at every disarm** and persists across boots (10, 11, … here) | **always 0** |
 
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+Times are compared on the vehicle's boot clock (GLOBAL_POSITION_INT's `time_boot_ms` at each event).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `compat_takeoff_time_set_at_takeoff` | compat | Once airborne, takeoff_time_utc is 0 (not supported) or between arming −1 s and 5 s after passing 2 m |
+| `compat_landing_time_set_at_landing` | compat | landing_time 0 while flying ("set to 0 … on arming"), then 0 (not supported) or within touchdown −5 s … +15 s |
+| `compat_times_reset_on_arm` | compat | Arming again on the ground after landing: takeoff and landing times 0 ("reset to zero on arm"), arming_time_utc the new arming (−2 … +1 s) |
+| `obs_flight_uuid_across_flight` | obs | flight_uuid before, during and after the flight and after re-arming |
+
+| | PX4 (all four) | ArduCopter / Plane / QuadPlane | Rover |
+|---|---|---|---|
+| takeoff_time_utc | **the takeoff time**: 0.8–1.2 s after arming, 0.5–4.6 s before passing 2 m | **the takeoff time**: 0.1 s after passing 2 m (Copter), 2.0 s before (Plane), at it (QuadPlane) | NA |
+| landing_time | **always 0 (not supported)** | **always 0 (not supported)** | NA |
+| Reset on re-arm | takeoff/landing 0, arming time = the new arming | the same (Copter, Plane); QuadPlane refused to re-arm ("In landing sequence") — NA | NA |
+| flight_uuid | +1 at each disarm (landing, then the re-arm's disarm) | always 0 | always 0 |
+
+takeoff_time_utc is now recorded supported on all seven flying vehicles, landing_time not supported on both stacks, and the reset-on-arm the XML states is honoured by both.
+
+From source: PX4's stream doesn't fill landing_time at all (`FLIGHT_INFORMATION.hpp:65-81`: time_boot_ms, arming, takeoff, flight_uuid only); ArduPilot sends `0  // landing_time, 0 meaning "not supported"` (`GCS_Common.cpp:6520`). ArduPilot's takeoff time is stamped when a FLIGHT_INFORMATION is next *sent* after the landed state leaves ON_GROUND (`GCS_Common.cpp:6485-6494`), so it lags the real takeoff by up to one message interval — 1.1 s on ArduCopter here (TAKEOFF state at 47.4 s, takeoff_time 48.5 s) with the message requested every 2 s. Within the XML's "timestamp at takeoff" at the rates a GCS would use, but a low request rate makes it later.
+
 ## How the stacks implement it (source, 2026-11-12)
 
 PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in upstream main `e192036345`, 2026-11-11; line numbers are at `36cedabb02`). ArduPilot `ce9c2d01a4`.
@@ -61,7 +85,7 @@ PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in 
 | flight_uuid | `COM_FLIGHT_UUID`, incremented at every disarm, with or without a takeoff (:804-806); the first flight is **0** | always 0 (:6513) |
 | landing_time | never set (0) | 0, "not supported" (:6521) |
 
-Every result matches this. Not exercised: takeoff and landing times (need a flight). From source, ArduPilot's takeoff time is only right if the message happens to be sent while the vehicle takes off — an ArduPilot implementation issue, not a definition one.
+Every result matches this. Takeoff and landing times: see the flight tests above. From source, ArduPilot's takeoff time is only right if the message happens to be sent while the vehicle takes off — an ArduPilot implementation issue, not a definition one.
 
 ## Definition review
 

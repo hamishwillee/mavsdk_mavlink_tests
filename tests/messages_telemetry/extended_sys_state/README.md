@@ -45,6 +45,25 @@ On ArduPilot the harness requests EXTENDED_SYS_STATE at 2 Hz; with that undone (
 
 **ArduPilot QuadPlane reports HEARTBEAT type FIXED_WING** (`Q_MAV_TYPE` 0) and sends a VTOL state (FW on the ground in its default mode). That's right for EXTENDED_SYS_STATE, but means a consumer can't tell a QuadPlane is a VTOL from HEARTBEAT; vtol_state is the only sign. QGC reads vtol_state only for vehicles whose type is a VTOL (`Vehicle.cc:1065-1090`), so it ignores QuadPlane's.
 
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `compat_landed_state_in_flight` | compat | Never ON_GROUND while ≥ 5 m above home (GLOBAL_POSITION_INT); never IN_AIR/TAKEOFF/LANDING while disarmed on the ground |
+| `obs_landed_state_transitions` | obs | Which states appear from arming to touchdown, and when |
+| `compat_vtol_state_in_flight` | compat | A VTOL (its HEARTBEAT type, or a fixed-wing type reporting a VTOL state at rest): while flying fast (ground speed ≥ 9 m/s for 10 s — above both stacks' 5 m/s default multicopter mission speed) never MC or UNDEFINED, and FW at some point; on the ground MC or FW. NA for anything else |
+
+| | PX4 (all four) | ArduCopter / Plane / QuadPlane | Rover |
+|---|---|---|---|
+| landed_state | ON_GROUND → TAKEOFF (at or just after arming) → IN_AIR (3–16 s after leaving the ground) → LANDING (in the landing item) → ON_GROUND | the same sequence | NA (never leaves the ground) |
+| vtol_state, VTOL | standard VTOL: MC → TRANSITION_TO_FW → FW (178 of 178 fast samples) → MC; tailsitter adds TRANSITION_TO_MC | QuadPlane: TRANSITION_TO_FW 5, FW 72, TRANSITION_TO_MC 5 while fast; **FW on the ground** outside a Q mode, MC in one | — |
+
+Every vehicle uses all four landed states, in order, so landed_state is recorded supported on all seven that fly; vtol_state is supported on the three VTOLs. No compatibility error.
+
+Not covered by the XML, and the two stacks differ: what vtol_state means on the ground. PX4 VTOLs report MC; QuadPlane reports FW in a fixed-wing mode (e.g. MANUAL, which it boots in) and MC in a Q mode. Both are defensible ("in fixed-wing state" can describe the mode, not the motion). Worth noting in a MAV_VTOL_STATE clarification if one is ever made; not proposed. PX4's standard VTOL went from FW straight to MC at 5 Hz: its back-transition is shorter than one EXTENDED_SYS_STATE interval.
+
 ## How the stacks implement it (source, 2026-11-12)
 
 PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in upstream main `e192036345`, 2026-11-11; line numbers are at `36cedabb02`). ArduPilot `ce9c2d01a4`.
