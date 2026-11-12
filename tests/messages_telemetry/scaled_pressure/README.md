@@ -30,7 +30,7 @@ Silent on: what press_diff holds with no differential-pressure sensor, and what 
 | `info_press_diff_at_rest` | info | Finite and ≤ 1 hPa (~13 m/s) at rest with no wind; always exactly 0 is characterised as "no sensor" |
 | `compat_temperatures` | compat | `temperature` and `temperature_press_diff`: 0 (characterised) or −40..85 °C |
 
-press_diff needs airflow to be shown right: recorded untestable. A message that's never sent (no such barometer) gives every field "untestable: not sent".
+press_diff needs airflow to be shown right: untestable at rest (flight tests below). A message that's never sent (no such barometer) gives every field "untestable: not sent".
 
 ## Results (2026-11-12)
 
@@ -48,6 +48,24 @@ PX4: `px4io/px4-sitl:latest` (1.18.0-beta, SIH, built 2026-09-11). ArduPilot: 4.
 | `temperature_press_diff` | always 0 | always 0 | always 0 (analog sensor has no temperature) | always 0 |
 
 So the barometer is exactly as defined on both stacks (ISA from the SITL's altitude, to 0.03 hPa). The absent-instance failures are request handling, recorded against SET_MESSAGE_INTERVAL/REQUEST_MESSAGE, not against the message's fields.
+
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `info_press_abs_tracks_altitude_in_flight` | info | The change in press_abs from its value before arming = the ISA change for GLOBAL_POSITION_INT's altitude change (±0.5 hPa or 10%); supported once the altitude changed ≥ 15 m (the route cruises at 30 and 50 m) |
+| `compat_press_diff_tracks_airspeed_in_flight` | compat | At ≥ 8 m/s airspeed (VFR_HUD; the ground speed when that's unknown, neither SITL has wind): press_diff 0 (no sensor: untestable) or ½ρv² in hPa (median ratio 0.5–2) |
+
+| | PX4 (SCALED_PRESSURE; all four) | ArduPilot SCALED_PRESSURE | ArduPilot SCALED_PRESSURE2 |
+|---|---|---|---|
+| press_abs change | 100% within tolerance, worst 0.05 hPa: −3.4..−3.5 hPa at 30 m, −5.3..−5.6 at 50 m | 100%, worst 0.09 hPa: −3.5..−3.7 hPa at 30 m, −5.5..−5.9 at 50 m | the same |
+| press_diff | always 0 at up to 19 m/s (no sensor in SIH) | **Plane, QuadPlane: the dynamic pressure, median ratio 0.82 (0.67–1.16) at 8–27 m/s**; Copter: always 0 (no sensor); Rover: too slow | always 0 (Copter, Plane, QuadPlane) |
+
+press_diff is now recorded supported on ArduPlane and QuadPlane; on everything else it stays untestable (no airspeed sensor on that vehicle: 0 is what any stack sends then). The 0.82 ratio is ArduPilot's airspeed calibration (`ARSPD_RATIO`) between the differential pressure and VFR_HUD's airspeed — a unit error (Pa, kPa) would be ×100 or ×0.1.
+
+From source: PX4 fills press_diff only from a `differential_pressure` sensor (`SCALED_PRESSURE.hpp:79-86`, Pa → hPa); SIH publishes an airspeed directly with no differential-pressure sensor behind it (`sih.cpp:839-850`), hence 0.
 
 ## How the stacks implement it (source, 2026-11-12)
 

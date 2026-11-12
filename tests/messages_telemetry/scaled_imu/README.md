@@ -56,6 +56,28 @@ Two measurements back up the frame: with PX4 facing north and ArduPilot facing w
 
 **ArduPilot SCALED_IMU3 is a magnetometer-only message**: acc, gyro and temperature exactly 0 in every message. The XML gives acc/gyro/mag no "not provided" value, so a consumer can't tell this from a level, still, perfectly calibrated IMU at 0 g — except that 0 g at rest is impossible.
 
+## Flight tests (2026-11-12)
+
+The shared flight (`../flight.py`; `pytest tests/messages_telemetry -m flight …`, ~3–6 min per vehicle including a SITL restart) flies north, east, south and west at 30–50 m, lands away from home, and arms once on the ground there. Flown 2026-11-12 on the same builds as the results above: PX4 SIH multicopter, fixed-wing, standard VTOL and tailsitter; ArduCopter, ArduPlane, QuadPlane, Rover (Rover drives the route).
+
+ATTITUDE is interpolated to each IMU sample's `time_boot_ms` (the streams run at the same rate with a fixed phase offset, so nearest-sample matching is up to half a period off every time).
+
+| Test | Kind | Checks |
+|---|---|---|
+| `info_gyro_matches_body_rates_in_flight` | info | Gyro = ATTITUDE's rollspeed/pitchspeed/yawspeed × 1000, same sign, within max(100 mrad/s, 30%), where \|rate\| ≥ 0.15 rad/s; supported per axis with ≥ 5 such samples |
+| `compat_accel_is_specific_force_in_flight` | compat | Acceleration = specific force (velocity change from GLOBAL_POSITION_INT over 0.5 s, minus gravity) rotated into the body frame by ATTITUDE, in mG (±120 mG), 90% of windows; supported per axis with ≥ 3 windows expecting ≥ 150 mG |
+| `info_mag_constant_in_earth_frame_in_flight` | info | The magnetometer rotated into NED by ATTITUDE is the same field on every heading (45° bins, ≥ 90° covered): declination spread ≤ 20°, inclination ≤ 10°, \|B\| ≤ 20%; supported per axis that varied ≥ 150 mgauss |
+
+| | PX4 (SCALED_IMU; all four) | ArduPilot (SCALED_IMU, SCALED_IMU2; all four) | ArduPilot SCALED_IMU3 |
+|---|---|---|---|
+| Gyro | 98–100% on every axis, 45–365 samples per axis, both signs | 100% on every axis (Rover: z only) | always 0 (no gyro on this instance) |
+| Acceleration | 100%, worst 18–319 mG; x and z strongly exercised, y on the tailsitter (and just, 3 windows, on the multicopter) | 99–100%, worst 3–320 mG; y strongly exercised on ArduPlane (and just, 3 windows, on QuadPlane) | always 0 |
+| Magnetometer | same Earth field on 8 headings: declination spread 1–3°, inclination ≤ 3.1° | spread 4–13°, inclination ≤ 3.6° | as SCALED_IMU |
+
+SCALED_IMU2/3 aren't sent by PX4 SIH. The worst acceleration errors (~300 mG) are single windows in a fixed-wing's sharp pull-up or a tailsitter's transition, where 0.5 s isn't short enough; the 90% criterion is met with room to spare.
+
+This shows the acceleration and gyro are body-frame, in mG and mrad/s, on both stacks — what #2675's "(body frame)" states. The magnetometer is body-frame in both SITLs too, but PX4's real-hardware path is raw sensor frame (source, below), so this doesn't change the "not proposed" decision on mag. Where a lateral axis (y) was never pushed past 150 mG, it stays recorded untestable from these flights.
+
 ## How the stacks implement it (source, 2026-11-12)
 
 PX4 `36cedabb02` (a board fork of main; every stream file cited is identical in upstream main `e192036345`, 2026-11-11; line numbers are at `36cedabb02`). ArduPilot `ce9c2d01a4`.

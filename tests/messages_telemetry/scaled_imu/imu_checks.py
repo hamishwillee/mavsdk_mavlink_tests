@@ -24,6 +24,7 @@ is sent as 1). With the vehicle at rest:
 
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 
@@ -185,6 +186,200 @@ def define_field_tests(namespace: dict, prefix: str, emission) -> None:
         def make(f):
             async def test(gcs_system, request):
                 await f(gcs_system, request)
+            return test
+        t = make(fn)
+        t.__name__ = t.__qualname__ = f"test_{prefix}_{suffix}"
+        t.__doc__ = doc
+        t.__module__ = namespace["__name__"]
+        namespace[t.__name__] = t
+
+
+# ---------------------------------------------------------------------------
+# In flight (../flight.py): rotation, acceleration and several headings
+# ---------------------------------------------------------------------------
+
+_EULER = ("roll", "pitch", "yaw")
+FLIGHT_RATE_MIN = 0.15          # rad/s: an ATTITUDE body rate at least this big is compared
+# mrad/s, or 30% of the rate: ATTITUDE's rates are filtered and sampled at other instants, which in a
+# PX4 tailsitter's pitch oscillation differs by ~100 mrad/s (2026-11-12). A unit (deg/s) or sign error is far outside.
+FLIGHT_GYRO_TOLERANCE = 100.0
+FLIGHT_GYRO_RELATIVE = 0.3
+FLIGHT_ACC_TOLERANCE_MG = 120.0
+FLIGHT_ACC_WINDOW_MS = 500      # velocity change taken over this long
+FLIGHT_ACC_NONTRIVIAL_MG = 150.0
+FLIGHT_MAG_NONTRIVIAL = 150.0   # mgauss an axis must vary by across the flight
+FLIGHT_DECL_SPREAD = 20.0       # degrees: the Earth-frame field direction across headings
+FLIGHT_INCL_SPREAD = 10.0
+FLIGHT_NORM_SPREAD = 0.2
+FLIGHT_MIN_N = 5
+FLIGHT_WITHIN = 0.9
+
+
+def _flight_imu(fl, name, request, fields, t0, t1):
+    samples = fl.s(name, t0, t1)
+    if len(samples) < 20:
+        skip_untestable(request, fields, "message not sent in flight (no such sensor), or too few",
+                        f"{len(samples)} {name} in flight")
+    if _all_zero(samples, fields):
+        for f in fields:
+            record_field_fact(request, f, supported=False, notes="Always 0 (not provided on this instance)")
+        record_detail(request, f"{', '.join(fields)} always exactly 0 in flight ({len(samples)} msgs): not provided")
+        pytest.skip("NA: not provided on this instance (always exactly 0)")
+    return samples
+
+
+async def gyro_matches_body_rates(fl, name, request) -> None:
+    from tests.messages_telemetry import flight as F
+    t0, t1 = fl.need_moving(request, GYRO)
+    samples = _flight_imu(fl, name, request, GYRO, t0, t1)
+    att = fl.boot("ATTITUDE")
+    rates = ["rollspeed", "pitchspeed", "yawspeed"]
+    flags = [[], [], []]
+    signs = [set(), set(), set()]
+    for s in samples:
+        a = att.interp(s.fields["time_boot_ms"], tuple(rates))
+        if a is None:
+            continue
+        for i, (g, r) in enumerate(zip(GYRO, rates)):
+            rate = a[r]
+            if finite(rate) and abs(rate) >= FLIGHT_RATE_MIN:
+                expected = 1000.0 * rate
+                flags[i].append(math.copysign(1, s.fields[g]) == math.copysign(1, rate)
+                                and abs(s.fields[g] - expected) <= max(FLIGHT_GYRO_TOLERANCE, FLIGHT_GYRO_RELATIVE * abs(expected)))
+                signs[i].add("+" if rate > 0 else "−")
+    failed = []
+    for i, f in enumerate(GYRO):
+        if len(flags[i]) < FLIGHT_MIN_N:
+            record_field_fact(request, f, untestable=f"in flight only {len(flags[i])} samples rotating ≥ "
+                                                     f"{FLIGHT_RATE_MIN} rad/s about this axis")
+        elif F.fraction(flags[i]) < FLIGHT_WITHIN:
+            record_field_fact(request, f, supported=False)
+            failed.append(f)
+        else:
+            record_field_fact(request, f, supported=True)
+    detail = ("(Information) vs ATTITUDE body rates ≥ " f"{FLIGHT_RATE_MIN} rad/s: " + "; ".join(
+        f"{g} {100 * F.fraction(x):.0f}% of {len(x)} (signs {''.join(sorted(sg)) or '-'})"
+        for g, x, sg in zip(GYRO, flags, signs)) + f" within max({FLIGHT_GYRO_TOLERANCE:.0f} mrad/s, {FLIGHT_GYRO_RELATIVE:.0%}); {fl.label}")
+    record_detail(request, detail)
+    assert not failed, f"gyro isn't the body angular rate in mrad/s — {detail}"
+
+
+async def accel_is_specific_force(fl, name, request) -> None:
+    from tests.messages_telemetry import flight as F
+    t0, t1 = fl.need_moving(request, ACC)
+    samples = sorted(_flight_imu(fl, name, request, ACC, t0, t1), key=lambda s: s.fields["time_boot_ms"])
+    gpi = sorted(fl.s("GLOBAL_POSITION_INT", t0, t1), key=lambda s: s.fields["time_boot_ms"])
+    att = fl.boot("ATTITUDE")
+    gidx = F.BootIndex(gpi)
+    keys = [s.fields["time_boot_ms"] for s in samples]
+    flags = [[], [], []]
+    big = [0, 0, 0]
+    worst = [0.0, 0.0, 0.0]
+    for g0 in gpi[::3]:
+        b0 = g0.fields["time_boot_ms"]
+        g1 = gidx.at(b0 + FLIGHT_ACC_WINDOW_MS, 100)
+        b1 = g1.fields["time_boot_ms"] if g1 is not None else None
+        a = None if b1 is None else att.interp((b0 + b1) / 2, _EULER, angles=_EULER)
+        if a is None or g1 is g0:
+            continue
+        dt = (b1 - b0) / 1000.0
+        acc_ned = [(g1.fields[k] - g0.fields[k]) / 100.0 / dt for k in ("vx", "vy", "vz")]
+        force_ned = [acc_ned[0], acc_ned[1], acc_ned[2] - F.GRAVITY]
+        rot = F.body_to_ned(a["roll"], a["pitch"], a["yaw"])
+        expected = [1000.0 * c / F.GRAVITY for c in F.mat_vec(rot, force_ned, transpose=True)]
+        lo, hi = bisect.bisect_left(keys, b0), bisect.bisect_right(keys, b1)
+        if hi - lo < 2:
+            continue
+        measured = [statistics.fmean(s.fields[f] for s in samples[lo:hi]) for f in ACC]
+        for i in range(3):
+            err = abs(measured[i] - expected[i])
+            worst[i] = max(worst[i], err)
+            flags[i].append(err <= FLIGHT_ACC_TOLERANCE_MG)
+            big[i] += abs(expected[i]) >= FLIGHT_ACC_NONTRIVIAL_MG
+    if not flags[0]:
+        skip_untestable(request, ACC, "no GLOBAL_POSITION_INT/ATTITUDE to derive the motion from")
+    failed = []
+    for i, f in enumerate(ACC):
+        if F.fraction(flags[i]) < FLIGHT_WITHIN:
+            record_field_fact(request, f, supported=False)
+            failed.append(f)
+        elif big[i] >= 3:
+            record_field_fact(request, f, supported=True)
+        else:
+            record_field_fact(request, f, untestable=f"in flight expected ≥ {FLIGHT_ACC_NONTRIVIAL_MG:.0f} mG "
+                                                     f"on this axis only {big[i]} times")
+    detail = (f"vs specific force from GLOBAL_POSITION_INT's velocity change over {FLIGHT_ACC_WINDOW_MS} ms, "
+              f"rotated by ATTITUDE: " + "; ".join(
+                  f"{f} {100 * F.fraction(x):.0f}% within {FLIGHT_ACC_TOLERANCE_MG:.0f} mG (worst {w:.0f}, "
+                  f"{n} windows ≥ {FLIGHT_ACC_NONTRIVIAL_MG:.0f} mG)" for f, x, w, n in zip(ACC, flags, worst, big))
+              + f"; {len(flags[0])} windows; {fl.label}")
+    record_detail(request, detail)
+    if failed:
+        report.compat_fail(f"{', '.join(failed)} isn't specific force in mG in the body frame — {detail}")
+
+
+async def mag_constant_in_earth_frame(fl, name, request) -> None:
+    from tests.messages_telemetry import flight as F
+    t0, t1 = fl.need_moving(request, MAG)
+    samples = _flight_imu(fl, name, request, MAG, t0, t1)
+    att = fl.boot("ATTITUDE")
+    bins: dict[int, list[tuple[float, float, float]]] = {}
+    for s in samples:
+        a = att.interp(s.fields["time_boot_ms"], _EULER, angles=_EULER)
+        if a is None:
+            continue
+        rot = F.body_to_ned(a["roll"], a["pitch"], a["yaw"])
+        n, e, d = F.mat_vec(rot, [s.fields[f] for f in MAG])
+        heading = math.degrees(a["yaw"]) % 360.0
+        bins.setdefault(int(heading // 45), []).append((n, e, d))
+    stats = []  # (heading bin centre, declination, inclination, |B|)
+    for b, vs in sorted(bins.items()):
+        if len(vs) < FLIGHT_MIN_N:
+            continue
+        n, e, d = (statistics.fmean(v[i] for v in vs) for i in range(3))
+        stats.append((b * 45 + 22.5, math.degrees(math.atan2(e, n)), math.degrees(math.atan2(d, math.hypot(n, e))),
+                      math.sqrt(n * n + e * e + d * d)))
+    spread = F.heading_spread([x[0] for x in stats])
+    if len(stats) < 2 or spread < 90.0:
+        skip_untestable(request, MAG, "flew too few headings to compare the field across",
+                        f"{len(stats)} heading bins covering {spread:.0f}°")
+    decl = [x[1] for x in stats]
+    decl_spread = max(abs(F.angle_diff(a, b)) for a in decl for b in decl)
+    incl_spread = max(x[2] for x in stats) - min(x[2] for x in stats)
+    norms = [x[3] for x in stats]
+    norm_spread = (max(norms) - min(norms)) / statistics.fmean(norms)
+    ok = decl_spread <= FLIGHT_DECL_SPREAD and incl_spread <= FLIGHT_INCL_SPREAD and norm_spread <= FLIGHT_NORM_SPREAD
+    for f in MAG:
+        values = [s.fields[f] for s in samples]
+        if not ok:
+            record_field_fact(request, f, supported=False)
+        elif max(values) - min(values) >= FLIGHT_MAG_NONTRIVIAL:
+            record_field_fact(request, f, supported=True)
+        else:
+            record_field_fact(request, f, untestable=f"varied only {max(values) - min(values):.0f} mgauss in flight")
+    detail = (f"(Information) Earth-frame field over {len(stats)} headings covering {spread:.0f}°: declination "
+              f"{min(decl):+.0f}..{max(decl):+.0f}° (spread {decl_spread:.0f}°), inclination spread {incl_spread:.1f}°, "
+              f"|B| {min(norms):.0f}..{max(norms):.0f} mgauss; {fl.label}")
+    record_detail(request, detail)
+    assert ok, f"magnetometer doesn't rotate with the body (field not fixed in the Earth frame) — {detail}"
+
+
+def define_flight_tests(namespace: dict, prefix: str, name: str) -> None:
+    """The IMU flight tests, named test_<prefix>_... (rule 8)."""
+    from tests.messages_telemetry import flight as F
+    specs = [
+        ("info_gyro_matches_body_rates_in_flight", gyro_matches_body_rates,
+         "(Information) In flight the gyro equals ATTITUDE's body rates in mrad/s, with the right sign, on each axis."),
+        ("compat_accel_is_specific_force_in_flight", accel_is_specific_force,
+         "In flight acceleration is specific force (velocity change − gravity) in the body frame, in mG (±120 mG)."),
+        ("info_mag_constant_in_earth_frame_in_flight", mag_constant_in_earth_frame,
+         "(Information) In flight the magnetometer, rotated by ATTITUDE, is the same Earth field on every heading."),
+    ]
+    for suffix, fn, doc in specs:
+        def make(f):
+            async def test(gcs_system, request, restart_flight_stack):
+                fl = await F.get_flight(gcs_system, restart_flight_stack)
+                await f(fl, name, request)
             return test
         t = make(fn)
         t.__name__ = t.__qualname__ = f"test_{prefix}_{suffix}"

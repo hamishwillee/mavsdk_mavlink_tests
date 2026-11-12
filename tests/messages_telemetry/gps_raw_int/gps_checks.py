@@ -205,3 +205,132 @@ def define_field_tests(namespace: dict, prefix: str, emission, gps2: bool = Fals
         t.__doc__ = doc
         t.__module__ = namespace["__name__"]
         namespace[t.__name__] = t
+
+
+# ---------------------------------------------------------------------------
+# In flight (../flight.py): vel, cog and alt need the vehicle to move
+# ---------------------------------------------------------------------------
+
+FLIGHT_VEL_TOLERANCE = 1.0      # m/s, or 15% — GPS is a separate sensor, sampled at its own time
+FLIGHT_COG_TOLERANCE_DEG = 15.0
+FLIGHT_ALT_TOLERANCE_M = 5.0
+FLIGHT_MIN_SPEED = 3.0          # m/s: below this the course is noise
+FLIGHT_WITHIN = 0.9
+NONTRIVIAL_SPREAD_DEG = 90.0    # courses must cover this much of the circle to show a swapped or flipped axis
+NONTRIVIAL_CLIMB_M = 15.0
+
+
+def _fixed(fl, name, t0, t1):
+    return [s for s in fl.s(name, t0, t1) if int(s.fields["fix_type"]) >= 3]
+
+
+async def vel_cog_in_flight(fl, name, request) -> None:
+    from tests.messages_telemetry import flight as F
+    t0, t1 = fl.need_moving(request, ["vel", "cog"])
+    gps = _fixed(fl, name, t0, t1)
+    gpi = fl.s("GLOBAL_POSITION_INT", t0, t1)
+    if len(gps) < 20 or not gpi:
+        skip_untestable(request, ["vel", "cog"], "message not sent in flight (no such receiver), or too few with a 3D fix",
+                        f"{len(gps)} {name} with a 3D fix, {len(gpi)} GLOBAL_POSITION_INT")
+    vel_ok, cog_ok, courses, speeds = [], [], [], []
+    unknown = {"vel": 0, "cog": 0}
+    for s in gps:
+        g = nearest(gpi, s.host_mono)
+        if abs(g.host_mono - s.host_mono) > 0.3:
+            continue
+        speed = math.hypot(g.fields["vx"], g.fields["vy"]) / 100.0
+        course = math.degrees(math.atan2(g.fields["vy"], g.fields["vx"])) % 360.0
+        vel, cog = int(s.fields["vel"]), int(s.fields["cog"])
+        speeds.append(speed)
+        if vel == UINT16_MAX:
+            unknown["vel"] += 1
+        else:
+            vel_ok.append(abs(vel / 100.0 - speed) <= max(FLIGHT_VEL_TOLERANCE, 0.15 * speed))
+        if speed >= FLIGHT_MIN_SPEED:
+            if cog == UINT16_MAX:
+                unknown["cog"] += 1
+            else:
+                cog_ok.append(abs(F.angle_diff(cog / 100.0, course)) <= FLIGHT_COG_TOLERANCE_DEG)
+                courses.append(course)
+    top = max(speeds, default=0.0)
+    spread = F.heading_spread(courses)
+    results = {"vel": (vel_ok, top >= FLIGHT_MIN_SPEED, f"fastest {top:.1f} m/s"),
+               "cog": (cog_ok, spread >= NONTRIVIAL_SPREAD_DEG, f"courses cover {spread:.0f}°")}
+    failed = []
+    for n, (flags, strong, what) in results.items():
+        if not flags:
+            record_field_fact(request, n, supported=False, notes="Always unknown (UINT16_MAX) in flight")
+        elif F.fraction(flags) < FLIGHT_WITHIN:
+            record_field_fact(request, n, supported=False)
+            failed.append(n)
+        elif strong:
+            record_field_fact(request, n, supported=True)
+        else:
+            record_field_fact(request, n, untestable=f"in flight only {what}")
+    detail = (f"(Information) vel {100 * F.fraction(vel_ok):.0f}% within max({FLIGHT_VEL_TOLERANCE} m/s, 15%) of "
+              f"GLOBAL_POSITION_INT ground speed ({results['vel'][2]}); cog {100 * F.fraction(cog_ok):.0f}% within "
+              f"{FLIGHT_COG_TOLERANCE_DEG:.0f}° of its track at ≥ {FLIGHT_MIN_SPEED:.0f} m/s ({results['cog'][2]}); "
+              f"UINT16_MAX vel {unknown['vel']}, cog {unknown['cog']}; n={len(speeds)}; {fl.label}")
+    record_detail(request, detail)
+    assert not failed, f"GPS {', '.join(failed)} don't match the vehicle's motion — {detail}"
+
+
+async def alt_in_flight(fl, name, request) -> None:
+    from tests.messages_telemetry import flight as F
+    names = ["alt", "alt_ellipsoid"]
+    t0, t1 = fl.need_moving(request, names)
+    gps = _fixed(fl, name, t0, t1)
+    gpi = fl.s("GLOBAL_POSITION_INT", t0, t1)
+    if len(gps) < 20 or not gpi:
+        skip_untestable(request, names, "message not sent in flight (no such receiver), or too few with a 3D fix",
+                        f"{len(gps)} {name} with a 3D fix")
+    alt_ok, seps, alts = [], [], []
+    for s in gps:
+        g = nearest(gpi, s.host_mono)
+        if abs(g.host_mono - s.host_mono) > 0.3:
+            continue
+        alt_ok.append(abs(s.fields["alt"] - g.fields["alt"]) / 1000.0 <= FLIGHT_ALT_TOLERANCE_M)
+        alts.append(s.fields["alt"] / 1000.0)
+        if s.fields.get("alt_ellipsoid") is not None:
+            seps.append((s.fields["alt"] - s.fields["alt_ellipsoid"]) / 1000.0)
+    climb = max(alts) - min(alts) if alts else 0.0
+    ok = F.fraction(alt_ok) >= FLIGHT_WITHIN
+    if not ok:
+        record_field_fact(request, "alt", supported=False)
+    elif climb >= NONTRIVIAL_CLIMB_M:
+        record_field_fact(request, "alt", supported=True)
+    else:
+        record_field_fact(request, "alt", untestable=f"altitude changed only {climb:.1f} m in flight")
+    sep_spread = max(seps) - min(seps) if seps else None
+    if seps and climb >= NONTRIVIAL_CLIMB_M and sep_spread > 1.0:
+        record_field_fact(request, "alt_ellipsoid", supported=False,
+                          notes=f"alt − alt_ellipsoid varied by {sep_spread:.1f} m in flight")
+    sep = "not decoded" if not seps else f"alt − alt_ellipsoid {min(seps):+.1f}..{max(seps):+.1f} m"
+    detail = (f"(Information) GPS alt {min(alts):.1f}..{max(alts):.1f} m MSL, {100 * F.fraction(alt_ok):.0f}% within "
+              f"{FLIGHT_ALT_TOLERANCE_M:.0f} m of GLOBAL_POSITION_INT; {sep} (a fixed geoid separation tracks the climb); "
+              f"n={len(alt_ok)}; {fl.label}")
+    record_detail(request, detail)
+    assert ok and not (seps and climb >= NONTRIVIAL_CLIMB_M and sep_spread > 1.0), \
+        f"GPS altitude doesn't follow the vehicle's — {detail}"
+
+
+def define_flight_tests(namespace: dict, prefix: str, name: str) -> None:
+    """The GPS flight tests, named test_<prefix>_... (rule 8)."""
+    from tests.messages_telemetry import flight as F
+    specs = [
+        ("info_vel_cog_in_flight", vel_cog_in_flight,
+         "(Information) In flight vel is the ground speed and cog the course of GLOBAL_POSITION_INT's velocity."),
+        ("info_alt_in_flight", alt_in_flight,
+         "(Information) In flight alt follows GLOBAL_POSITION_INT's altitude (±5 m) and alt_ellipsoid keeps a fixed offset."),
+    ]
+    for suffix, fn, doc in specs:
+        def make(f):
+            async def test(gcs_system, request, restart_flight_stack):
+                fl = await F.get_flight(gcs_system, restart_flight_stack)
+                await f(fl, name, request)
+            return test
+        t = make(fn)
+        t.__name__ = t.__qualname__ = f"test_{prefix}_{suffix}"
+        t.__doc__ = doc
+        t.__module__ = namespace["__name__"]
+        namespace[t.__name__] = t

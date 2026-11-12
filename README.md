@@ -104,8 +104,9 @@ pytest tests/mission/camera_target_id/ -v
 # transport; see tests/mission/condition_gate/README.md)
 pytest tests/mission/condition_gate/ -v --log-cli-level=INFO
 
-# Emitted messages (telemetry): emission, rate requests and field values — no flying, so run it on
-# every vehicle type (see tests/messages_telemetry/CLAUDE.md; each message's results: <message>/README.md)
+# Emitted messages (telemetry): emission, rate requests and field values on the ground, plus one shared
+# flight for what needs movement — run it on every vehicle type (see tests/messages_telemetry/CLAUDE.md;
+# each message's results: <message>/README.md). -m "not flight" for the ground tests only, -m flight for the flight.
 pytest tests/messages_telemetry/ -v --log-cli-level=INFO
 ```
 
@@ -184,6 +185,7 @@ Worst-case transfer time for *N* items: `(N + 1) × MAX_RETRIES × max(TIMEOUT_I
     └── messages_telemetry/
         ├── conftest.py            # Message sampler, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE helpers, per-message report
         ├── emission.py            # Generic emission tests (default rate, SET_MESSAGE_INTERVAL, REQUEST_MESSAGE) reused per message
+        ├── flight.py              # One shared flight per session for the test_flight*.py modules (movement-dependent field checks)
         ├── system_time/                   # SYSTEM_TIME (11 tests, every vehicle type)
         ├── attitude_quaternion/           # ATTITUDE_QUATERNION (10 tests)
         ├── local_position_ned/            # LOCAL_POSITION_NED (8 tests)

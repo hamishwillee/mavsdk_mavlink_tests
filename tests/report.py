@@ -765,7 +765,7 @@ def render_text(protocol: str, cmd_name: str, cmd_id: int, config) -> str:
             lines.append("")
         counts = {}
         lines += [
-            f"Tier 2 results: MAV_CMD_{cmd_name} (cmd={cmd_id})",
+            f"Flight tests: {cmd_name} (id={cmd_id})" if is_message else f"Tier 2 results: MAV_CMD_{cmd_name} (cmd={cmd_id})",
             "=" * 100,
             f"{'Test':<46} {'Outcome':<9} {'Compat error':<13} Detail",
             "-" * 100,

@@ -13,7 +13,7 @@ Detailed notes for each test subtree live in their own CLAUDE.md files:
 - `tests/mission/condition_gate/CLAUDE.md` — CONDITION_GATE (`<wip/>`, needs the raw mavlink_direct transport); PX4 param-drop bug; a real PX4 mask fix that needed a SITL rebuild to take effect; a raw-transport bug found against ArduCopter's deprecated MISSION_REQUEST
 - `tests/mission/do_set_actuator/CLAUDE.md` / `tests/command/do_set_actuator/CLAUDE.md` — DO_SET_ACTUATOR, built to verify PX4 PR #28723's actuator-scaling fix; requires MAV_FRAME_MISSION as a mission item (unrelated PX4 finding); PWM-output Tier 2 observability mechanism; a stale-binary false-positive hit and resolved mid-verification
 - `tests/command/CLAUDE.md` — command protocol, MAV_RESULT values, per-stack command notes
-- `tests/messages_telemetry/CLAUDE.md` — emitted (telemetry) messages: what a message test asks (emission, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE, field values), the `"message"` report protocol and its mavlink-compat-data message JSON, a MAVSDK-Python 4.0.6 unsubscribe segfault; each message directory's `README.md` has its per-stack results, source reading and definition review (16 messages so far)
+- `tests/messages_telemetry/CLAUDE.md` — emitted (telemetry) messages: what a message test asks (emission, SET_MESSAGE_INTERVAL/REQUEST_MESSAGE, field values), the `"message"` report protocol and its mavlink-compat-data message JSON, a MAVSDK-Python 4.0.6 unsubscribe segfault; each message directory's `README.md` has its per-stack results, source reading and definition review (16 messages so far); one shared flight (`flight.py`) for the checks that need movement
 
 ## General testing philosophy for MAV_CMD support
 
@@ -159,6 +159,7 @@ tests/mission/           Mission protocol tests — see tests/mission/CLAUDE.md
 tests/messages_telemetry/  Emitted-message tests (no flying, every vehicle type) — see tests/messages_telemetry/CLAUDE.md
   conftest.py            MessageSampler, set_message_interval/request_message/get_message_interval, "message" report fixture
   emission.py            Emission: the five generic emission tests + shared field window/checks, reused by every message
+  flight.py              One shared flight per session (cached recording of every message) for each message's test_flight*.py
   system_time/           SYSTEM_TIME (test_system_time.py, README.md)
   attitude_quaternion/   ATTITUDE_QUATERNION (test_attitude_quaternion.py, README.md)
   local_position_ned/, home_position/, gps_global_origin/, extended_sys_state/, flight_information/, message_interval/
